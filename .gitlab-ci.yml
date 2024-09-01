@@ -1,0 +1,27 @@
+stages:
+  - build
+  - test
+
+build:
+  stage: build
+  script:
+    - dotnet restore
+    - dotnet build
+    - docker build -t local/$CI_PROJECT_NAME:$CI_COMMIT_SHA .
+    - docker tag local/$CI_PROJECT_NAME:$CI_COMMIT_SHA local/$CI_PROJECT_NAME:latest
+    - minikube image load local/$CI_PROJECT_NAME:latest
+  only:
+    - main
+
+unit-test:
+  stage: test
+  script:
+    - dotnet test --filter Category=Unit
+
+deploy:
+  stage: deploy
+  script:
+    - echo "Triggering shared deployment pipeline"
+    - curl -X POST -F token=$CI_JOB_TOKEN -F ref=main https://gitlab.com/api/v4/projects/$SHARED_DEPLOYMENT_PROJECT_ID/trigger/pipeline
+  only:
+    - main
