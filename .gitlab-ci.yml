@@ -7,7 +7,7 @@ variables:
   DOCKER_HOST: tcp://docker:2375
   DOCKER_DRIVER: overlay2
   DOCKER_TLS_CERTDIR: ""
-  MAIN_PROJECT: "Agent.csproj"  # Change this to "Gateway.csproj" for the gateway repo
+  MAIN_PROJECT: "agent.csproj"  # Change this to "Gateway.csproj" for the gateway repo
   TEST_PROJECT: "Agent.tests/Agent.tests.csproj"  # Change this for the gateway repo
 
 stages:
