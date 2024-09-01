@@ -1,17 +1,28 @@
----
+image: mcr.microsoft.com/dotnet/sdk:8.0
+
+services:
+  - docker:dind
+
+variables:
+  DOCKER_HOST: tcp://docker:2375
+  DOCKER_DRIVER: overlay2
+  DOCKER_TLS_CERTDIR: ""
+
 stages:
   - build
   - test
   - deploy
+
+before_script:
+  - apt-get update && apt-get install -y docker.io
 
 build:
   stage: build
   script:
     - dotnet restore
     - dotnet build
-    - docker build -t local/$CI_PROJECT_NAME:$CI_COMMIT_SHA .
-    - docker tag local/$CI_PROJECT_NAME:$CI_COMMIT_SHA local/$CI_PROJECT_NAME:latest
-    - minikube image load local/$CI_PROJECT_NAME:latest
+    - docker build -t $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA .
+    - docker push $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA
   only:
     - main
 
@@ -30,6 +41,7 @@ deploy:
       curl -X POST \
         -F token=$CI_JOB_TOKEN \
         -F ref=main \
+        -F "variables[IMAGE_TAG]=$CI_COMMIT_SHA" \
         https://gitlab.com/api/v4/projects/$SHARED_DEPLOYMENT_PROJECT_ID/trigger/pipeline
   only:
     - main
