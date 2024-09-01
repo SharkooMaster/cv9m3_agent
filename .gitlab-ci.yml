@@ -1,6 +1,8 @@
+---
 stages:
   - build
   - test
+  - deploy
 
 build:
   stage: build
@@ -17,11 +19,17 @@ unit-test:
   stage: test
   script:
     - dotnet test --filter Category=Unit
+  only:
+    - main
 
 deploy:
   stage: deploy
   script:
     - echo "Triggering shared deployment pipeline"
-    - curl -X POST -F token=$CI_JOB_TOKEN -F ref=main https://gitlab.com/api/v4/projects/$SHARED_DEPLOYMENT_PROJECT_ID/trigger/pipeline
+    - |
+      curl -X POST \
+        -F token=$CI_JOB_TOKEN \
+        -F ref=main \
+        https://gitlab.com/api/v4/projects/$SHARED_DEPLOYMENT_PROJECT_ID/trigger/pipeline
   only:
     - main
