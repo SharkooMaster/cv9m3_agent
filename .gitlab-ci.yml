@@ -7,8 +7,6 @@ stages:
 build:
   stage: build
   script:
-    - export PATH="$PATH:/home/techpology_2/.dotnet:/home/techpology_2/.dotnet/tools"
-    - export DOTNET_ROOT=/home/techpology_2/.dotnet
     - dotnet restore
     - dotnet build
     - docker build -t local/$CI_PROJECT_NAME:$CI_COMMIT_SHA .
@@ -20,8 +18,6 @@ build:
 unit-test:
   stage: test
   script:
-    - export PATH="$PATH:/home/techpology_2/.dotnet:/home/techpology_2/.dotnet/tools"
-    - export DOTNET_ROOT=/home/techpology_2/.dotnet
     - dotnet test --filter Category=Unit
   only:
     - main
