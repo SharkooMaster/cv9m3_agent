@@ -5,10 +5,9 @@ services:
 
 variables:
   DOCKER_HOST: tcp://docker:2375
-  DOCKER_DRIVER: overlay2
   DOCKER_TLS_CERTDIR: ""
-  MAIN_PROJECT: "agent.csproj"  # Ensure this points to the correct path
-  TEST_PROJECT: "Agent.tests/Agent.tests.csproj"  # Ensure this points to the correct path
+  MAIN_PROJECT: "agent.csproj"
+  TEST_PROJECT: "Agent.tests/Gateway.tests.csproj"
 
 stages:
   - build
@@ -16,7 +15,8 @@ stages:
   - deploy
 
 before_script:
-  # Remove redundant Docker installation step
+  - apt-get update && apt-get install -y curl
+  - curl -fsSL https://get.docker.com -o get-docker.sh && sh get-docker.sh
   - echo "Starting build..."
 
 build:
