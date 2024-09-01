@@ -18,6 +18,11 @@ before_script:
   - apt-get update && apt-get install -y curl
   - curl -fsSL https://get.docker.com -o get-docker.sh && sh get-docker.sh
   - echo "Starting build..."
+  # Update all xUnit packages to the latest version
+  - dotnet add $MAIN_PROJECT package xunit --version 2.9.0
+  - dotnet add $TEST_PROJECT package xunit --version 2.9.0
+  - dotnet add $TEST_PROJECT package xunit.runner.visualstudio --version 2.5.0
+  - dotnet add $TEST_PROJECT package Microsoft.NET.Test.Sdk --version 17.8.0
 
 build:
   stage: build
