@@ -7,8 +7,8 @@ services:
 variables:
   DOCKER_HOST: tcp://docker:2375
   DOCKER_TLS_CERTDIR: ""
-  MAIN_PROJECT: "gateway.csproj"
-  TEST_PROJECT: "Gateway.Tests/Gateway.Tests.csproj"
+  MAIN_PROJECT: "agent.csproj"
+  TEST_PROJECT: "Agent.Tests/Agent.Tests.csproj"
 
 stages:
   - build
