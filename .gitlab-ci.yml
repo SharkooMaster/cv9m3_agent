@@ -1,41 +1,57 @@
+---
+image: mcr.microsoft.com/dotnet/sdk:8.0
+
+services:
+  - docker:dind
+
+variables:
+  DOCKER_HOST: tcp://docker:2375
+  DOCKER_TLS_CERTDIR: ""
+  MAIN_PROJECT: "gateway.csproj"
+  TEST_PROJECT: "Gateway.Tests/Gateway.Tests.csproj"
+
 stages:
   - build
   - test
   - deploy
 
+before_script:
+  - apt-get update && apt-get install -y curl
+  - curl -fsSL https://get.docker.com -o get-docker.sh && sh get-docker.sh
+  - echo "Starting build..."
+
 build:
   stage: build
   script:
-    - dotnet restore
-    - dotnet build
-    - docker build -t local/$CI_PROJECT_NAME:$CI_COMMIT_SHA .
-    - docker tag local/$CI_PROJECT_NAME:$CI_COMMIT_SHA local/$CI_PROJECT_NAME:latest
-    - minikube image load local/$CI_PROJECT_NAME:latest
+    # Login to GitLab Container Registry
+    - echo $CI_REGISTRY_PASSWORD | docker login -u $CI_REGISTRY_USER --password-stdin $CI_REGISTRY
+    # Build .NET project
+    - dotnet restore $MAIN_PROJECT
+    - dotnet build $MAIN_PROJECT
+    # Build Docker image and push
+    - docker build -t $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA .
+    - docker push $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA
   only:
     - main
 
 unit-test:
   stage: test
   script:
-    - dotnet test --filter Category=Unit
+    # Restore and run unit tests
+    - dotnet restore $TEST_PROJECT
+    - dotnet test $TEST_PROJECT --filter Category=Unit
   only:
     - main
 
 deploy:
   stage: deploy
   script:
-    - echo "Triggering shared deployment pipeline for Agent"
+    - echo "Triggering shared deployment pipeline"
     - |
       curl -X POST \
-        -H "Content-Type: application/json" \
-        -H "PRIVATE-TOKEN: $GITLAB_API_TOKEN" \
-        -d '{
-          "ref": "main",
-          "variables": {
-            "TRIGGER_JOB": "build-agent",
-            "AGENT_IMAGE_TAG": "'$CI_COMMIT_SHA'"
-          }
-        }' \
+        -F token=$CI_JOB_TOKEN \
+        -F ref=main \
+        -F "variables[IMAGE_TAG]=$CI_COMMIT_SHA" \
         https://gitlab.com/api/v4/projects/$SHARED_DEPLOYMENT_PROJECT_ID/trigger/pipeline
   only:
     - main
