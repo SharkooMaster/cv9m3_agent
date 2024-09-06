@@ -1,57 +1,28 @@
 ---
-image: mcr.microsoft.com/dotnet/sdk:8.0
-
-services:
-  - docker:dind
-
-variables:
-  DOCKER_HOST: tcp://docker:2375
-  DOCKER_TLS_CERTDIR: ""
-  MAIN_PROJECT: "agent.csproj"
-  TEST_PROJECT: "Agent.Tests/Agent.Tests.csproj"
-
 stages:
-  - build
   - test
+  - build
   - deploy
 
-before_script:
-  - apt-get update && apt-get install -y curl
-  - curl -fsSL https://get.docker.com -o get-docker.sh && sh get-docker.sh
-  - echo "Starting build..."
+# Test Stage
+test:
+  stage: test
+  image: mcr.microsoft.com/dotnet/sdk:6.0
+  script:
+    - dotnet restore
+    - dotnet build
+    - dotnet test
+  only:
+    - main
 
+# Build Stage
 build:
   stage: build
+  image: docker:latest
+  services:
+    - docker:dind
   script:
-    # Login to GitLab Container Registry
-    - echo $CI_REGISTRY_PASSWORD | docker login -u $CI_REGISTRY_USER --password-stdin $CI_REGISTRY
-    # Build .NET project
-    - dotnet restore $MAIN_PROJECT
-    - dotnet build $MAIN_PROJECT
-    # Build Docker image and push
-    - docker build -t $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA .
-    - docker push $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA
-  only:
-    - main
-
-unit-test:
-  stage: test
-  script:
-    # Restore and run unit tests
-    - dotnet restore $TEST_PROJECT
-    - dotnet test $TEST_PROJECT --filter Category=Unit
-  only:
-    - main
-
-deploy:
-  stage: deploy
-  script:
-    - echo "Triggering shared deployment pipeline"
-    - |
-      curl -X POST \
-        -F token=$CI_JOB_TOKEN \
-        -F ref=main \
-        -F "variables[IMAGE_TAG]=$CI_COMMIT_SHA" \
-        https://gitlab.com/api/v4/projects/$SHARED_DEPLOYMENT_PROJECT_ID/trigger/pipeline
+    - docker build -t registry.gitlab.com/your-project/$CI_PROJECT_NAME:latest .
+    - docker push registry.gitlab.com/your-project/$CI_PROJECT_NAME:latest
   only:
     - main
