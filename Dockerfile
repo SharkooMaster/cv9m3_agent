@@ -1,20 +1,18 @@
-FROM mcr.microsoft.com/dotnet/aspnet:8.0 AS base
+FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build-env
 WORKDIR /app
-EXPOSE 80
-EXPOSE 443
 
-FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
-WORKDIR /src
-COPY ["agent.csproj", "./"]
-RUN dotnet restore "agent.csproj"
-COPY . .
-WORKDIR "/src"
-RUN dotnet build "agent.csproj" -c Release -o /app/build
+# Run the main api, make sure to run unit tests prior to this.
+COPY agent.csproj ./
+RUN dotnet restore agent.csproj
 
-FROM build AS publish
-RUN dotnet publish "agent.csproj" -c Release -o /app/publish
+COPY . ./
+RUN dotnet publish agent.csproj -c Release -o out
 
-FROM base AS final
+# Generate runtime image
+FROM mcr.microsoft.com/dotnet/aspnet:8.0
 WORKDIR /app
-COPY --from=publish /app/publish .
-ENTRYPOINT ["dotnet", "agent.dll"]
+
+COPY --from=build-env /app/out .
+
+EXPOSE 5000 5001
+ENTRYPOINT [ "dotnet", "agent.dll" ]
