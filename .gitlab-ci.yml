@@ -3,6 +3,7 @@ stages:
   - test
   - build
   - push
+  - deploy
 
 # Test Stage
 test:
@@ -40,3 +41,9 @@ push_image:
   only:
     - dev
 
+deploy:
+  stage: deploy
+  script:
+    - kubectl get pods
+  only:
+    - dev
