@@ -33,6 +33,9 @@ build:
 deploy:
   stage: deploy
   script:
+    - echo "User $(whoami)"
+    - which kubectl
+    - kubectl version --client
     - kubectl get pods
   only:
     - dev
