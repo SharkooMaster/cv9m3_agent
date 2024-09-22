@@ -1,4 +1,5 @@
 using System.Net;
+using Agent.Services;
 using Agent.Services.Etcd;
 using dotnet_etcd;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
@@ -20,6 +21,9 @@ builder.WebHost.ConfigureKestrel(options =>
 
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
+
+// Background services
+builder.Services.AddHostedService<AgentLifeCycleService>();
 
 var app = builder.Build();
 

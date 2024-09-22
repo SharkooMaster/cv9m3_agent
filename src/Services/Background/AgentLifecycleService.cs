@@ -1,20 +1,23 @@
 
-public class AgentLifeCycleService : BackgroundService
+using Agent.Services.Etcd;
+namespace Agent.Services;
+
+public class AgentLifeCycleService : IHostedService
 {
-    private readonly ILogger<AgentLifeCycleService> _logger;
-    public AgentLifeCycleService(ILogger<AgentLifeCycleService> logger)
+    private readonly IEtcdClientService _etcdClientService;
+    public AgentLifeCycleService(IEtcdClientService etcdClientService)
     {
-        _logger = logger;
+        _etcdClientService = etcdClientService;
     }
 
-    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    public async Task StartAsync(CancellationToken cancellationToken)
     {
-        throw new NotImplementedException();
+        await _etcdClientService.RegisterAgentAsync("agent-id", "");
     }
 
-    public override Task StartAsync(CancellationToken cancellationToken)
+    public Task StopAsync(CancellationToken cancellationToken)
     {
-        return base.StartAsync(cancellationToken);
+        return Task.CompletedTask;
     }
 
 }
