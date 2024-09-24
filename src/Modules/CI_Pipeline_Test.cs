@@ -1,5 +1,5 @@
 
-namespace Agent.Misc
+namespace Agent.Modules.Misc
 {
     public static class CI_Pipeline_Test
     {

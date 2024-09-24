@@ -1,5 +1,6 @@
 
 using Agent.Services.Etcd;
+using Agent.Utils.Misc;
 namespace Agent.Services;
 
 public class AgentLifeCycleService : IHostedService
@@ -12,12 +13,11 @@ public class AgentLifeCycleService : IHostedService
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
-        await _etcdClientService.RegisterAgentAsync("agent-id", "");
+        await _etcdClientService.RegisterAgentAsync(Misc.GenerateId(), "");
     }
 
     public Task StopAsync(CancellationToken cancellationToken)
     {
         return Task.CompletedTask;
     }
-
 }
