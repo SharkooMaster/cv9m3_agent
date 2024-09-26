@@ -49,10 +49,14 @@ app.Run();
 
 void ConfigureServices(IServiceCollection services)
 {
+    Console.WriteLine("Initiating iEtcd");
+
     services.AddSingleton<EtcdClient>(provider => {
         var configuration = provider.GetRequiredService<IConfiguration>();
         var etcdUrl = configuration["Etcd:Url"];
-        return new EtcdClient(etcdUrl);
+		Console.WriteLine($"etcd_url: {etcdUrl}");
+		return new EtcdClient(etcdUrl);
     });
-    services.AddScoped<IEtcdClientService, EtcdClientService>();
+    services.AddSingleton<IEtcdClientService, EtcdClientService>();
+	Console.WriteLine("Connected iEtcd");
 }

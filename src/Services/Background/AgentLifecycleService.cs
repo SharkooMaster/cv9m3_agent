@@ -6,14 +6,17 @@ namespace Agent.Services;
 public class AgentLifeCycleService : IHostedService
 {
     private readonly IEtcdClientService _etcdClientService;
+
     public AgentLifeCycleService(IEtcdClientService etcdClientService)
     {
+        Console.WriteLine("INFO::AgentLifecycleService: Initiating AgentLifeCycleService");
         _etcdClientService = etcdClientService;
     }
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
-        await _etcdClientService.RegisterAgentAsync(Misc.GenerateId(), "");
+        string _id = Misc.GenerateId();
+		await _etcdClientService.RegisterAgentAsync(_id, Misc.GetServiceInfo("agent", _id));
     }
 
     public Task StopAsync(CancellationToken cancellationToken)

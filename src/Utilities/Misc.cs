@@ -1,5 +1,6 @@
 
 using Google.Protobuf;
+using System.Text.Json;
 using System.Net;
 
 namespace Agent.Utils.Misc;
@@ -31,7 +32,7 @@ public static class Misc
             }
         };
 
-        return JsonFormatter.Default.Format(serviceInfo);
+        return JsonSerializer.Serialize(serviceInfo);
     }
 
     private static string GetLocalIPAddress()
