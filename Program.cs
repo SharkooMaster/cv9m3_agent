@@ -27,6 +27,7 @@ builder.Services.AddSwaggerGen();
 
 // Background services
 builder.Services.AddHostedService<AgentLifeCycleService>();
+builder.Services.AddHostedService<AgentRuntimeService>();
 
 var app = builder.Build();
 
