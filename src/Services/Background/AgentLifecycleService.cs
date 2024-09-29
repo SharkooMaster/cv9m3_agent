@@ -16,7 +16,9 @@ public class AgentLifeCycleService : IHostedService
     public async Task StartAsync(CancellationToken cancellationToken)
     {
         string _id = Misc.GenerateId();
+        Console.WriteLine($"INFO::AgentLifecycleService: Registering to etcd with id {_id}");
 		await _etcdClientService.RegisterAgentAsync(_id, Misc.GetServiceInfo("agent", _id));
+        Console.WriteLine($"INFO::AgentLifecycleService: Registered to etcd");
     }
 
     public Task StopAsync(CancellationToken cancellationToken)
