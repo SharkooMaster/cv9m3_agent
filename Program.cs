@@ -1,7 +1,10 @@
 using System.Net;
+using System.Net.Security;
 using Agent.Services;
 using Agent.Services.Etcd;
 using dotnet_etcd;
+using Grpc.Core;
+using Grpc.Net.Client;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.Extensions.Logging;
 
@@ -55,7 +58,10 @@ void ConfigureServices(IServiceCollection services)
         var configuration = provider.GetRequiredService<IConfiguration>();
         var etcdUrl = configuration["Etcd:Url"];
 		Console.WriteLine($"etcd_url: {etcdUrl}");
-		return new EtcdClient(etcdUrl);
+
+		return new EtcdClient(etcdUrl, configureChannelOptions: (options => {
+            options.Credentials = ChannelCredentials.Insecure;
+        }));
     });
     services.AddSingleton<IEtcdClientService, EtcdClientService>();
 	Console.WriteLine("Connected iEtcd");
