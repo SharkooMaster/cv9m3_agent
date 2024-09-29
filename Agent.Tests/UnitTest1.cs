@@ -1,4 +1,4 @@
-using Agent.Misc;
+using Agent.Modules.Misc;
 
 namespace Agent.Tests;
 

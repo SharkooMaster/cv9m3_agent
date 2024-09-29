@@ -1,8 +1,14 @@
 using System.Net;
+using Agent.Services;
+using Agent.Services.Etcd;
+using dotnet_etcd;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
+using Microsoft.Extensions.Logging;
 
 var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddGrpc();
+
+ConfigureServices(builder.Services);
 
 // Configure Kestrel to allow HTTP/2 without TLS
 builder.WebHost.ConfigureKestrel(options =>
@@ -16,6 +22,9 @@ builder.WebHost.ConfigureKestrel(options =>
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
+// Background services
+builder.Services.AddHostedService<AgentLifeCycleService>();
+
 var app = builder.Build();
 
 if (app.Environment.IsDevelopment())
@@ -23,6 +32,9 @@ if (app.Environment.IsDevelopment())
     app.UseSwagger();
     app.UseSwaggerUI();
 }
+
+// TODO: Uncomment for production
+// app.UseHttpsRedirection();
 
 //app.UseHttpsRedirection();
 app.UseRouting();
@@ -34,3 +46,17 @@ app.MapGet("/", () =>
 });
 
 app.Run();
+
+void ConfigureServices(IServiceCollection services)
+{
+    Console.WriteLine("Initiating iEtcd");
+
+    services.AddSingleton<EtcdClient>(provider => {
+        var configuration = provider.GetRequiredService<IConfiguration>();
+        var etcdUrl = configuration["Etcd:Url"];
+		Console.WriteLine($"etcd_url: {etcdUrl}");
+		return new EtcdClient(etcdUrl);
+    });
+    services.AddSingleton<IEtcdClientService, EtcdClientService>();
+	Console.WriteLine("Connected iEtcd");
+}
