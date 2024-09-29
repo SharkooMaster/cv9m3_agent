@@ -15,7 +15,7 @@ namespace Agent.Services.Etcd
             _etcdClient = etcdClient;
         }
 
-        public async Task RegisterAgentAsync(string agentId, string data)
+        public async Task<long> RegisterAgentLeaseAsync(string agentId, string data)
         {
             var leaseGrantResponse = await _etcdClient.LeaseGrantAsync(new LeaseGrantRequest{ TTL = 10 });
             var leaseID = leaseGrantResponse.ID;
@@ -25,11 +25,24 @@ namespace Agent.Services.Etcd
                 Value = ByteString.CopyFromUtf8(data),
                 Lease = leaseID
             });
+
+            return leaseID;
         }
 
-        public async Task UpdateHeartBeatAsync(string agentId)
+        public async Task RegisterAgentAsync(string agentId, string data)
         {
-            await _etcdClient.PutAsync($"/agents/{agentId}/heartbeat", DateTime.UtcNow.ToString());
+            await _etcdClient.PutAsync($"/agents/{agentId}", data);
+        }
+
+        public async Task UpdateHeartBeatAsync(long leaseId, CancellationToken stoppingToken)
+        {
+            await _etcdClient.LeaseKeepAlive(leaseId, stoppingToken);
+        }
+
+        public async Task DeregisterAgentLeaseAsync(string agentId, long leaseId)
+        {
+            await _etcdClient.LeaseRevokeAsync(new LeaseRevokeRequest{ ID = leaseId });
+            await _etcdClient.DeleteAsync($"/agents/{agentId}");
         }
 
         public async Task DeregisterAgentAsync(string agentId)
