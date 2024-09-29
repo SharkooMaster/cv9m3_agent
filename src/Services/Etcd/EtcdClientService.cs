@@ -1,6 +1,8 @@
 
 using System.Data;
 using dotnet_etcd;
+using Etcdserverpb;
+using Google.Protobuf;
 
 namespace Agent.Services.Etcd
 {
@@ -15,7 +17,14 @@ namespace Agent.Services.Etcd
 
         public async Task RegisterAgentAsync(string agentId, string data)
         {
-            await _etcdClient.PutAsync($"/agents/{agentId}", data);
+            var leaseGrantResponse = await _etcdClient.LeaseGrantAsync(new LeaseGrantRequest{ TTL = 10 });
+            var leaseID = leaseGrantResponse.ID;
+
+            await _etcdClient.PutAsync(new PutRequest{
+                Key = ByteString.CopyFromUtf8($"/agents/{agentId}"),
+                Value = ByteString.CopyFromUtf8(data),
+                Lease = leaseID
+            });
         }
 
         public async Task UpdateHeartBeatAsync(string agentId)
