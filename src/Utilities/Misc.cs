@@ -5,6 +5,17 @@ using System.Net;
 
 namespace Agent.Utils.Misc;
 
+public class ServiceData
+{
+    public string id          { get; set; }
+    public string name        { get; set; }
+    public string host        { get; set; }
+    public string port        { get; set; }
+    public string url         { get; set; }
+    public string healthCheck { get; set; }
+    public string version     { get; set; }
+}
+
 public static class Misc
 {
     public static string GenerateId()
@@ -20,14 +31,14 @@ public static class Misc
         string _env = "dev";
 
         var serviceInfo = new {
-            id = service_id,
-            name = service_name,
-            host =  _host,
-            port = _port,
-            url = $"http://{_host}:{_port}",
+            id          = service_id,
+            name        = service_name,
+            host        =  _host,
+            port        = _port,
+            url         = $"http://{_host}:{_port}",
             healthCheck = $"http://{_host}:{_port}/health",
-            version = _version,
-            metadata = new {
+            version     = _version,
+            metadata    = new {
                 environment = _env,
             }
         };

@@ -1,4 +1,5 @@
 using Grpc.Core;
+using Grpc.Net.Client;
 using TpInternalService;
 
 namespace Agent.Services.Grpc;
