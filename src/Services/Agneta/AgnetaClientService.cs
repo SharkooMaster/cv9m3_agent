@@ -21,7 +21,11 @@ namespace Agent.Services.Agneta
 
         public AgnetaClientService()
         {
-            _client = new HttpClient();
+            var handler = new HttpClientHandler(){
+                ServerCertificateCustomValidationCallback = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator
+            };
+            
+            _client = new HttpClient(handler);
             _url    = "https://agneta-loadbalancer.default.svc.cluster.local:443";
         }
 
