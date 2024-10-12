@@ -12,7 +12,7 @@ namespace Agent.Services.Agneta
         public string NodeType { get; set; }
         public double LoadScore { get; set; }
         public int Id { get; set; }
-        public JsonElement Data { get; set; }
+        public ServiceData Data { get; set; }
     }
     public class AgnetaClientService : IAgnetaClientService
     {
@@ -24,7 +24,7 @@ namespace Agent.Services.Agneta
             var handler = new HttpClientHandler(){
                 ServerCertificateCustomValidationCallback = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator
             };
-            
+
             _client = new HttpClient(handler);
             _url    = "https://agneta-loadbalancer.default.svc.cluster.local:443";
         }

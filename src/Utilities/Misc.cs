@@ -5,15 +5,21 @@ using System.Net;
 
 namespace Agent.Utils.Misc;
 
+public class Metadata
+{
+    public string Environment { get; set; }
+}
+
 public class ServiceData
 {
-    public string id          { get; set; }
-    public string name        { get; set; }
-    public string host        { get; set; }
-    public string port        { get; set; }
-    public string url         { get; set; }
-    public string healthCheck { get; set; }
-    public string version     { get; set; }
+    public string Id { get; set; }
+    public string Name { get; set; }
+    public string Host { get; set; }
+    public string Port { get; set; }
+    public string Url { get; set; }
+    public string HealthCheck { get; set; }
+    public string Version { get; set; }
+    public Metadata Metadata { get; set; }
 }
 
 public static class Misc
