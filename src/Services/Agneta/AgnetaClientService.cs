@@ -21,7 +21,7 @@ namespace Agent.Services.Agneta
         public AgnetaClientService()
         {
             _client = new HttpClient();
-            _url    = "http://10.108.50.204";
+            _url    = "https://agneta-loadbalancer.default.svc.cluster.local:443";
         }
 
         public async Task<NeighbourData> GetAssignedNeighbour()
