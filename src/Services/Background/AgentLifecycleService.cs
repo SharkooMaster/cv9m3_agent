@@ -34,12 +34,15 @@ public class AgentLifeCycleService : IHostedService
         //Globals.ETCD_LEASE_ID = leaseID;
 
         // Getting target neighbor
-        var nearestNeighbour = await _agnetaClientService.GetAssignedNeighbour();
-        if(nearestNeighbour.Data.TryGetProperty("host", out var temp))
+        try
         {
-            Console.WriteLine($"nearest neighbout: {nearestNeighbour.NodeType};{temp}");
+            var nearestNeighbour = await _agnetaClientService.GetAssignedNeighbour();
+            Console.WriteLine($"nearest neighbout: {nearestNeighbour.NodeType};");
         }
-        else{ Console.WriteLine("ERROR::AgentLifeCycleService: Could not read propery (host) on aquired neighbour"); }
+        catch
+        {
+            Console.WriteLine("ERROR::AgentLifeCycleService: Could not read propery (host) on aquired neighbour");
+        }
     }
 
     public Task StopAsync(CancellationToken cancellationToken)
