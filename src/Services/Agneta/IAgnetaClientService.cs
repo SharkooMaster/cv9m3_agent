@@ -1,9 +1,10 @@
+using Agent.Utils.Misc;
 
 namespace Agent.Services.Agneta
 {
     public interface IAgnetaClientService
     {
-        Task GetAssignedNeighbour();
+        Task<NeighbourData> GetAssignedNeighbour();
         //Task RegisterAgentAsync(String agentId, string data);
         //Task<long> RegisterAgentLeaseAsync(String agentId, string data);
         //Task UpdateHeartBeatAsync(long leaseId, CancellationToken stoppingToken);

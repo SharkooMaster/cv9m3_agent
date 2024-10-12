@@ -21,12 +21,23 @@ namespace Agent.Services.Agneta
         public AgnetaClientService()
         {
             _client = new HttpClient();
-            _url    = "http://192.168.49.2:30209";
+            _url    = "http://10.108.50.204";
         }
 
-        public async Task GetAssignedNeighbour()
+        public async Task<NeighbourData> GetAssignedNeighbour()
         {
-            var response = await _client.GetFromJsonAsync<NeighbourData>($"{_url}/lbs/agent/pop");
+            try
+            {
+                Console.WriteLine("Contacting Agneta: Assign neighbour");
+                var response = await _client.GetFromJsonAsync<NeighbourData>($"{_url}/lbs/agent/pop");
+                Console.WriteLine("Contacting Agneta returned successful");
+                return response;
+            }
+            catch
+            {
+                Console.WriteLine("ERROR::AgnetaClientService: Failed to get assigned neighbour");
+            }
+            return null;
         }
     }
 }
