@@ -9,10 +9,13 @@ namespace Agent.Services.Agneta
 {
     public class NeighbourData
     {
+        [JsonProperty("node_type")]
         public string NodeType { get; set; }
+
+        [JsonProperty("load_score")]
         public double LoadScore { get; set; }
         public int Id { get; set; }
-        public ServiceData Data { get; set; }
+        public string Data { get; set; }
     }
     public class AgnetaClientService : IAgnetaClientService
     {
@@ -41,9 +44,17 @@ namespace Agent.Services.Agneta
                     var jsonResponse = await response.Content.ReadAsStringAsync();
                     Console.WriteLine($"Contacting Agneta returned successful: {jsonResponse}");
 
-                    // Deserialize the JSON response
-                    NeighbourData toReturn = JsonConvert.DeserializeObject<NeighbourData>(jsonResponse);
-                    return toReturn;
+                    if(jsonResponse != null)
+                    {
+                        // Deserialize the JSON response
+                        NeighbourData toReturn = JsonConvert.DeserializeObject<NeighbourData>(jsonResponse);
+                        return toReturn;
+                    }
+                    else
+                    {
+                        Console.WriteLine("ERROR::AgnetaClientService: Failed to ge assigned neighbour. Response not a valid json. Standby");
+                        return null;
+                    }
                 }
                 else
                 {
