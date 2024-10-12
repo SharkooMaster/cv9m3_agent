@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Security;
 using Agent.Services;
+using Agent.Services.Agneta;
 using Agent.Services.Etcd;
 using dotnet_etcd;
 using Grpc.Core;
@@ -53,8 +54,8 @@ app.Run();
 
 void ConfigureServices(IServiceCollection services)
 {
+    /*
     Console.WriteLine("Initiating iEtcd");
-
     services.AddSingleton<EtcdClient>(provider => {
         var configuration = provider.GetRequiredService<IConfiguration>();
         var etcdUrl = configuration["Etcd:Url"];
@@ -66,4 +67,8 @@ void ConfigureServices(IServiceCollection services)
     });
     services.AddSingleton<IEtcdClientService, EtcdClientService>();
 	Console.WriteLine("Connected iEtcd");
+    */
+    Console.WriteLine("Initiating iAgneta");
+    services.AddSingleton<IAgnetaClientService, AgnetaClientService>();
+    Console.WriteLine("Connected iAgneta");
 }

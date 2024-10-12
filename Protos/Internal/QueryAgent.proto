@@ -1,0 +1,40 @@
+syntax = "proto3";
+
+option csharp_namespace = "TpInternalService";
+
+package Internal_QueryAgent;
+
+service QueryAgent
+{
+    rpc Query(QueryRequest) returns (QueryResponse);
+}
+
+// --- REQUEST ---
+message Vector
+{
+    repeated float vec = 1;
+}
+
+message QueryRequest
+{
+  Vector vector = 1;
+  int32 topK = 2;
+}
+
+// --- RESPONSE ---
+message Result
+{
+  float score = 1;
+  bytes chunk = 2;
+  int32 id = 3;
+}
+
+message ResultList
+{
+  repeated Result results = 1;
+}
+
+message QueryResponse
+{
+  repeated ResultList resultLists = 1;
+}
