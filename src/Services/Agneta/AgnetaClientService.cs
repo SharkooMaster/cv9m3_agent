@@ -3,6 +3,7 @@ using System.Data;
 using System.Text.Json;
 using Agent.Utils.Misc;
 using Google.Protobuf;
+using Newtonsoft.Json;
 
 namespace Agent.Services.Agneta
 {
@@ -29,15 +30,29 @@ namespace Agent.Services.Agneta
             try
             {
                 Console.WriteLine("Contacting Agneta: Assign neighbour");
-                var response = await _client.GetFromJsonAsync<NeighbourData>($"{_url}/lbs/agent/pop");
-                Console.WriteLine("Contacting Agneta returned successful");
-                return response;
+                var response = await _client.GetAsync($"{_url}/lbs/agent/pop");
+
+                if (response.IsSuccessStatusCode)
+                {
+                    var jsonResponse = await response.Content.ReadAsStringAsync();
+                    Console.WriteLine($"Contacting Agneta returned successful: {jsonResponse}");
+
+                    // Deserialize the JSON response
+                    NeighbourData toReturn = JsonConvert.DeserializeObject<NeighbourData>(jsonResponse);
+                    return toReturn;
+                }
+                else
+                {
+                    Console.WriteLine($"ERROR::AgnetaClientService: Failed to get assigned neighbour. Status Code: {response.StatusCode}");
+                }
             }
-            catch
+            catch (Exception ex)
             {
-                Console.WriteLine("ERROR::AgnetaClientService: Failed to get assigned neighbour");
+                Console.WriteLine($"ERROR::AgnetaClientService: Failed to get assigned neighbour. Exception: {ex.Message}");
             }
+
             return null;
         }
+
     }
 }
