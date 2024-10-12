@@ -44,7 +44,7 @@ namespace Agent.Services.Agneta
                     var jsonResponse = await response.Content.ReadAsStringAsync();
                     Console.WriteLine($"Contacting Agneta returned successful: {jsonResponse}");
 
-                    if(jsonResponse != null)
+                    if(jsonResponse != null && jsonResponse != "403")
                     {
                         // Deserialize the JSON response
                         NeighbourData toReturn = JsonConvert.DeserializeObject<NeighbourData>(jsonResponse);

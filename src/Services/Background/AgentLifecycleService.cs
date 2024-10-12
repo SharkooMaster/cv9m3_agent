@@ -2,6 +2,7 @@
 using Agent.Services.Agneta;
 using Agent.Services.Etcd;
 using Agent.Utils.Misc;
+using Newtonsoft.Json;
 namespace Agent.Services;
 
 public class AgentLifeCycleService : IHostedService
@@ -37,7 +38,8 @@ public class AgentLifeCycleService : IHostedService
         try
         {
             var nearestNeighbour = await _agnetaClientService.GetAssignedNeighbour();
-            Console.WriteLine($"nearest neighbout: {nearestNeighbour.NodeType};");
+            ServiceData neighbourData = JsonConvert.DeserializeObject<ServiceData>(nearestNeighbour.Data);
+            Console.WriteLine($"nearest neighbout: {neighbourData.Host};");
         }
         catch
         {
