@@ -39,7 +39,11 @@ public class AgentLifeCycleService : IHostedService
         {
             var nearestNeighbour = await _agnetaClientService.GetAssignedNeighbour();
             ServiceData neighbourData = JsonConvert.DeserializeObject<ServiceData>(nearestNeighbour.Data);
-            Console.WriteLine($"nearest neighbout: {neighbourData.Host};");
+
+            Console.WriteLine("-----------------------------------------");
+            Console.WriteLine(JsonConvert.SerializeObject(neighbourData));
+            Console.WriteLine($"nearest neighbour: {neighbourData.Host};");
+            Console.WriteLine("-----------------------------------------");
         }
         catch
         {
