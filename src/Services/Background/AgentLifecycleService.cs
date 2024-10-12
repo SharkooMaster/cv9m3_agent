@@ -6,13 +6,13 @@ namespace Agent.Services;
 
 public class AgentLifeCycleService : IHostedService
 {
-    private readonly IEtcdClientService _etcdClientService;
+    //private readonly IEtcdClientService _etcdClientService;
     private readonly IAgnetaClientService _agnetaClientService;
 
-    public AgentLifeCycleService(IEtcdClientService etcdClientService, IAgnetaClientService agnetaClientService)
+    public AgentLifeCycleService(IAgnetaClientService agnetaClientService)
     {
         Console.WriteLine("INFO::AgentLifecycleService: Initiating AgentLifeCycleService");
-        _etcdClientService = etcdClientService;
+        //_etcdClientService = etcdClientService;
         _agnetaClientService = agnetaClientService;
     }
 
