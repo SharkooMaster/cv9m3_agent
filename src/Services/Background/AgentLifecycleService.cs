@@ -35,8 +35,11 @@ public class AgentLifeCycleService : IHostedService
 
         // Getting target neighbor
         var nearestNeighbour = await _agnetaClientService.GetAssignedNeighbour();
-        nearestNeighbour.Data.TryGetProperty("host", out var temp);
-        Console.WriteLine($"nearest neighbout: {nearestNeighbour.NodeType};{temp}");
+        if(nearestNeighbour.Data.TryGetProperty("host", out var temp))
+        {
+            Console.WriteLine($"nearest neighbout: {nearestNeighbour.NodeType};{temp}");
+        }
+        else{ Console.WriteLine("ERROR::AgentLifeCycleService: Could not read propery (host) on aquired neighbour"); }
     }
 
     public Task StopAsync(CancellationToken cancellationToken)
