@@ -30,6 +30,7 @@ public class AgentLifeCycleService : IHostedService
         // Assigning to global variables
         Globals.ETCD_ID = _id;
         Globals.ETCD_VALUE = _data;
+        Console.WriteLine(_data);
         //Globals.ETCD_LEASE_ID = leaseID;
 
         // Getting target neighbor
