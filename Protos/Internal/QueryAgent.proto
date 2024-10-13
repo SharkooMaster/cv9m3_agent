@@ -17,8 +17,10 @@ message Vector
 
 message QueryRequest
 {
-  Vector vector = 1;
-  int32 topK = 2;
+  string key = 1;
+  Vector vector = 2;
+  int32 topK = 3;
+  float minThresh = 4;
 }
 
 // --- RESPONSE ---
@@ -26,7 +28,7 @@ message Result
 {
   float score = 1;
   bytes chunk = 2;
-  int32 id = 3;
+  int64 id = 3;
 }
 
 message ResultList
