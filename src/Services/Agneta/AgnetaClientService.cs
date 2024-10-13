@@ -3,20 +3,12 @@ using System.Data;
 using System.Text.Json;
 using Agent.Utils.Misc;
 using Google.Protobuf;
+using Agent.Interfaces.Agneta;
+using Agent.Models.Misc;
 using Newtonsoft.Json;
 
 namespace Agent.Services.Agneta
 {
-    public class NeighbourData
-    {
-        [JsonProperty("node_type")]
-        public string NodeType { get; set; }
-
-        [JsonProperty("load_score")]
-        public double LoadScore { get; set; }
-        public int Id { get; set; }
-        public string Data { get; set; }
-    }
     public class AgnetaClientService : IAgnetaClientService
     {
         private readonly HttpClient _client;

@@ -4,6 +4,7 @@ using Agent.Services;
 using Agent.Services.Agneta;
 using Agent.Services.Etcd;
 using Agent.Services.Grpc;
+using Agent.Interfaces.Agneta;
 using dotnet_etcd;
 using Grpc.Core;
 using Grpc.Net.Client;
