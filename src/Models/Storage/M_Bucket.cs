@@ -14,6 +14,7 @@ public class Bucket
 
     public int lastSyncTime = 0;
     public int usageCount = 0;
+    public DateTime lastUsed = DateTime.Now;
     public BucketLocations location = BucketLocations.MEM;
 
     public List<BucketRow> bucketRows = new List<BucketRow>();
