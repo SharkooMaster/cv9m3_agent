@@ -68,6 +68,29 @@ namespace Agent.Services.Agneta
 
             return null;
         }
+        
+        public async Task SendUsageStatistics()
+        {
+            Dictionary<string, string> formData = new Dictionary<string, string>();
+            formData.Add("node_type", "agent");
+            formData.Add("load_score", Misc.GetMemoryUsagePercentage().ToString());
+            formData.Add("data", Misc.GetServiceInfo("agent", Globals.ETCD_ID));
+            formData.Add("max_cnt", "5");
+
+            var content = new FormUrlEncodedContent(formData);
+
+            var request = new HttpRequestMessage(HttpMethod.Post, $"{_url}/lbs/add")
+            {
+                Content = content
+            };
+
+            var response = await _client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
+            
+            if(!response.IsSuccessStatusCode)
+            {
+                Console.WriteLine($"ERROR::AgnetaClientService: Failed to send usage statistics -> {Globals.ETCD_ID}");
+            }
+        }
 
     }
 }

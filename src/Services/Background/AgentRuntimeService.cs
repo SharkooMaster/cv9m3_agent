@@ -1,4 +1,5 @@
 
+using Agent.Services.Agneta;
 using Agent.Services.Etcd;
 using Agent.Utils.Misc;
 namespace Agent.Services;
@@ -6,11 +7,12 @@ namespace Agent.Services;
 public class AgentRuntimeService : BackgroundService
 {
     private readonly IEtcdClientService _etcdClientService;
+    private readonly IAgnetaClientService _agnetaClientService;
 
-    public AgentRuntimeService(IEtcdClientService etcdClientService)
+    public AgentRuntimeService(IAgnetaClientService agnetaClientService)
     {
         Console.WriteLine("INFO::AgentRuntimeService: Initiating AgentRuntimeService");
-        _etcdClientService = etcdClientService;
+        _agnetaClientService = agnetaClientService;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -19,9 +21,8 @@ public class AgentRuntimeService : BackgroundService
         {
             try
             {
-                await _etcdClientService.UpdateHeartBeatAsync(Globals.ETCD_LEASE_ID, stoppingToken);
-                
-                await Task.Delay(TimeSpan.FromSeconds(8), stoppingToken);
+                await _agnetaClientService.SendUsageStatistics();
+                await Task.Delay(TimeSpan.FromSeconds(10), stoppingToken);
             }
             catch (TaskCanceledException)
             {
@@ -29,7 +30,7 @@ public class AgentRuntimeService : BackgroundService
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Error keeping lease alive: {ex.Message}");
+                Console.WriteLine($"Error keeping runtime jobs alive: {ex.Message}");
             }
         }
 
@@ -40,11 +41,11 @@ public class AgentRuntimeService : BackgroundService
         try
         {
             await _etcdClientService.DeregisterAgentLeaseAsync(Globals.ETCD_ID, Globals.ETCD_LEASE_ID);
-            Console.WriteLine("INFO::AgentRuntimeService: Agent lease revoked and stopped gracefully.");
+            Console.WriteLine("INFO::AgentRuntimeService: Agent runtime stopped gracefully.");
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"ERROR::AgentRuntimeService: Error revoking lease: {ex.Message}");
+            Console.WriteLine($"ERROR::AgentRuntimeService: Error stopping runtime: {ex.Message}");
         }
 
         await base.StopAsync(stoppingToken);
