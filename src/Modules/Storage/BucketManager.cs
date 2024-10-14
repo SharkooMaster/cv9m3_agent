@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using Agent.Models.Storage;
+using Google.Protobuf;
 using TpInternalService;
 namespace Agent.Modules.Storage;
 
@@ -17,5 +18,26 @@ public static class BucketManager
         }
 
         return results;
+    }
+
+    public static async Task Store(StoreRequest request)
+    {
+        if(!buckets.ContainsKey(request.Key))
+        {
+            Bucket newBucket = new Bucket(){ bucketKey = request.Key };
+            bool isCreated = buckets.TryAdd(request.Key, newBucket);
+
+            if(!isCreated)
+            {
+                Console.WriteLine("ERROR::BucketManager: Store() -> Failed to create a new bucket.");
+                return;
+            }
+        }
+
+        buckets[request.Key].bucketRows.Add(new BucketRow(){
+            id = request.Id,
+            chunk = request.Chunk.ToArray(),
+            vector = request.Vector.Vec.ToArray()
+        });
     }
 }
