@@ -1,0 +1,28 @@
+syntax = "proto3";
+
+option csharp_namespace = "TpInternalService";
+
+package Internal_StoreBucketRow;
+
+service StoreBucketRowAgent
+{
+    rpc StoreBucketRow(StoreRequest) returns (StoreResponse);
+}
+
+message VectorArr
+{
+    repeated float vec = 1;
+}
+
+message StoreRequest
+{
+    int64 id = 1;
+    VectorArr vector = 2;
+    bytes chunk = 3;
+    string key = 4;
+}
+
+message StoreResponse
+{
+    bool status = 1;
+}

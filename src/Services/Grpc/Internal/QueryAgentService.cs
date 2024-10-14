@@ -1,3 +1,5 @@
+using Agent.Modules.Storage;
+using Google.Protobuf.Collections;
 using Grpc.Core;
 using Grpc.Net.Client;
 using TpInternalService;
@@ -12,8 +14,16 @@ public class QueryAgentService : QueryAgent.QueryAgentBase
         _logger = logger;
     }
 
-    public override Task<QueryResponse> Query(QueryRequest request, ServerCallContext context)
+    public override async Task<QueryResponse> Query(QueryRequest request, ServerCallContext context)
     {
-        return base.Query(request, context);
+        List<Result> searchResult = await BucketManager.Search(request);
+
+        ResultList resultList = new ResultList();
+        resultList.Results.AddRange(searchResult);
+
+        QueryResponse response = new QueryResponse();
+        response.ResultLists.Add(resultList);
+
+        return response;
     }
 }
