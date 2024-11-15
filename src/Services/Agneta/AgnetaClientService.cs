@@ -6,15 +6,24 @@ using Google.Protobuf;
 using Agent.Interfaces.Agneta;
 using Agent.Models.Misc;
 using Newtonsoft.Json;
+using System.Net.WebSockets;
+using System.Text;
 
 namespace Agent.Services.Agneta
 {
+    public class CloseSocketMessage
+    {
+        public string cmd {get;set;}
+    }
+
     public class AgnetaClientService : IAgnetaClientService
     {
         private readonly HttpClient _client;
         private readonly string _url;
+        private readonly Uri _uri;
+        private ClientWebSocket _client_ws;
 
-        public AgnetaClientService()
+        public AgnetaClientService(string uri)
         {
             var handler = new HttpClientHandler(){
                 ServerCertificateCustomValidationCallback = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator
@@ -22,6 +31,7 @@ namespace Agent.Services.Agneta
 
             _client = new HttpClient(handler);
             _url    = "https://agneta-loadbalancer.default.svc.cluster.local:443";
+            _uri = new Uri(uri);
         }
 
         public async Task<NeighbourData> GetAssignedNeighbour()
@@ -84,5 +94,38 @@ namespace Agent.Services.Agneta
             }
         }
 
+        public async Task ConnectAsync()
+        {
+            _client_ws.Options.RemoteCertificateValidationCallback = (sender, certificate, chain, sslPolicyErrors) => true;
+            if(_client_ws.State != WebSocketState.Open)
+            {
+                await _client_ws.ConnectAsync(_uri, CancellationToken.None);
+            }
+        }
+
+        public async Task SendMessageAsync(string message)
+        {
+            if(_client_ws.State != WebSocketState.Open)
+            {
+                await ConnectAsync();
+            }
+
+            var buffer = Encoding.UTF8.GetBytes(message);
+            await _client_ws.SendAsync(new ArraySegment<byte>(buffer), WebSocketMessageType.Text, true, CancellationToken.None);
+            Console.WriteLine($"Log sent to Agneta: {message}");
+        }
+
+        public async Task<string> RecieveMessageAsync()
+        {
+            var buffer = new byte[1024];
+            var result = await _client_ws.ReceiveAsync(new ArraySegment<byte>(buffer), CancellationToken.None);
+            return Encoding.UTF8.GetString(buffer, 0, result.Count);
+        }
+
+        public async Task SendCloseAsync()
+        {
+            CloseSocketMessage csm = new CloseSocketMessage(){ cmd = "unsubscribe_logs" };
+            await SendMessageAsync(JsonConvert.SerializeObject(csm));
+        }
     }
 }

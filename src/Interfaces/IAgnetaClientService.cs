@@ -8,5 +8,10 @@ namespace Agent.Interfaces.Agneta
     {
         Task<NeighbourData> GetAssignedNeighbour();
         Task SendUsageStatistics();
+
+        Task ConnectAsync();
+        Task SendMessageAsync(string message);
+        Task<string> RecieveMessageAsync();
+        Task SendCloseAsync();
     }
 }
