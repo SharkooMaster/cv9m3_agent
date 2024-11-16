@@ -2,6 +2,7 @@
 using Agent.Services.Agneta;
 using Agent.Services.Etcd;
 using Agent.Utils.Misc;
+using Agent.Utils.Globals;
 using Agent.Interfaces.Agneta;
 namespace Agent.Services;
 

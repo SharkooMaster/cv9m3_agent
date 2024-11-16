@@ -2,6 +2,7 @@
 using System.Data;
 using System.Text.Json;
 using Agent.Utils.Misc;
+using Agent.Utils.Globals;
 using Google.Protobuf;
 using Agent.Interfaces.Agneta;
 using Agent.Models.Misc;

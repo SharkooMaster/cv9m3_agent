@@ -10,7 +10,7 @@ public class PushoverClientService : IPushoverClientService
     private string _user_key {get;set;}
     public PushoverClientService()
     {
-        _token    = Environment.GetEnvironmentVariable("PUSHOVER_TOKEN");
+        _token    = Environment.GetEnvironmentVariable("PUSHOVER_TOKEN_AGENT");
         _user_key = Environment.GetEnvironmentVariable("PUSHOVER_USER_KEY");
 
         if(_token == "" || _user_key == "")

@@ -10,6 +10,10 @@ using Grpc.Core;
 using Grpc.Net.Client;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.Extensions.Logging;
+using Agent.Services.PushOver;
+using Agent.Modules.Pushover;
+using Agent.Modules.Agneta;
+using Agent.Utils.Globals;
 
 var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddGrpc();
@@ -29,10 +33,17 @@ builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
 // Background services
-builder.Services.AddHostedService<AgentLifeCycleService>();
-builder.Services.AddHostedService<AgentRuntimeService>();
+//builder.Services.AddHostedService<AgentLifeCycleService>();
+//builder.Services.AddHostedService<AgentRuntimeService>();
 
 var app = builder.Build();
+
+var pushoverClientService = app.Services.GetRequiredService<PushoverClientService>();
+PushoverHandler.SetInstance(pushoverClientService);
+
+var agnetaClientService = app.Services.GetRequiredService<AgnetaClientService>();
+//await agnetaClientService.ConnectAsync();
+AgnetaHandler.SetInstance(agnetaClientService);
 
 if (app.Environment.IsDevelopment())
 {
@@ -47,13 +58,16 @@ app.UseRouting();
 
 app.MapGrpcService<GreeterService>();
 app.MapGrpcService<QueryAgentService>();
+
 app.MapGet("/", () =>{ return "Hello world"; });
+
+PushoverHandler.PushNotification($"Gateway:{Globals.ETCD_ID}: Running");
 
 app.Run();
 
+await AgnetaHandler.Close();
 void ConfigureServices(IServiceCollection services)
 {
-    Console.WriteLine("Initiating iAgneta");
     services.AddSingleton<AgnetaClientService>(new AgnetaClientService("wss://agneta-loadbalancer.default.svc.cluster.local/log/ws"));
-    Console.WriteLine("Connected iAgneta");
+    services.AddSingleton<PushoverClientService>(new PushoverClientService());
 }

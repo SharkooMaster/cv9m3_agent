@@ -38,7 +38,7 @@ public static class AgnetaHandler
         {
             LogMessage _log = new LogMessage();
             _log.ClientKey = Globals.ETCD_ID.ToString();
-            _log.ClientType = "Gateway";
+            _log.ClientType = "Agent";
             _log.LogLevel = _level;
             _log.LogMessageText = _message;
 
