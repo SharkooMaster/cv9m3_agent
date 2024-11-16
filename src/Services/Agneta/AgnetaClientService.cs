@@ -97,9 +97,9 @@ namespace Agent.Services.Agneta
 
         public async Task ConnectAsync()
         {
-            _client_ws.Options.RemoteCertificateValidationCallback = (sender, certificate, chain, sslPolicyErrors) => true;
             if(_client_ws.State != WebSocketState.Open)
             {
+                _client_ws.Options.RemoteCertificateValidationCallback = (sender, certificate, chain, sslPolicyErrors) => true;
                 await _client_ws.ConnectAsync(_uri, CancellationToken.None);
             }
         }
