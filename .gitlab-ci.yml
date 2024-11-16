@@ -25,7 +25,7 @@ build:
   before_script:
     - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin $CI_REGISTRY
   script:
-    - docker build -t registry.gitlab.com/tpvdb/tpvdb/agent .
+    - docker build --build-arg PUCHOVER_USER_KEY=${PUCHOVER_USER_KEY} --build-arg PUSHOVER_TOKEN_AGENT=${PUSHOVER_TOKEN} -t registry.gitlab.com/tpvdb/tpvdb/agent .
     - docker push registry.gitlab.com/tpvdb/tpvdb/agent
   only:
     - dev
@@ -36,5 +36,6 @@ deploy:
     - echo "User $(whoami)"
     - kubectl get pods
     - kubectl set image deployment/agent-deployment agent=registry.gitlab.com/tpvdb/tpvdb/agent --record
+    - kubectl rollout restart deployment/agent-deployment
   only:
     - dev
