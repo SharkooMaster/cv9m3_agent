@@ -33,8 +33,8 @@ builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
 // Background services
-//builder.Services.AddHostedService<AgentLifeCycleService>();
-//builder.Services.AddHostedService<AgentRuntimeService>();
+builder.Services.AddHostedService<AgentLifeCycleService>();
+builder.Services.AddHostedService<AgentRuntimeService>();
 
 var app = builder.Build();
 
@@ -42,7 +42,7 @@ var pushoverClientService = app.Services.GetRequiredService<PushoverClientServic
 PushoverHandler.SetInstance(pushoverClientService);
 
 var agnetaClientService = app.Services.GetRequiredService<AgnetaClientService>();
-//await agnetaClientService.ConnectAsync();
+await agnetaClientService.ConnectAsync();
 AgnetaHandler.SetInstance(agnetaClientService);
 
 if (app.Environment.IsDevelopment())

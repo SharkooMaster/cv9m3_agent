@@ -52,6 +52,11 @@ public static class AgnetaHandler
         }
     }
 
+    public static async Task SendUsageStats()
+    {
+        await _instance.SendUsageStatistics();
+    }
+
     public static async Task Close()
     {
         await _instance.SendCloseAsync();
