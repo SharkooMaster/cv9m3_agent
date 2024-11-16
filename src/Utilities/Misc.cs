@@ -3,6 +3,7 @@ using Google.Protobuf;
 using System.Text.Json;
 using System.Net;
 using Agent.Models.Misc;
+using System.Numerics;
 
 namespace Agent.Utils.Misc;
 
@@ -88,4 +89,26 @@ public static class Misc
         var parts = line.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
         return double.Parse(parts[1]) / 1024;
     }
+
+    private static BigInteger ConvertBitStringToBigInteger(string bitString)
+    {
+        return Convert.ToUInt64(bitString, 2);
+    }
+
+    public static bool IsKeyInRange(string startKey, string endKey, string incomingKey)
+    {
+        BigInteger startValue   = ConvertBitStringToBigInteger(startKey);
+        BigInteger endValue     = ConvertBitStringToBigInteger(endKey);
+        BigInteger keyValue     = ConvertBitStringToBigInteger(incomingKey);
+
+        if (startValue <= endValue)
+        {
+            return keyValue >= startValue && keyValue <= endValue;
+        }
+        else
+        {
+            return keyValue >= startValue || keyValue <= endValue;
+        }
+    }
+
 }

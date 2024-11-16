@@ -1,5 +1,8 @@
 
+using System.Numerics;
+
 namespace Agent.Utils.Globals;
+
 
 public static class Globals
 {
@@ -9,4 +12,7 @@ public static class Globals
     public static long ETCD_LEASE_ID = -1;
 
     public static string AgentsLoadbalancer = "http://agent-loadbalancer.default.svc.cluster.local:5000";
+
+    public static string[] KEYS = new string[2] { "" , "" };
+    public static Vector2 KEY_RANGE = new Vector2(0, 10);
 }
