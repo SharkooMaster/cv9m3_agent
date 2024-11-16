@@ -10,6 +10,10 @@ using Grpc.Core;
 using Grpc.Net.Client;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.Extensions.Logging;
+using Agent.Services.PushOver;
+using Agent.Modules.Pushover;
+using Agent.Modules.Agneta;
+using Agent.Utils.Globals;
 
 var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddGrpc();
@@ -19,8 +23,8 @@ ConfigureServices(builder.Services);
 // Configure Kestrel to allow HTTP/2 without TLS
 builder.WebHost.ConfigureKestrel(options =>
 {
-    options.Listen(IPAddress.Any, 5000, o => o.Protocols = HttpProtocols.Http2);
-    options.Listen(IPAddress.Any, 5001, o => o.Protocols = HttpProtocols.Http1);
+    options.ListenAnyIP(5000, o => o.Protocols = HttpProtocols.Http2);
+    options.ListenAnyIP(5001, o => o.Protocols = HttpProtocols.Http1);
     //options.ListenLocalhost(5000, o => o.Protocols = HttpProtocols.Http2);
     //options.ListenLocalhost(5001, o => o.Protocols = HttpProtocols.Http1AndHttp2);
 });
@@ -33,6 +37,13 @@ builder.Services.AddHostedService<AgentLifeCycleService>();
 builder.Services.AddHostedService<AgentRuntimeService>();
 
 var app = builder.Build();
+
+var pushoverClientService = app.Services.GetRequiredService<PushoverClientService>();
+PushoverHandler.SetInstance(pushoverClientService);
+
+var agnetaClientService = app.Services.GetRequiredService<AgnetaClientService>();
+await agnetaClientService.ConnectAsync();
+AgnetaHandler.SetInstance(agnetaClientService);
 
 if (app.Environment.IsDevelopment())
 {
@@ -47,13 +58,16 @@ app.UseRouting();
 
 app.MapGrpcService<GreeterService>();
 app.MapGrpcService<QueryAgentService>();
+
 app.MapGet("/", () =>{ return "Hello world"; });
+
+PushoverHandler.PushNotification($"Gateway:{Globals.ETCD_ID}: Running");
 
 app.Run();
 
+await AgnetaHandler.Close();
 void ConfigureServices(IServiceCollection services)
 {
-    Console.WriteLine("Initiating iAgneta");
-    services.AddSingleton<IAgnetaClientService, AgnetaClientService>();
-    Console.WriteLine("Connected iAgneta");
+    services.AddSingleton<AgnetaClientService>(new AgnetaClientService("wss://agneta-loadbalancer.default.svc.cluster.local/log/ws"));
+    services.AddSingleton<PushoverClientService>(new PushoverClientService());
 }

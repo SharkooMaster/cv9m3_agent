@@ -3,6 +3,7 @@ using Agent.Services.Agneta;
 using Agent.Interfaces.Agneta;
 using Agent.Services.Etcd;
 using Agent.Utils.Misc;
+using Agent.Utils.Globals;
 using Newtonsoft.Json;
 using Agent.Models.Misc;
 namespace Agent.Services;

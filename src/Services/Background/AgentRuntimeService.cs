@@ -2,18 +2,18 @@
 using Agent.Services.Agneta;
 using Agent.Services.Etcd;
 using Agent.Utils.Misc;
+using Agent.Utils.Globals;
 using Agent.Interfaces.Agneta;
+using Agent.Modules.Agneta;
 namespace Agent.Services;
 
 public class AgentRuntimeService : BackgroundService
 {
-    private readonly IEtcdClientService _etcdClientService;
-    private readonly IAgnetaClientService _agnetaClientService;
+    private readonly IEtcdClientService? _etcdClientService;
 
-    public AgentRuntimeService(IAgnetaClientService agnetaClientService)
+    public AgentRuntimeService()
     {
         Console.WriteLine("INFO::AgentRuntimeService: Initiating AgentRuntimeService");
-        _agnetaClientService = agnetaClientService;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -22,7 +22,7 @@ public class AgentRuntimeService : BackgroundService
         {
             try
             {
-                await _agnetaClientService.SendUsageStatistics();
+                await AgnetaHandler.SendUsageStats();
                 await Task.Delay(TimeSpan.FromSeconds(10), stoppingToken);
             }
             catch (TaskCanceledException)
@@ -41,7 +41,6 @@ public class AgentRuntimeService : BackgroundService
     {
         try
         {
-            await _etcdClientService.DeregisterAgentLeaseAsync(Globals.ETCD_ID, Globals.ETCD_LEASE_ID);
             Console.WriteLine("INFO::AgentRuntimeService: Agent runtime stopped gracefully.");
         }
         catch (Exception ex)
