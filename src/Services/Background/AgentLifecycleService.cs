@@ -6,18 +6,16 @@ using Agent.Utils.Misc;
 using Agent.Utils.Globals;
 using Newtonsoft.Json;
 using Agent.Models.Misc;
+using Agent.Modules.Agneta;
 namespace Agent.Services;
 
 public class AgentLifeCycleService : IHostedService
 {
     //private readonly IEtcdClientService _etcdClientService;
-    private readonly IAgnetaClientService _agnetaClientService;
-
-    public AgentLifeCycleService(IAgnetaClientService agnetaClientService)
+    public AgentLifeCycleService()
     {
         Console.WriteLine("INFO::AgentLifecycleService: Initiating AgentLifeCycleService");
         //_etcdClientService = etcdClientService;
-        _agnetaClientService = agnetaClientService;
     }
 
     public async Task StartAsync(CancellationToken cancellationToken)
@@ -32,7 +30,7 @@ public class AgentLifeCycleService : IHostedService
         // Getting target neighbor
         try
         {
-            var nearestNeighbour = await _agnetaClientService.GetAssignedNeighbour();
+            var nearestNeighbour = await AgnetaHandler.GetNeighbour();
             ServiceData neighbourData = JsonConvert.DeserializeObject<ServiceData>(nearestNeighbour.Data);
         }
         catch

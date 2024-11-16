@@ -42,7 +42,7 @@ var pushoverClientService = app.Services.GetRequiredService<PushoverClientServic
 PushoverHandler.SetInstance(pushoverClientService);
 
 var agnetaClientService = app.Services.GetRequiredService<AgnetaClientService>();
-await agnetaClientService.ConnectAsync();
+//await agnetaClientService.ConnectAsync();
 AgnetaHandler.SetInstance(agnetaClientService);
 
 if (app.Environment.IsDevelopment())
@@ -61,7 +61,7 @@ app.MapGrpcService<QueryAgentService>();
 
 app.MapGet("/", () =>{ return "Hello world"; });
 
-PushoverHandler.PushNotification($"Gateway:{Globals.ETCD_ID}: Running");
+PushoverHandler.PushNotification($"Agent:{Globals.ETCD_ID}: Running");
 
 app.Run();
 

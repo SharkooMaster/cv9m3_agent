@@ -1,3 +1,4 @@
+using Agent.Models.Misc;
 using Agent.Modules.Pushover;
 using Agent.Services.Agneta;
 using Agent.Utils.Globals;
@@ -55,6 +56,11 @@ public static class AgnetaHandler
     public static async Task SendUsageStats()
     {
         await _instance.SendUsageStatistics();
+    }
+
+    public static async Task<NeighbourData> GetNeighbour()
+    {
+        return await _instance.GetAssignedNeighbour();
     }
 
     public static async Task Close()
