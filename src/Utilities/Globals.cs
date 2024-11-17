@@ -13,6 +13,7 @@ public static class Globals
 
     public static string AgentsLoadbalancer = "http://agent-loadbalancer.default.svc.cluster.local:5000";
 
-    public static string[] KEYS = new string[2] { "" , "" };
+    public static string KEY_MIN = "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000";
+    public static string KEY_MAX = "11111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111";
     public static Vector2 KEY_RANGE = new Vector2(0, 10);
 }
