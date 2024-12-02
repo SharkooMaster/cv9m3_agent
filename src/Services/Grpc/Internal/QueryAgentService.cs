@@ -1,3 +1,4 @@
+using Agent.Modules.Agneta;
 using Agent.Modules.Storage;
 using Google.Protobuf.Collections;
 using Grpc.Core;
@@ -16,6 +17,7 @@ public class QueryAgentService : QueryAgent.QueryAgentBase
 
     public override async Task<QueryResponse> Query(QueryRequest request, ServerCallContext context)
     {
+        await AgnetaHandler.Log(0, "Recieved QueryAgent");
         List<Result> searchResult = await BucketManager.Search(request);
 
         ResultList resultList = new ResultList();
@@ -24,6 +26,7 @@ public class QueryAgentService : QueryAgent.QueryAgentBase
         QueryResponse response = new QueryResponse();
         response.ResultLists.Add(resultList);
 
+        await AgnetaHandler.Log(0, "Responding");
         return response;
     }
 }
