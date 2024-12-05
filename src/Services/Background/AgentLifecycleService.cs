@@ -32,6 +32,7 @@ public class AgentLifeCycleService : IHostedService
         {
             var nearestNeighbour = await AgnetaHandler.GetNeighbour();
             ServiceData neighbourData = JsonConvert.DeserializeObject<ServiceData>(nearestNeighbour.Data);
+            Console.WriteLine(nearestNeighbour);
         }
         catch
         {
