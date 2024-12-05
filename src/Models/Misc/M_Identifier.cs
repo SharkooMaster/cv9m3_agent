@@ -1,3 +1,5 @@
+using Newtonsoft.Json;
+
 namespace Agent.Models.Misc;
 
 public class Metadata
@@ -15,4 +17,9 @@ public class ServiceData
     public string HealthCheck { get; set; }
     public string Version { get; set; }
     public Metadata Metadata { get; set; }
+
+    public override string ToString()
+    {
+        return JsonConvert.SerializeObject(this).ToString();
+    }
 }

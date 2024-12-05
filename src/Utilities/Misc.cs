@@ -37,7 +37,7 @@ public static class Misc
         return JsonSerializer.Serialize(serviceInfo);
     }
 
-    private static string GetLocalIPAddress()
+    public static string GetLocalIPAddress()
     {
         string localIP = string.Empty;
         try
