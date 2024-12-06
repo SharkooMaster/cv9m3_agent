@@ -4,6 +4,8 @@ stages:
   - build
   - push
   - deploy
+variables:
+  CI_DEBUG_TRACE: "true"
 
 # Test Stage
 test:
