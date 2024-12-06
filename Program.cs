@@ -61,6 +61,16 @@ app.MapGrpcService<QueryAgentService>();
 
 app.MapGet("/", () =>{ return "Hello world"; });
 
+app.MapGet("/finger_table", () =>{
+    string rows = "";
+    foreach (var item in Globals.DHT_NODE.FingerTable)
+    {
+        rows += $"<tr><td>{item.Key.ToString()}</td><td>{item.Value}</td></tr>";
+    }
+
+    return "<!doctype html> <html> <head><title>home</title></head> <body><table><tr><th>key</th><th>val</th></tr>${rows}</table></body> </html>";
+});
+
 PushoverHandler.PushNotification($"Agent:{Globals.ETCD_ID}: Running");
 
 app.Run();

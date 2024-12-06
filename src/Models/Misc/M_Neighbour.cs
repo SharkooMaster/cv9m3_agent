@@ -5,6 +5,9 @@ namespace Agent.Models.Misc;
 
 public class NeighbourData
 {
+    [JsonProperty("node_id")]
+    public string NodeID { get; set; }
+
     [JsonProperty("node_type")]
     public string NodeType { get; set; }
 
