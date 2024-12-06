@@ -61,14 +61,47 @@ app.MapGrpcService<QueryAgentService>();
 
 app.MapGet("/", () =>{ return "Hello world"; });
 
-app.MapGet("/finger_table", () =>{
-    string rows = "";
-    foreach (var item in Globals.DHT_NODE.FingerTable)
-    {
-        rows += $"<tr><td>{item.Key.ToString()}</td><td>{item.Value}</td></tr>";
-    }
+app.MapGet("/finger_table", () =>
+{
+    // Build rows using LINQ for readability
+    var rows = string.Join("", Globals.DHT_NODE.FingerTable.Select(
+        item => $"<tr><td>{item.Key}</td><td>{item.Value}</td></tr>"
+    ));
 
-    return "<!doctype html> <html> <head><title>home</title></head> <body><table><tr><th>key</th><th>val</th></tr>${rows}</table></body> </html>";
+    // Use a string literal for the HTML structure
+    var html = $@"
+        <!doctype html>
+        <html>
+        <head>
+            <title>Finger Table</title>
+            <style>
+                table {{
+                    border-collapse: collapse;
+                    width: 50%;
+                }}
+                th, td {{
+                    border: 1px solid black;
+                    text-align: left;
+                    padding: 8px;
+                }}
+                th {{
+                    background-color: #f2f2f2;
+                }}
+            </style>
+        </head>
+        <body>
+            <h1>Finger Table</h1>
+            <table>
+                <tr>
+                    <th>Key</th>
+                    <th>Value</th>
+                </tr>
+                {rows}
+            </table>
+        </body>
+        </html>";
+
+    return Results.Content(html, "text/html");
 });
 
 PushoverHandler.PushNotification($"Agent:{Globals.ETCD_ID}: Running");
