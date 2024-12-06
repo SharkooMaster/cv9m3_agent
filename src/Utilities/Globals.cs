@@ -1,5 +1,7 @@
 
 using System.Numerics;
+using Agent.Models;
+using Models;
 
 namespace Agent.Utils.Globals;
 
@@ -15,5 +17,6 @@ public static class Globals
 
     public static Vector2 KEY_MIN = new Vector2(0,0);
     public static Vector2 KEY_MAX = new Vector2(1UL << 63, 1UL << 63);
+    public static int FINGER_TABLE_SIZE = 32;
     public static M_DHT_Node DHT_NODE = new M_DHT_Node() { Ip = Misc.Misc.GetLocalIPAddress() };
 }
