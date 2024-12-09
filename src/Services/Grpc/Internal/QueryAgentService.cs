@@ -30,3 +30,17 @@ public class QueryAgentService : QueryAgent.QueryAgentBase
         return response;
     }
 }
+
+public class QueryAgentServiceClient : QueryAgent.QueryAgentClient
+{
+    private readonly ILogger<QueryAgentService> _logger;
+    public QueryAgentServiceClient(ILogger<QueryAgentService> logger)
+    {
+        _logger = logger;
+    }
+
+    public override QueryResponse Query(QueryRequest request, CallOptions options)
+    {
+        return base.Query(request, options);
+    }
+}
