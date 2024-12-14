@@ -28,7 +28,7 @@ message Result
 {
   float score = 1;
   bytes chunk = 2;
-  int64 id = 3;
+  string id = 3;
 }
 
 message ResultList

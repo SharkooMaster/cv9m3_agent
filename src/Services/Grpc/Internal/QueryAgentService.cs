@@ -31,16 +31,35 @@ public class QueryAgentService : QueryAgent.QueryAgentBase
     }
 }
 
-public class QueryAgentServiceClient : QueryAgent.QueryAgentClient
+public class QueryAgentServiceClient
 {
     private readonly ILogger<QueryAgentService> _logger;
-    public QueryAgentServiceClient(ILogger<QueryAgentService> logger)
+    private readonly QueryAgent.QueryAgentClient _client;
+
+    public QueryAgentServiceClient(ILogger<QueryAgentService> logger, string _node_address)
     {
         _logger = logger;
+        var channel = GrpcChannel.ForAddress(_node_address);
+        _client = new QueryAgent.QueryAgentClient(channel);
     }
 
-    public override QueryResponse Query(QueryRequest request, CallOptions options)
+    public async Task<QueryResponse> QueryAsync(string key, float[] vectorData, int topK, float minThresh)
     {
-        return base.Query(request, options);
+        var vector = new Vector
+        {
+            Vec = { vectorData }
+        };
+
+        var request = new QueryRequest
+        {
+            Key = key,
+            Vector = vector,
+            TopK = topK,
+            MinThresh = minThresh
+        };
+
+        var response = await _client.QueryAsync(request);
+
+        return response;
     }
 }

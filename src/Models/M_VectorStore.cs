@@ -82,7 +82,7 @@ public class M_VectorStore
         return vector_id;
     }
 
-    public async Task<List<M_SearchResult>> find_similar(float[] query_vector, int k = 10)
+    public async Task<(List<M_SearchResult>, int)> find_similar(float[] query_vector, int k = 10)
     {
         List<M_SearchResult> to_return = new List<M_SearchResult>();
 
@@ -97,10 +97,11 @@ public class M_VectorStore
             // if so, return empty
             if(!is_in_range)
             {
+                return (to_return, 1);
             }
             else
             {
-                return to_return;
+                return (to_return, 0);
             }
         }
 
@@ -118,6 +119,6 @@ public class M_VectorStore
             }
         }
 
-        return to_return;
+        return (to_return, 0);
     }
 }

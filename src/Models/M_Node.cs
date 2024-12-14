@@ -11,7 +11,8 @@ public class M_Node
         Basic routing
     */
     public int node_id {get;set;}
-    public M_Node successor {get;set;}
-    public M_Node predeccessor {get;set;}
+    public M_Node? successor {get;set;}
+    public M_Node? predeccessor {get;set;}
     public Dictionary<int, M_Node> finger_table = new Dictionary<int, M_Node>();
+    public M_VectorStore? vector_store { get; set; }
 }
