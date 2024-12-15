@@ -22,22 +22,24 @@ public static class BucketManager
 
     public static async Task Store(StoreRequest request)
     {
-        if(!buckets.ContainsKey(request.Key))
-        {
-            Bucket newBucket = new Bucket(){ bucketKey = request.Key };
-            bool isCreated = buckets.TryAdd(request.Key, newBucket);
-
-            if(!isCreated)
+        await Task.Run(()=>{
+            if(!buckets.ContainsKey(request.Key))
             {
-                Console.WriteLine("ERROR::BucketManager: Store() -> Failed to create a new bucket.");
-                return;
-            }
-        }
+                Bucket newBucket = new Bucket(){ bucketKey = request.Key };
+                bool isCreated = buckets.TryAdd(request.Key, newBucket);
 
-        buckets[request.Key].bucketRows.Add(new BucketRow(){
-            id = request.Id,
-            chunk = request.Chunk.ToArray(),
-            vector = request.Vector.Vec.ToArray()
+                if(!isCreated)
+                {
+                    Console.WriteLine("ERROR::BucketManager: Store() -> Failed to create a new bucket.");
+                    return;
+                }
+            }
+
+            buckets[request.Key].bucketRows.Add(new BucketRow(){
+                id = request.Id,
+                chunk = request.Chunk.ToArray(),
+                vector = request.Vector.Vec.ToArray()
+            });
         });
     }
 }
