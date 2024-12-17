@@ -1,16 +1,15 @@
 
+using System.Numerics;
+
 namespace Agent.Models;
 
 public class M_Region
 {
-    public float x_min { get; set; }
-    public float x_max { get; set; }
-
-    public float y_min { get; set; }
-    public float y_max { get; set; }
+    public Vector2 _min { get; set; }
+    public Vector2 _max { get; set; }
 
     public bool in_range(float _x, float _y)
     {
-        return (x_min <= _x && _x <= x_max) && (y_min <= _y && _y <= y_max);
+        return (_min.X <= _x && _x <= _max.X) && (_min.Y <= _y && _y <= _max.Y);
     }
 }
