@@ -62,4 +62,25 @@ public static class NodeUtils
         }
         return to_return;
     }
+
+    public static int HashToRingPosition(string key, int m)
+    {
+        using (SHA256 sha256 = SHA256.Create())
+        {
+            byte[] hashBytes = sha256.ComputeHash(Encoding.UTF8.GetBytes(key));
+
+            var hashValue = new System.Numerics.BigInteger(hashBytes.Reverse().ToArray());
+
+            return (int)(hashValue % (1 << m));
+        }
+    }
+
+    public static bool is_between(int pos, int s, int e)
+    {
+        if(s <= e)
+        {
+            return s < pos && pos <= e;
+        }
+        return pos > s || pos <= e;
+    }
 }
