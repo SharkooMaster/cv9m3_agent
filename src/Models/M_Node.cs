@@ -32,6 +32,22 @@ public class M_Node
     // DATA
     public Dictionary<string, M_VectorBucket> buckets = new Dictionary<string, M_VectorBucket>();
 
+    public M_Node closest_preceding_node(int position)
+    {
+        int[] finger_table_keys = finger_table.Keys.ToArray();
+        for (int i = finger_table.Count; i > 0; i--)
+        {
+            int finger_pos = finger_table_keys[i];
+            M_Node finger_node = finger_table[i];
+            
+            if(NodeUtils.is_between(finger_pos, node_pos, position))
+            {
+                return finger_node;
+            }
+        }
+        return this;
+    }
+
     public void initialize_finger_table(M_Node _bootstrap_node = null)
     {
         if(_bootstrap_node == null)
@@ -47,15 +63,23 @@ public class M_Node
 
     public void join_network(M_Node _bootstrap_node = null)
     {
-        // successor = _bootstrap_node.
+        successor = _bootstrap_node.find_successor(node_pos);
+        M_Node successor_node = _bootstrap_node.successor;
     }
 
-    public string find_successor(int position)
+    public M_Node find_successor(int position)
     {
         if(successor != null && NodeUtils.is_between(position, node_pos, successor.node_pos))
         {
-            return successor.node_ip;
+            return successor;
         }
+
+        M_Node next_node = closest_preceding_node(position);
+        if(next_node == this)
+        {
+            return successor;
+        }
+        // send to next_node a grpc request to find_successor with target position
     }
 
 }
