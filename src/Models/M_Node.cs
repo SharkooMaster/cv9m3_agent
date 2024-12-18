@@ -52,7 +52,7 @@ public class M_Node
 
     public string find_successor(int position)
     {
-        if(NodeUtils.is_between(position, node_pos, successor.node_pos))
+        if(successor != null && NodeUtils.is_between(position, node_pos, successor.node_pos))
         {
             return successor.node_ip;
         }
