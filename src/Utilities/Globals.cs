@@ -15,8 +15,7 @@ public static class Globals
 
     public static string AgentsLoadbalancer = "http://agent-loadbalancer.default.svc.cluster.local:5000";
 
-    public static Vector2 KEY_MIN = new Vector2(0,0);
-    public static Vector2 KEY_MAX = new Vector2(1UL << 63, 1UL << 63);
     public static int FINGER_TABLE_SIZE = 32;
-    public static M_DHT_Node DHT_NODE = new M_DHT_Node() { Ip = Misc.Misc.GetLocalIPAddress() };
+    // public static M_DHT_Node DHT_NODE = new M_DHT_Node() { Ip = Misc.Misc.GetLocalIPAddress() };
+    public static M_Node Self_Node = new M_Node() { node_ip = Misc.Misc.GetLocalIPAddress() };
 }
