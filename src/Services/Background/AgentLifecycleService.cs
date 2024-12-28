@@ -34,15 +34,6 @@ public class AgentLifeCycleService : IHostedService
             var nearestNeighbour = await AgnetaHandler.GetNeighbour();
             if(nearestNeighbour.NodeID == "none")
             {
-                ServiceData _self_sd = JsonConvert.DeserializeObject<ServiceData>(_data);
-
-                // first node
-                for (int i = 0; i < Globals.FINGER_TABLE_SIZE; i++)
-                {
-                    var jumpSize = 1UL << i;
-                    var target = new Vector2(jumpSize, jumpSize);
-                    Globals.DHT_NODE.FingerTable.Add(target, _self_sd);
-                }
             }
             else
             {
