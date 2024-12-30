@@ -26,4 +26,25 @@ public static class NodeService
         _node.id = NodeUtils.generateNodeID();
         throw new NotImplementedException();
     }
+
+    public static async Task<string> FindPeerResponsible(M_Node _node, ulong target)
+    {
+        bool isFound = false;
+        int indexOfResult = -1;
+
+        // Search finger table for a valid peer
+        ulong[] fingerTableKeys = _node.fingerTable.Keys.ToArray();
+        for (int i = _node.fingerTable.Count; i > 0; i--)
+        {
+            if(NodeUtils.inBetween(target, _node.id, fingerTableKeys[i]))
+            {
+                isFound = true;
+                indexOfResult = i;
+            }
+        }
+
+        // ask result found if they are responsible for the key to make sure theres no predecessor thats a better fit, and so on
+
+        return "";
+    }
 }
