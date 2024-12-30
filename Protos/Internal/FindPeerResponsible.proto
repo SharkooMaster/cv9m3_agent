@@ -2,7 +2,7 @@ syntax = "proto3";
 
 service FindPeerResponsible
 {
-    rpc Find (QueryReq) return (QueryRes);
+    rpc Find (QueryReq) returns (QueryRes);
 }
 
 message QueryReq
