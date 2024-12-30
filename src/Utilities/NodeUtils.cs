@@ -13,8 +13,22 @@ public static class NodeUtils
         {
             string ip = Misc.Misc.GetLocalIPAddress();
             string port = "5000";
-            // hash using sha256
-            // use a hilbert curve or z curve to convert from 2d to 1d
-            return 0;
+
+            string input = $"{ip}:{port}";
+
+            using(SHA256 sha256 = SHA256.Create())
+            {
+                byte[] hashBytes = sha256.ComputeHash(Encoding.UTF8.GetBytes(input));
+
+                // XOR the hash bytes into a single 64-bit integer
+                ulong hash64 = 0;
+                for (int i = 0; i < hashBytes.Length; i++)
+                {
+                    ulong segment = BitConverter.ToUInt64(hashBytes, i % (hashBytes.Length - 7));
+                    hash64 ^= segment;
+                }
+
+                return hash64;
+            }
         }
 }

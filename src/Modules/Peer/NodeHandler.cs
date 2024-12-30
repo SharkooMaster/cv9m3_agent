@@ -1,4 +1,6 @@
 using Agent.Interfaces;
+using Agent.Models;
+using Agent.Utils;
 
 namespace Agent.Modules.Peer;
 
@@ -13,14 +15,15 @@ public static class NodeService
         throw new NotImplementedException();
     }
 
-    public static Task JoinNetwork(string bootstrap_node_ip)
+    public static Task JoinNetwork(M_Node _node, string bootstrap_node_ip)
     {
         /*
-            * assign ID to this node
+            * assign ID to this node    [x]
             * Find successor node through bootstrap_node
             * Get predecessor node from successor and update there routings
             * Build finger table
         */
+        _node.id = NodeUtils.generateNodeID();
         throw new NotImplementedException();
     }
 }
