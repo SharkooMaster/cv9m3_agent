@@ -61,10 +61,9 @@ public static class NodeService
                 ulong shiftedValue = (i < 64) ? (1UL << i) : 0;
                 ulong fingerStart = (_node.id + shiftedValue) % (1UL << Globals.FINGER_TABLE_SIZE);
 
-                Console.WriteLine($"fingerStart: {fingerStart.ToString()}");
-
                 if (!_node.fingerTable.ContainsKey(fingerStart))
                 {
+                    Console.WriteLine($"fingerStart: {fingerStart.ToString()}");
                     _node.fingerTable.Add(fingerStart, _node);
                 }
             }
