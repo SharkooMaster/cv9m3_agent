@@ -41,11 +41,13 @@ public static class NodeService
             * Get predecessor node from successor and update there routings [x]
             * Build finger table [x]
         */
+        Console.WriteLine($"Joining network, id created: {_node.id.ToString()}");
         _node.id = NodeUtils.generateNodeID();
         await AgnetaHandler.Log(1, $"Joining network, id created: {_node.id.ToString()}");
 
         if(bootstrap_node_ip == _node.ip || bootstrap_node_ip == null || bootstrap_node_ip == "")
         {
+            Console.WriteLine($"Only peer in the network, creating default finger table.");
             await AgnetaHandler.Log(1, $"Only peer in the network, creating default finger table.");
             // Only peer in the network
             _node.predecessor = _node;
@@ -59,6 +61,7 @@ public static class NodeService
         }
         else
         {
+            Console.WriteLine($"Bootstrap node exists");
             await AgnetaHandler.Log(1, $"Bootstrap node exists");
             // Use successor to create finger table
             // First get basic info of successor
@@ -69,17 +72,20 @@ public static class NodeService
             QueryRes result = await fprs.ClientFind(req, bootstrap_node_ip);
             string _successor_ip = result.Res;
             _successor.ip = _successor_ip;
+            Console.WriteLine($"Found successor with ip: {_successor.ip}");
             await AgnetaHandler.Log(1, $"Found successor with ip: {_successor.ip}");
 
             GetNodeInfoService gnis = new GetNodeInfoService();
             GetNodeInfo_Result gnis_res = await gnis.ClientGet(_successor_ip);
 
             _successor.id = gnis_res.Id;
+            Console.WriteLine($"Successor id retrieved: {_successor.id}, my id is: {_node.id}");
             await AgnetaHandler.Log(1, $"Successor id retrieved: {_successor.id}, my id is: {_node.id}");
 
             // Assign new successor
             _successor.predecessor = _node;
             _node.successor = _successor;
+            Console.WriteLine($"Updated my successor");
             await AgnetaHandler.Log(1, $"Updated my successor");
 
             // Get Predecessor from successor
@@ -88,22 +94,26 @@ public static class NodeService
 
             M_Node _predecessor = new M_Node() { id = gps_res.Id, ip = gps_res.Ip };
             _node.predecessor = _predecessor;
+            Console.WriteLine($"Predecessor retrieved from successor, id: {_node.predecessor.id}");
             await AgnetaHandler.Log(1, $"Predecessor retrieved from successor, id: {_node.predecessor.id}");
 
             // Update predecessor
             UpdatePredecessorService ups = new UpdatePredecessorService();
             UpdatePredecessor_Req ups_req = new UpdatePredecessor_Req(){ Id = _node.id, Ip = _node.ip };
             await ups.ClientUpdate(ups_req, _node.successor.ip);
+            Console.WriteLine($"Updated successors predecessor");
             await AgnetaHandler.Log(1, $"Updated successors predecessor");
 
             // Update successor
             UpdateSuccessorService uss = new UpdateSuccessorService();
             UpdateSuccessor_Req uss_req = new UpdateSuccessor_Req(){ Id = _node.id, Ip = _node.ip };
             await uss.ClientUpdate(uss_req, _node.predecessor.ip);
+            Console.WriteLine($"Updated predecessors successor");
             await AgnetaHandler.Log(1, $"Updated predecessors successor");
 
             // Build finger table by communicating with successor
             await BuildFingerTable(_node);
+            Console.WriteLine($"Created new finger table with help from successor");
             await AgnetaHandler.Log(1, $"Created new finger table with help from successor");
         }
     }

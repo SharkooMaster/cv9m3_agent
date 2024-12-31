@@ -32,7 +32,7 @@ public class AgentLifeCycleService : IHostedService
         // Getting target neighbor
         try
         {
-            string bootstrap_node = "";
+            string bootstrap_node = null;
             var nearestNeighbour = await AgnetaHandler.GetNeighbour();
             if(nearestNeighbour.NodeID != "none")
             {
