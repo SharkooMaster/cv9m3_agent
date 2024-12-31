@@ -95,6 +95,7 @@ app.MapGet("/finger_table", () =>
                     <th>Key</th>
                     <th>Value</th>
                 </tr>
+                {rows}
             </table>
         </body>
         </html>";
