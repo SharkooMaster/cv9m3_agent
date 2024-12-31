@@ -3,7 +3,7 @@ using System.Net.Security;
 using Agent.Services;
 using Agent.Services.Agneta;
 using Agent.Services.Etcd;
-using Agent.Services.Grpc;
+// using Agent.Services.Grpc;
 using Agent.Interfaces.Agneta;
 using dotnet_etcd;
 using Grpc.Core;
@@ -57,16 +57,15 @@ if (app.Environment.IsDevelopment())
 app.UseRouting();
 
 app.MapGrpcService<GreeterService>();
-app.MapGrpcService<QueryAgentService>();
 
 app.MapGet("/", () =>{ return "Hello world"; });
 
 app.MapGet("/finger_table", () =>
 {
     // Build rows using LINQ for readability
-    var rows = string.Join("", Globals.DHT_NODE.FingerTable.Select(
-        item => $"<tr><td>{item.Key}</td><td>{item.Value}</td></tr>"
-    ));
+     var rows = string.Join("", Globals._NODE.fingerTable.Select(
+        item => $"<tr><td>{item.Key.ToString()}</td><td>{item.Value.id} : {item.Value.ip}</td></tr>"
+     ));
 
     // Use a string literal for the HTML structure
     var html = $@"
@@ -96,7 +95,6 @@ app.MapGet("/finger_table", () =>
                     <th>Key</th>
                     <th>Value</th>
                 </tr>
-                {rows}
             </table>
         </body>
         </html>";

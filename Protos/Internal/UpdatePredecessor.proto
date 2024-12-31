@@ -1,0 +1,14 @@
+syntax = "proto3";
+
+import "google/protobuf/empty.proto";
+
+service UpdatePredecessor
+{
+    rpc Update (UpdatePredecessor_Req) returns (google.protobuf.Empty);
+}
+
+message UpdatePredecessor_Req
+{
+    string ip = 1;
+    uint64 id = 2;
+}

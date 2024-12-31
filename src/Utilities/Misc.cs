@@ -111,4 +111,41 @@ public static class Misc
         }
     }
 
+    public static string vector_to_bitstring(float[] _vector)
+    {
+        string to_return = "";
+        for (int i = 0; i < _vector.Length; i++)
+        {
+            to_return += (_vector[i] >= 0) ? "1" : "0";
+        }
+        return to_return;
+    }
+
+    public static double CalculateDistance(float[] vec1, float[] vec2)
+    {
+        if (vec1 == null || vec2 == null)
+            throw new ArgumentNullException("Vectors must not be null.");
+
+        if (vec1.Length != vec2.Length)
+            throw new ArgumentException("Vectors must have the same dimensions.");
+
+        double dotProduct = 0.0;
+        double normVec1 = 0.0;
+        double normVec2 = 0.0;
+
+        for (int i = 0; i < vec1.Length; i++)
+        {
+            dotProduct += vec1[i] * vec2[i];
+            normVec1 += vec1[i] * vec1[i];
+            normVec2 += vec2[i] * vec2[i];
+        }
+
+        // Calculate cosine similarity
+        double cosineSimilarity = dotProduct / (Math.Sqrt(normVec1) * Math.Sqrt(normVec2));
+
+        // Return cosine distance
+        return 1 - cosineSimilarity;
+    }
+
+
 }

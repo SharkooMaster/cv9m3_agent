@@ -1,0 +1,16 @@
+syntax = "proto3";
+
+service FindPeerResponsible
+{
+    rpc Find (QueryReq) returns (QueryRes);
+}
+
+message QueryReq
+{
+    uint64 val = 1;
+}
+
+message QueryRes
+{
+    string res = 1;
+}
