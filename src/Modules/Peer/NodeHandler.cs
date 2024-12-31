@@ -20,7 +20,7 @@ public static class NodeService
     {
         /*
             * Assign ID to this node    [x]
-            * Find successor node through bootstrap_node
+            * Find successor node through bootstrap_node [x]
             * Get predecessor node from successor and update there routings
             * Build finger table
         */
@@ -42,7 +42,12 @@ public static class NodeService
         {
             // Use successor to create finger table
             M_Node _successor = new M_Node();
-            string _successor_ip = await FindPeerResponsible(_node, _node.id);
+
+            FindPeerResponsibleService fprs = new FindPeerResponsibleService();
+            QueryReq req = new QueryReq() { Val=_node.id };
+            QueryRes result = await fprs.ClientFind(req, bootstrap_node_ip);
+            string _successor_ip = result.Res;
+            _successor.ip = _successor_ip;
         }
     }
 
@@ -62,11 +67,18 @@ public static class NodeService
             }
         }
 
-        // Ask result found if they are responsible for the key to make sure theres no predecessor thats a better fit, and so on
-        FindPeerResponsibleService fprs = new FindPeerResponsibleService();
-        QueryReq req = new QueryReq() { Val=target };
-        QueryRes result = await fprs.ClientFind(req, _node.fingerTable[fingerTableKeys[indexOfResult]].ip);
-
-        return result.Res;
+        if(isFound)
+        {
+            // Ask result found if they are responsible for the key to make sure theres no predecessor thats a better fit, and so on
+            FindPeerResponsibleService fprs = new FindPeerResponsibleService();
+            QueryReq req = new QueryReq() { Val=target };
+            QueryRes result = await fprs.ClientFind(req, _node.fingerTable[fingerTableKeys[indexOfResult]].ip);
+            return result.Res;
+        }
+        else
+        {
+            // either im the peer responsible, or we have an issue
+            return _node.ip;
+        }
     }
 }

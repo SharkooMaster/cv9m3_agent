@@ -27,7 +27,13 @@
 
   <ItemGroup>
     <Protobuf Include="Protos\greet.proto" GrpcServices="Server" />
+
     <Protobuf Include="Protos\Internal\FindPeerResponsible.proto" GrpcServices="Both" />
+
+    <Protobuf Include="Protos\Internal\GetPredecessor.proto" GrpcServices="Both" />
+    <Protobuf Include="Protos\Internal\GetNodeInfo.proto" GrpcServices="Both" />
+    <Protobuf Include="Protos\Internal\UpdatePredecessor.proto" GrpcServices="Both" />
+    <Protobuf Include="Protos\Internal\UpdateSuccessor.proto" GrpcServices="Both" />
   </ItemGroup>
 
   <PropertyGroup>
