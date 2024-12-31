@@ -58,7 +58,11 @@ public static class NodeService
             for(int i = 0; i < Globals.FINGER_TABLE_SIZE; i++)
             {
                 ulong fingerStart = (_node.id + (1UL << i)) % (1UL << Globals.FINGER_TABLE_SIZE);
-                _node.fingerTable.Add(fingerStart, _node);
+
+                if (!_node.fingerTable.ContainsKey(fingerStart))
+                {
+                    _node.fingerTable.Add(fingerStart, _node);
+                }
             }
             Console.WriteLine($"fingerTable length: {_node.fingerTable.Count}");
         }
