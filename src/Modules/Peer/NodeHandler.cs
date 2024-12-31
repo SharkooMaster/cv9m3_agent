@@ -31,6 +31,8 @@ public static class NodeService
                 ip = gnis_res.Ip
             });
         }
+
+        Globals._NODE = _node;
     }
 
     public static async Task JoinNetwork(M_Node _node, string bootstrap_node_ip)
@@ -58,6 +60,7 @@ public static class NodeService
                 ulong fingerStart = (_node.id + (1UL << i)) % (1UL << Globals.FINGER_TABLE_SIZE);
                 _node.fingerTable.Add(fingerStart, _node);
             }
+            Console.WriteLine($"fingerTable length: {_node.fingerTable.Count}");
         }
         else
         {
@@ -116,6 +119,8 @@ public static class NodeService
             Console.WriteLine($"Created new finger table with help from successor");
             await AgnetaHandler.Log(1, $"Created new finger table with help from successor");
         }
+
+        Globals._NODE = _node;
     }
 
     public static async Task<string> FindPeerResponsible(M_Node _node, ulong target)
