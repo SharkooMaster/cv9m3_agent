@@ -41,8 +41,8 @@ public static class NodeService
             * Get predecessor node from successor and update there routings [x]
             * Build finger table [x]
         */
-        Console.WriteLine($"Joining network, id created: {_node.id.ToString()}");
         _node.id = NodeUtils.generateNodeID();
+        Console.WriteLine($"Joining network, id created: {_node.id.ToString()}");
         await AgnetaHandler.Log(1, $"Joining network, id created: {_node.id.ToString()}");
 
         if(bootstrap_node_ip == _node.ip || bootstrap_node_ip == null || bootstrap_node_ip == "")
