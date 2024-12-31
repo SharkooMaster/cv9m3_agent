@@ -40,7 +40,11 @@ namespace Agent.Services.Agneta
             try
             {
                 Console.WriteLine("Contacting Agneta: Assign neighbour");
-                var response = await _client.GetAsync($"{_url}/lbs/agent/pop");
+                
+                var data = new { ip = Globals._NODE.ip };
+                string _json = System.Text.Json.JsonSerializer.Serialize(data);
+                var content = new StringContent(_json);
+                var response = await _client.PostAsync($"{_url}/lbs/agent/pop", content);
 
                 if (response.IsSuccessStatusCode)
                 {
