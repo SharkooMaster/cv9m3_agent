@@ -59,6 +59,7 @@ app.UseRouting();
 app.MapGrpcService<GreeterService>();
 
 app.MapGet("/", () =>{ return "Hello world"; });
+app.MapGet("/health", () =>{ return "true"; });
 
 app.MapGet("/finger_table", () =>
 {

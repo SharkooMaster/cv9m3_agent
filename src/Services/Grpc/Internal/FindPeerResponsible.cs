@@ -17,6 +17,7 @@ public class FindPeerResponsibleService : FindPeerResponsible.FindPeerResponsibl
 
     public async Task<QueryRes> ClientFind(QueryReq request, string _ip)
     {
+        Console.WriteLine("Sending grpc request, ClientFind (FindPeerResponsibleService)");
         var channel = GrpcChannel.ForAddress(_ip);
         FindPeerResponsible.FindPeerResponsibleClient _client = new FindPeerResponsible.FindPeerResponsibleClient(channel);
 
