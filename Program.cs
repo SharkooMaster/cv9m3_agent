@@ -63,9 +63,9 @@ app.MapGet("/", () =>{ return "Hello world"; });
 app.MapGet("/finger_table", () =>
 {
     // Build rows using LINQ for readability
-    // var rows = string.Join("", Globals.DHT_NODE.FingerTable.Select(
-    //    item => $"<tr><td>{item.Key}</td><td>{item.Value}</td></tr>"
-    // ));
+     var rows = string.Join("", Globals._NODE.fingerTable.Select(
+        item => $"<tr><td>{item.Key.ToString()}</td><td>{item.Value.id} : {item.Value.ip}</td></tr>"
+     ));
 
     // Use a string literal for the HTML structure
     var html = $@"

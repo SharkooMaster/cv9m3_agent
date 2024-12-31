@@ -8,6 +8,7 @@ using Newtonsoft.Json;
 using Agent.Models.Misc;
 using Agent.Modules.Agneta;
 using System.Numerics;
+using Agent.Modules.Peer;
 namespace Agent.Services;
 
 public class AgentLifeCycleService : IHostedService
@@ -31,15 +32,19 @@ public class AgentLifeCycleService : IHostedService
         // Getting target neighbor
         try
         {
+            string bootstrap_node = "";
             var nearestNeighbour = await AgnetaHandler.GetNeighbour();
-            if(nearestNeighbour.NodeID == "none")
-            {
-            }
-            else
+            if(nearestNeighbour.NodeID != "none")
             {
                 ServiceData neighbourData = JsonConvert.DeserializeObject<ServiceData>(nearestNeighbour.Data);
+                if(neighbourData.Host != Globals._NODE.ip)
+                {
+                    bootstrap_node = neighbourData.Host;
+                }
             }
             Console.WriteLine(nearestNeighbour);
+
+            await NodeService.JoinNetwork(Globals._NODE, bootstrap_node);
         }
         catch
         {
