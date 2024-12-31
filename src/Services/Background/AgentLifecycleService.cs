@@ -29,6 +29,8 @@ public class AgentLifeCycleService : IHostedService
         Globals.ETCD_ID = _id;
         Globals.ETCD_VALUE = _data;
 
+        Globals._NODE.ip = Misc.GetLocalIPAddress();
+
         // Getting target neighbor
         try
         {

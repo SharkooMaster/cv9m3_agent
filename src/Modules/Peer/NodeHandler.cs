@@ -25,11 +25,11 @@ public static class NodeService
             GetNodeInfoService gnis = new GetNodeInfoService();
             GetNodeInfo_Result gnis_res = await gnis.ClientGet(res.Res);
 
-            _node.fingerTable[fingerStart] = new M_Node()
+            _node.fingerTable.Add(fingerStart, new M_Node()
             {
                 id = gnis_res.Id,
                 ip = gnis_res.Ip
-            };
+            });
         }
     }
 
@@ -56,7 +56,7 @@ public static class NodeService
             for(int i = 0; i < Globals.FINGER_TABLE_SIZE; i++)
             {
                 ulong fingerStart = (_node.id + (1UL << i)) % (1UL << Globals.FINGER_TABLE_SIZE);
-                _node.fingerTable[fingerStart] = _node;
+                _node.fingerTable.Add(fingerStart, _node);
             }
         }
         else
