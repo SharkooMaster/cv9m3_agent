@@ -15,9 +15,22 @@ public class UpdatePredecessorService : UpdatePredecessor.UpdatePredecessorBase
 
     public async Task ClientUpdate(UpdatePredecessor_Req req, string _ip)
     {
-        var channel = GrpcChannel.ForAddress(_ip);
-        UpdatePredecessor.UpdatePredecessorClient _client = new UpdatePredecessor.UpdatePredecessorClient(channel);
+        try
+        {
+            var channel = GrpcChannel.ForAddress($"http://{_ip}:5000");
+            UpdatePredecessor.UpdatePredecessorClient _client = new UpdatePredecessor.UpdatePredecessorClient(channel);
 
-        await _client.UpdateAsync(req);
+            await _client.UpdateAsync(req);
+        }
+        catch (RpcException ex)
+        {
+            Console.WriteLine($"gRPC error: {ex.Status.StatusCode} - {ex.Status.Detail}");
+            throw;
+        }
+        catch(Exception ex)
+        {
+            Console.WriteLine($"General error: {ex.Message}");
+            throw;
+        }
     }
 }

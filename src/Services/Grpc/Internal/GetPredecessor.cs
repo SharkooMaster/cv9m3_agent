@@ -18,11 +18,25 @@ public class GetPredecessorService : GetPredecessor.GetPredecessorBase
 
     public async Task<GetPredecessor_Result> ClientGet(string _ip)
     {
-        var channel = GrpcChannel.ForAddress(_ip);
-        GetPredecessor.GetPredecessorClient _client = new GetPredecessor.GetPredecessorClient(channel);
+        try
+        {
+            Console.WriteLine("Getting predecessor");
+            var channel = GrpcChannel.ForAddress($"http://{_ip}:5000");
+            GetPredecessor.GetPredecessorClient _client = new GetPredecessor.GetPredecessorClient(channel);
 
-        var response = await _client.GetAsync(new Empty());
+            var response = await _client.GetAsync(new Empty());
 
-        return response;
+            return response;
+        }
+        catch (RpcException ex)
+        {
+            Console.WriteLine($"gRPC error: {ex.Status.StatusCode} - {ex.Status.Detail}");
+            throw;
+        }
+        catch(Exception ex)
+        {
+            Console.WriteLine($"General error: {ex.Message}");
+            throw;
+        }
     }
 }

@@ -18,11 +18,24 @@ public class GetNodeInfoService : GetNodeInfo.GetNodeInfoBase
 
     public async Task<GetNodeInfo_Result> ClientGet(string _ip)
     {
-        var channel = GrpcChannel.ForAddress(_ip);
-        GetNodeInfo.GetNodeInfoClient _client = new GetNodeInfo.GetNodeInfoClient(channel);
+        try
+        {
+            var channel = GrpcChannel.ForAddress($"http://{_ip}:5000");
+            GetNodeInfo.GetNodeInfoClient _client = new GetNodeInfo.GetNodeInfoClient(channel);
 
-        var response = await _client.GetAsync(new Empty());
+            var response = await _client.GetAsync(new Empty());
 
-        return response;
+            return response;
+        }
+        catch (RpcException ex)
+        {
+            Console.WriteLine($"gRPC error: {ex.Status.StatusCode} - {ex.Status.Detail}");
+            throw;
+        }
+        catch(Exception ex)
+        {
+            Console.WriteLine($"General error: {ex.Message}");
+            throw;
+        }
     }
 }

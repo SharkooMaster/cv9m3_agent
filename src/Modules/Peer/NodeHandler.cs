@@ -102,6 +102,7 @@ public static class NodeService
             // Get Predecessor from successor
             GetPredecessorService gps = new GetPredecessorService();
             GetPredecessor_Result gps_res = await gps.ClientGet(_successor.ip);
+            Console.WriteLine("got predecessor");
 
             M_Node _predecessor = new M_Node() { id = gps_res.Id, ip = gps_res.Ip };
             _node.predecessor = _predecessor;
