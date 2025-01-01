@@ -57,6 +57,11 @@ if (app.Environment.IsDevelopment())
 app.UseRouting();
 
 app.MapGrpcService<GreeterService>();
+app.MapGrpcService<FindPeerResponsibleService>();
+app.MapGrpcService<GetNodeInfoService>();
+app.MapGrpcService<GetPredecessorService>();
+app.MapGrpcService<UpdatePredecessorService>();
+app.MapGrpcService<UpdateSuccessorService>();
 
 app.MapGet("/", () =>{ return "Hello world"; });
 app.MapGet("/health", () =>{ return "true"; });
