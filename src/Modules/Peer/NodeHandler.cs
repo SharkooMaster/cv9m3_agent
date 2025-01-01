@@ -26,8 +26,10 @@ public static class NodeService
             QueryReq req = new QueryReq() { Val = fingerStart };
             QueryRes res = await fprs.ClientFind(req, _node.successor.ip);
 
+            Console.WriteLine($"Retrieved peer from successor: {res.Res}, sending getNodeInfo request");
             GetNodeInfoService gnis = new GetNodeInfoService();
             GetNodeInfo_Result gnis_res = await gnis.ClientGet(res.Res);
+            Console.WriteLine($"Node info retrieved: {gnis_res.Ip}");
 
             if (!_node.fingerTable.ContainsKey(fingerStart))
             {
