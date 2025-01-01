@@ -27,9 +27,19 @@ public static class NodeService
             QueryRes res = await fprs.ClientFind(req, _node.successor.ip);
 
             Console.WriteLine($"Retrieved peer from successor: {res.Res}, sending getNodeInfo request");
-            GetNodeInfoService gnis = new GetNodeInfoService();
-            GetNodeInfo_Result gnis_res = await gnis.ClientGet(res.Res);
-            Console.WriteLine($"Node info retrieved: {gnis_res.Ip}");
+            GetNodeInfo_Result gnis_res;
+            if(res.Res != _node.ip)
+            {
+                GetNodeInfoService gnis = new GetNodeInfoService();
+                gnis_res = await gnis.ClientGet(res.Res);
+                Console.WriteLine($"Node info retrieved: {gnis_res.Ip}");
+            }
+            else
+            {
+                gnis_res = new GetNodeInfo_Result();
+                gnis_res.Id = _node.id;
+                gnis_res.Ip = _node.ip;
+            }
 
             if (!_node.fingerTable.ContainsKey(fingerStart))
             {
