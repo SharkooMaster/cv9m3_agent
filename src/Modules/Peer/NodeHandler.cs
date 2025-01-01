@@ -136,6 +136,8 @@ public static class NodeService
         bool isFound = false;
         int indexOfResult = -1;
 
+        Console.WriteLine($"FindPeer request recieved, target: {target}");
+
         // Search finger table for a valid peer
         ulong[] fingerTableKeys = _node.fingerTable.Keys.ToArray();
         for (int i = _node.fingerTable.Count - 1; i >= 0; i--)
@@ -147,8 +149,9 @@ public static class NodeService
             }
         }
 
-        if(isFound)
+        if(isFound && _node.fingerTable[fingerTableKeys[indexOfResult]].ip != _node.ip)
         {
+            Console.WriteLine("Found");
             // Ask result found if they are responsible for the key to make sure theres no predecessor thats a better fit, and so on
             FindPeerResponsibleService fprs = new FindPeerResponsibleService();
             QueryReq req = new QueryReq() { Val=target };
@@ -157,6 +160,7 @@ public static class NodeService
         }
         else
         {
+            Console.WriteLine("Nothing found");
             // either im the peer responsible, or we have an issue
             return _node.ip;
         }
