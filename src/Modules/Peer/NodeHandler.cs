@@ -16,8 +16,12 @@ public static class NodeService
         */
         for (int i = 0; i < Globals.FINGER_TABLE_SIZE; i++)
         {
-            ulong fingerStart = (_node.id + (1UL << i)) % (1UL << Globals.FINGER_TABLE_SIZE);
+            ulong shift = 1UL << i;
+            ulong sum = _node.id + shift;
+            ulong modulo = (1UL << Globals.FINGER_TABLE_SIZE);
+            ulong fingerStart = sum % modulo;
 
+            Console.WriteLine($"bootstrap building, sending find peer request, target ip: {_node.successor.ip}, my ip: {_node.ip}");
             FindPeerResponsibleService fprs = new FindPeerResponsibleService();
             QueryReq req = new QueryReq() { Val = fingerStart };
             QueryRes res = await fprs.ClientFind(req, _node.successor.ip);
@@ -25,11 +29,14 @@ public static class NodeService
             GetNodeInfoService gnis = new GetNodeInfoService();
             GetNodeInfo_Result gnis_res = await gnis.ClientGet(res.Res);
 
-            _node.fingerTable.Add(fingerStart, new M_Node()
+            if (!_node.fingerTable.ContainsKey(fingerStart))
             {
-                id = gnis_res.Id,
-                ip = gnis_res.Ip
-            });
+                _node.fingerTable.Add(fingerStart, new M_Node()
+                {
+                    id = gnis_res.Id,
+                    ip = gnis_res.Ip
+                });
+            }
         }
 
         Globals._NODE = _node;
@@ -124,6 +131,7 @@ public static class NodeService
             await AgnetaHandler.Log(1, $"Updated predecessors successor");
 
             // Build finger table by communicating with successor
+            Console.WriteLine($"Building finger table");
             await BuildFingerTable(_node);
             Console.WriteLine($"Created new finger table with help from successor");
             await AgnetaHandler.Log(1, $"Created new finger table with help from successor");
