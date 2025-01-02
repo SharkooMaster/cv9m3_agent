@@ -34,6 +34,8 @@
     <Protobuf Include="Protos\Internal\GetNodeInfo.proto" GrpcServices="Both" />
     <Protobuf Include="Protos\Internal\UpdatePredecessor.proto" GrpcServices="Both" />
     <Protobuf Include="Protos\Internal\UpdateSuccessor.proto" GrpcServices="Both" />
+
+    <Protobuf Include="Protos\Internal\UpdateFingerTable.proto" GrpcServices="Both" />
   </ItemGroup>
 
   <PropertyGroup>
