@@ -79,51 +79,38 @@ public static class NodeService
 
     public static async Task<M_Node> InitFingerTable(M_Node _node)
     {
-        ulong fingerStartBefore = 0;
+        // First finger is just our successor
+        ulong firstFingerStart = (_node.id + 1) % (1UL << Globals.FINGER_TABLE_SIZE);
+        _node.fingerTable[firstFingerStart] = _node.successor;
+
+        // For each remaining finger
         for (int i = 1; i < Globals.FINGER_TABLE_SIZE; i++)
         {
-            ulong shift = 1UL << i;
-            ulong sum = _node.id + shift;
-            ulong modulo = (1UL << Globals.FINGER_TABLE_SIZE);
-            ulong fingerStart = sum % modulo;
+            ulong fingerStart = (_node.id + (1UL << i)) % (1UL << Globals.FINGER_TABLE_SIZE);
 
-            if(i == 0)
+            // If this finger start is between us and our previous finger
+            ulong prevFingerStart = (_node.id + (1UL << (i-1))) % (1UL << Globals.FINGER_TABLE_SIZE);
+            if (NodeUtils.inBetween(fingerStart, _node.id, _node.fingerTable[prevFingerStart].id))
             {
-                _node.fingerTable[fingerStart] = _node.successor;
-                fingerStartBefore = fingerStart;
+                // We can use the same node
+                _node.fingerTable[fingerStart] = _node.fingerTable[prevFingerStart];
             }
             else
             {
-                if(NodeUtils.inBetween(fingerStart, _node.id, _node.fingerTable[fingerStartBefore].id))
-                {
-                    _node.fingerTable[fingerStart] = _node.fingerTable[fingerStartBefore];
-                }
-                else
-                {
+                // We need to find the responsible node through the network
+                FindPeerResponsibleService fprs = new FindPeerResponsibleService();
+                QueryReq req = new QueryReq() { Val = fingerStart };
+                // Important: Start the search from our known successor
+                QueryRes res = await fprs.ClientFind(req, _node.successor.ip);
 
-                    Console.WriteLine($"bootstrap building, sending find peer request, target ip: {_node.successor.ip}, my ip: {_node.ip}");
-                    FindPeerResponsibleService fprs = new FindPeerResponsibleService();
-                    QueryReq req = new QueryReq() { Val = fingerStart };
-                    QueryRes res = await fprs.ClientFind(req, _node.successor.ip);
+                GetNodeInfoService gnis = new GetNodeInfoService();
+                GetNodeInfo_Result nodeInfo = await gnis.ClientGet(res.Res);
 
-                    Console.WriteLine($"Retrieved peer from successor: {res.Res}, sending getNodeInfo request");
-                    GetNodeInfo_Result gnis_res;
-                    if(res.Res != _node.ip)
-                    {
-                        GetNodeInfoService gnis = new GetNodeInfoService();
-                        gnis_res = await gnis.ClientGet(res.Res);
-                        Console.WriteLine($"Node info retrieved: {gnis_res.Ip}");
-                    }
-                    else
-                    {
-                        gnis_res = new GetNodeInfo_Result();
-                        gnis_res.Id = _node.id;
-                        gnis_res.Ip = _node.ip;
-                    }
-
-                    _node.fingerTable[fingerStart] = new M_Node(){ id = gnis_res.Id, ip = gnis_res.Ip };
-                }
-                fingerStartBefore = fingerStart;
+                _node.fingerTable[fingerStart] = new M_Node() 
+                { 
+                    id = nodeInfo.Id, 
+                    ip = nodeInfo.Ip 
+                };
             }
         }
         return _node;
@@ -131,18 +118,28 @@ public static class NodeService
 
     public static async Task UpdateOthers(M_Node _node)
     {
-        UpdateFingerTableService ufts = new UpdateFingerTableService();
-        for (int j = 0; j < Globals.FINGER_TABLE_SIZE; j++)
+        for (int i = 0; i < Globals.FINGER_TABLE_SIZE; i++)
         {
-            ulong shift = 1UL << j;
-            ulong sum = _node.id - shift;
-            ulong modulo = (1UL << Globals.FINGER_TABLE_SIZE);
-            ulong update_start = sum % modulo;
-
-            FindPeerResponsibleService fprs_temp = new FindPeerResponsibleService();
-            // await fprs_temp.ClientFind(new QueryReq(){ Val = update_start }, );
-
-            UpdateFingerTable_Req ufts_req = new UpdateFingerTable_Req() { FingerIndex = j, Id = _node.id, Ip = _node.ip };
+            // Find last node p whose i-th finger might be us
+            ulong update_start = (_node.id - (1UL << i)) % (1UL << Globals.FINGER_TABLE_SIZE);
+            
+            // Find the predecessor of this position
+            FindPeerResponsibleService fprs = new FindPeerResponsibleService();
+            QueryReq req = new QueryReq() { Val = update_start };
+            QueryRes res = await fprs.ClientFind(req, _node.successor.ip);
+            
+            // Update that node's finger table
+            if (res.Res != _node.ip)  // Don't update ourselves
+            {
+                UpdateFingerTableService ufts = new UpdateFingerTableService();
+                UpdateFingerTable_Req ufts_req = new UpdateFingerTable_Req() 
+                { 
+                    FingerIndex = i, 
+                    Id = _node.id, 
+                    Ip = _node.ip 
+                };
+                await ufts.ClientUpdate(ufts_req, res.Res);
+            }
         }
     }
 
@@ -254,36 +251,41 @@ public static class NodeService
 
     public static async Task<string> FindPeerResponsible(M_Node _node, ulong target)
     {
-        bool isFound = false;
-        int indexOfResult = -1;
-
-        Console.WriteLine($"FindPeer request recieved, target: {target}");
-
-        // Search finger table for a valid peer
-        ulong[] fingerTableKeys = _node.fingerTable.Keys.ToArray();
-        for (int i = _node.fingerTable.Count - 1; i >= 0; i--)
+        // If the target is between us and our successor, we're done
+        if (NodeUtils.inBetween(target, _node.id, _node.successor.id))
         {
-            if(NodeUtils.inBetween(target, _node.id, fingerTableKeys[i]))
+            return _node.successor.ip;
+        }
+
+        // Otherwise, find the closest preceding finger
+        M_Node closestPrecedingNode = ClosestPrecedingFinger(_node, target);
+
+        // If that's us, return our successor
+        if (closestPrecedingNode.id == _node.id)
+        {
+            return _node.successor.ip;
+        }
+
+        // Otherwise, forward the query to that node
+        FindPeerResponsibleService fprs = new FindPeerResponsibleService();
+        QueryReq req = new QueryReq() { Val = target };
+        QueryRes result = await fprs.ClientFind(req, closestPrecedingNode.ip);
+        return result.Res;
+    }
+
+    public static M_Node ClosestPrecedingFinger(M_Node _node, ulong target)
+    {
+        // Look through finger table from farthest to closest
+        ulong[] fingerTableKeys = _node.fingerTable.Keys.ToArray();
+        for (int i = Globals.FINGER_TABLE_SIZE - 1; i >= 0; i--)
+        {
+            M_Node finger = _node.fingerTable[fingerTableKeys[i]];
+            // Check if this finger is between us and the target
+            if (NodeUtils.inBetween(finger.id, _node.id, target))
             {
-                isFound = true;
-                indexOfResult = i;
+                return finger;
             }
         }
-
-        if(isFound && _node.fingerTable[fingerTableKeys[indexOfResult]].ip != _node.ip)
-        {
-            Console.WriteLine("Found");
-            // Ask result found if they are responsible for the key to make sure theres no predecessor thats a better fit, and so on
-            FindPeerResponsibleService fprs = new FindPeerResponsibleService();
-            QueryReq req = new QueryReq() { Val=target };
-            QueryRes result = await fprs.ClientFind(req, _node.fingerTable[fingerTableKeys[indexOfResult]].ip);
-            return result.Res;
-        }
-        else
-        {
-            Console.WriteLine("Nothing found");
-            // either im the peer responsible, or we have an issue
-            return _node.ip;
-        }
+        return _node;
     }
 }
