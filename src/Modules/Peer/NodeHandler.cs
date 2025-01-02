@@ -122,12 +122,12 @@ public static class NodeService
         {
             // Find last node p whose i-th finger might be us
             ulong update_start = (_node.id - (1UL << i)) % (1UL << Globals.FINGER_TABLE_SIZE);
-            
+
             // Find the predecessor of this position
             FindPeerResponsibleService fprs = new FindPeerResponsibleService();
             QueryReq req = new QueryReq() { Val = update_start };
             QueryRes res = await fprs.ClientFind(req, _node.successor.ip);
-            
+
             // Update that node's finger table
             if (res.Res != _node.ip)  // Don't update ourselves
             {
@@ -237,13 +237,8 @@ public static class NodeService
             Console.WriteLine($"Updated predecessors successor");
             await AgnetaHandler.Log(1, $"Updated predecessors successor");
 
-            // Build finger table by communicating with successor
-            //Console.WriteLine($"Building finger table");
-            //await BuildFingerTable(_node);
-            //Console.WriteLine($"Created new finger table with help from successor");
-            //await AgnetaHandler.Log(1, $"Created new finger table with help from successor");
-
             // Update other
+            await UpdateOthers();
         }
 
         Globals._NODE = _node;
