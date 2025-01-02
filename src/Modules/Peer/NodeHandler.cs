@@ -238,7 +238,7 @@ public static class NodeService
             await AgnetaHandler.Log(1, $"Updated predecessors successor");
 
             // Update other
-            await UpdateOthers();
+            await UpdateOthers(_node);
         }
 
         Globals._NODE = _node;
