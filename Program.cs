@@ -62,6 +62,7 @@ app.MapGrpcService<GetNodeInfoService>();
 app.MapGrpcService<GetPredecessorService>();
 app.MapGrpcService<UpdatePredecessorService>();
 app.MapGrpcService<UpdateSuccessorService>();
+app.MapGrpcService<UpdateFingerTableService>();
 
 app.MapGet("/", () =>{ return "Hello world"; });
 app.MapGet("/health", () =>{ return "true"; });
