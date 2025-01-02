@@ -246,25 +246,56 @@ public static class NodeService
 
     public static async Task<string> FindPeerResponsible(M_Node _node, ulong target)
     {
-        // If the target is between us and our successor, we're done
+        // First, handle the simple case - if we're responsible for this target
+        if (NodeUtils.inBetween(target, _node.predecessor.id, _node.id))
+        {
+            Console.WriteLine($"Node {_node.id} is directly responsible for target {target}");
+            return _node.ip;
+        }
+    
+        // Second case - if it's between us and our successor
         if (NodeUtils.inBetween(target, _node.id, _node.successor.id))
         {
+            Console.WriteLine($"Successor {_node.successor.id} is responsible for target {target}");
             return _node.successor.ip;
         }
-
-        // Otherwise, find the closest preceding finger
-        M_Node closestPrecedingNode = ClosestPrecedingFinger(_node, target);
-
-        // If that's us, return our successor
-        if (closestPrecedingNode.id == _node.id)
+    
+        // Find the closest preceding finger that could help us
+        ulong[] fingerTableKeys = _node.fingerTable.Keys.ToArray();
+        M_Node bestCandidate = _node;
+        
+        for (int i = Globals.FINGER_TABLE_SIZE - 1; i >= 0; i--)
         {
+            M_Node finger = _node.fingerTable[fingerTableKeys[i]];
+            
+            // Skip if the finger points to ourselves
+            if (finger.ip == _node.ip)
+                continue;
+                
+            // Skip if the finger points to our successor (we already checked that case)
+            if (finger.ip == _node.successor.ip)
+                continue;
+                
+            // If this finger is between us and the target, it's our best candidate
+            if (NodeUtils.inBetween(finger.id, _node.id, target))
+            {
+                bestCandidate = finger;
+                break;
+            }
+        }
+    
+        // If we couldn't find a better candidate, forward to our successor
+        if (bestCandidate.id == _node.id)
+        {
+            Console.WriteLine($"No better candidate found, forwarding to successor {_node.successor.id}");
             return _node.successor.ip;
         }
-
-        // Otherwise, forward the query to that node
+    
+        // Forward the query to our best candidate
+        Console.WriteLine($"Forwarding query for {target} to node {bestCandidate.id}");
         FindPeerResponsibleService fprs = new FindPeerResponsibleService();
         QueryReq req = new QueryReq() { Val = target };
-        QueryRes result = await fprs.ClientFind(req, closestPrecedingNode.ip);
+        QueryRes result = await fprs.ClientFind(req, bestCandidate.ip);
         return result.Res;
     }
 
