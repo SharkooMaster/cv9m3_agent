@@ -1,0 +1,15 @@
+syntax = "proto3";
+
+import "google/protobuf/empty.proto";
+
+service UpdateFingerTable
+{
+    rpc Update (UpdateFingerTable_Req) returns (google.protobuf.Empty);
+}
+
+message UpdateFingerTable_Req
+{
+    string ip = 1;
+    uint64 id = 2;
+    int finger_index = 3;
+}
