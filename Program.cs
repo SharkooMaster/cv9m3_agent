@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Security;
 using Agent.Services;
 using Agent.Services.Agneta;
+using Agent.Utils.Misc;
 using Agent.Services.Etcd;
 // using Agent.Services.Grpc;
 using Agent.Interfaces.Agneta;
@@ -97,6 +98,7 @@ app.MapGet("/finger_table", () =>
         </head>
         <body>
             <h1>Finger Table</h1>
+            <h3>{Misc.GetLocalIPAddress()}</h3>
             <table>
                 <tr>
                     <th>Key</th>

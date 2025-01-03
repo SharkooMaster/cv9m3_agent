@@ -229,6 +229,7 @@ public static class NodeService
         var visited = new HashSet<string>();
         var count = 0;
 
+        GetPredecessorService gps = new GetPredecessorService();
         while (!visited.Contains(current.ip) && count < 100)
         {
             visited.Add(current.ip);
@@ -236,12 +237,11 @@ public static class NodeService
             await AgnetaHandler.Log(1, $"Node {current.id} -> Successor {current.successor.id}");
 
             // Verify that this node is its successor's predecessor
-            GetPredecessorService gps = new GetPredecessorService();
             var pred = await gps.ClientGet(current.successor.ip);
             if (pred.Id != current.id)
             {
                 Console.WriteLine($"ERROR: Node {current.successor.id}'s predecessor is {pred.Id}, expected {current.id}");
-                await AgnetaHandler.Log(1, $"ERROR: Node {current.successor.id}'s predecessor is {pred.Id}, expected {current.id}"); 
+                await AgnetaHandler.Log(1, $"ERROR: Node {current.successor.id}'s predecessor is {pred.Id}, expected {current.id}");
             }
 
             current = current.successor;
@@ -370,7 +370,6 @@ public static class NodeService
 
             // Update other
             await UpdateOthers(_node);
-            await TestDHT(Globals._NODE);
         }
 
         Globals._NODE = _node;
