@@ -101,10 +101,23 @@ namespace Agent.Services.Agneta
 
         public async Task ConnectAsync()
         {
-            if(_client_ws.State != WebSocketState.Open)
+            if (_client_ws.State != WebSocketState.Open)
             {
-                _client_ws.Options.RemoteCertificateValidationCallback = (sender, certificate, chain, sslPolicyErrors) => true;
-                await _client_ws.ConnectAsync(_uri, CancellationToken.None);
+                try
+                {
+                    _client_ws.Options.RemoteCertificateValidationCallback = 
+                        (sender, certificate, chain, sslPolicyErrors) => true;
+        
+                    await _client_ws.ConnectAsync(_uri, CancellationToken.None);
+                }
+                catch (Exception ex)
+                {
+                    // Log or handle the detailed exception information
+                    Console.WriteLine($"Failed to connect: {ex}");
+                    
+                    // Optionally rethrow to allow higher-level handling
+                    throw;
+                }
             }
         }
 
