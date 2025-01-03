@@ -143,8 +143,16 @@ public static class NodeService
         }
     }
 
-    public static void PrintNodeState(M_Node node)
+    public static async void PrintNodeState(M_Node node)
     {
+        await AgnetaHandler.Log(1, $"\n=== Node State (ID: {node.id}) ===");
+        await AgnetaHandler.Log(1, $"IP: {node.ip}");
+        await AgnetaHandler.Log(1, $"Predecessor: {node.predecessor.id} ({node.predecessor.ip})");
+        await AgnetaHandler.Log(1, $"Successor: {node.successor.id} ({node.successor.ip})");
+        await AgnetaHandler.Log(1, "\nFinger Table:");
+        await AgnetaHandler.Log(1, "Start\t\tNode ID\t\tNode IP");
+        await AgnetaHandler.Log(1, "----------------------------------------");
+
         Console.WriteLine($"\n=== Node State (ID: {node.id}) ===");
         Console.WriteLine($"IP: {node.ip}");
         Console.WriteLine($"Predecessor: {node.predecessor.id} ({node.predecessor.ip})");
@@ -156,8 +164,10 @@ public static class NodeService
         foreach (var entry in node.fingerTable.OrderBy(x => x.Key))
         {
             Console.WriteLine($"{entry.Key}\t\t{entry.Value.id}\t\t{entry.Value.ip}");
+            await AgnetaHandler.Log(1, $"{entry.Key}\t\t{entry.Value.id}\t\t{entry.Value.ip}");
         }
         Console.WriteLine("========================================\n");
+        await AgnetaHandler.Log(1, "========================================\n");
     }
 
     public static async Task TestRouting(M_Node startNode, ulong targetId, HashSet<string> visitedNodes = null)
@@ -166,6 +176,7 @@ public static class NodeService
             visitedNodes = new HashSet<string>();
 
         Console.WriteLine($"Testing route from Node {startNode.id} to target {targetId}");
+        await AgnetaHandler.Log(1, $"Testing route from Node {startNode.id} to target {targetId}");
 
         var hops = 0;
         var currentNodeIp = startNode.ip;
@@ -175,6 +186,7 @@ public static class NodeService
             if (visitedNodes.Contains(currentNodeIp))
             {
                 Console.WriteLine("ERROR: Routing loop detected!");
+                await AgnetaHandler.Log(1, "ERROR: Routing loop detected!");
                 return;
             }
 
@@ -185,6 +197,7 @@ public static class NodeService
             QueryRes res = await fprs.ClientFind(req, currentNodeIp);
 
             Console.WriteLine($"Hop {hops + 1}: Node {currentNodeIp} -> {res.Res}");
+            await AgnetaHandler.Log(1, $"Hop {hops + 1}: Node {currentNodeIp} -> {res.Res}");
 
             if (res.Res == currentNodeIp)
                 break;
@@ -194,18 +207,24 @@ public static class NodeService
         }
 
         Console.WriteLine($"Route found in {hops} hops");
+        await AgnetaHandler.Log(1, $"Route found in {hops} hops");
         if (hops >= Math.Log2(Globals.FINGER_TABLE_SIZE))
+        {
             Console.WriteLine("WARNING: Route took more hops than expected for efficient routing");
+            await AgnetaHandler.Log(1, "WARNING: Route took more hops than expected for efficient routing");
+        }
     }
 
     public static async Task TestDHT(M_Node node)
     {
         // Test 1: Basic connectivity
         Console.WriteLine("=== Testing Basic Connectivity ===");
+        await AgnetaHandler.Log(1, "=== Testing Basic Connectivity ===");
         PrintNodeState(node);
 
         // Test 2: Successor/Predecessor consistency
         Console.WriteLine("=== Testing Successor/Predecessor Links ===");
+        await AgnetaHandler.Log(1, "=== Testing Successor/Predecessor Links ===");
         var current = node;
         var visited = new HashSet<string>();
         var count = 0;
@@ -214,6 +233,7 @@ public static class NodeService
         {
             visited.Add(current.ip);
             Console.WriteLine($"Node {current.id} -> Successor {current.successor.id}");
+            await AgnetaHandler.Log(1, $"Node {current.id} -> Successor {current.successor.id}");
 
             // Verify that this node is its successor's predecessor
             GetPredecessorService gps = new GetPredecessorService();
@@ -221,6 +241,7 @@ public static class NodeService
             if (pred.Id != current.id)
             {
                 Console.WriteLine($"ERROR: Node {current.successor.id}'s predecessor is {pred.Id}, expected {current.id}");
+                await AgnetaHandler.Log(1, $"ERROR: Node {current.successor.id}'s predecessor is {pred.Id}, expected {current.id}"); 
             }
 
             current = current.successor;
@@ -229,6 +250,7 @@ public static class NodeService
 
         // Test 3: Routing efficiency
         Console.WriteLine("\n=== Testing Routing Efficiency ===");
+        await AgnetaHandler.Log(1, "\n=== Testing Routing Efficiency ===");
         // Test a few random targets
         Random rnd = new Random();
         for (int i = 0; i < 5; i++)
@@ -239,6 +261,7 @@ public static class NodeService
 
         // Test 4: Finger table coverage
         Console.WriteLine("\n=== Testing Finger Table Coverage ===");
+        await AgnetaHandler.Log(1, "\n=== Testing Finger Table Coverage ===");
         var fingerStarts = node.fingerTable.Keys.OrderBy(k => k).ToList();
         for (int i = 0; i < fingerStarts.Count - 1; i++)
         {
@@ -246,6 +269,7 @@ public static class NodeService
             if (gap > (1UL << (i + 1)))
             {
                 Console.WriteLine($"WARNING: Large gap between finger {i} ({fingerStarts[i]}) and {i + 1} ({fingerStarts[i + 1]})");
+                await AgnetaHandler.Log(1, $"WARNING: Large gap between finger {i} ({fingerStarts[i]}) and {i + 1} ({fingerStarts[i + 1]})");
             }
         }
     }
