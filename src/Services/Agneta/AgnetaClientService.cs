@@ -26,13 +26,26 @@ namespace Agent.Services.Agneta
 
         public AgnetaClientService(string uri)
         {
-            var handler = new HttpClientHandler(){
-                ServerCertificateCustomValidationCallback = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator
-            };
-
-            _client = new HttpClient(handler);
-            _url    = "https://agneta-loadbalancer.default.svc.cluster.local:443";
-            _uri = new Uri(uri);
+            try
+            {
+                var handler = new HttpClientHandler
+                {
+                    ServerCertificateCustomValidationCallback = 
+                        HttpClientHandler.DangerousAcceptAnyServerCertificateValidator
+                };
+        
+                _client = new HttpClient(handler);
+                _url = "https://agneta-loadbalancer.default.svc.cluster.local:443";
+                _uri = new Uri(uri);
+            }
+            catch (Exception ex)
+            {
+                // Log or handle the detailed exception information
+                Console.WriteLine($"Failed to create AgnetaClientService: {ex}");
+                
+                // Optionally rethrow to allow higher-level handling
+                throw;
+            }
         }
 
         public async Task<NeighbourData> GetAssignedNeighbour()
