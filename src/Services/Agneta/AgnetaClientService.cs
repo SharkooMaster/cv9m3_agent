@@ -28,12 +28,14 @@ namespace Agent.Services.Agneta
         {
             try
             {
+                _client_ws = new ClientWebSocket();
+
                 var handler = new HttpClientHandler
                 {
                     ServerCertificateCustomValidationCallback = 
                         HttpClientHandler.DangerousAcceptAnyServerCertificateValidator
                 };
-        
+
                 _client = new HttpClient(handler);
                 _url = "https://agneta-loadbalancer.default.svc.cluster.local:443";
                 _uri = new Uri(uri);
@@ -42,7 +44,7 @@ namespace Agent.Services.Agneta
             {
                 // Log or handle the detailed exception information
                 Console.WriteLine($"Failed to create AgnetaClientService: {ex}");
-                
+
                 // Optionally rethrow to allow higher-level handling
                 throw;
             }
