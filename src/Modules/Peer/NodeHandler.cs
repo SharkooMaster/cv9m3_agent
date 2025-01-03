@@ -143,6 +143,113 @@ public static class NodeService
         }
     }
 
+    public static void PrintNodeState(M_Node node)
+    {
+        Console.WriteLine($"\n=== Node State (ID: {node.id}) ===");
+        Console.WriteLine($"IP: {node.ip}");
+        Console.WriteLine($"Predecessor: {node.predecessor.id} ({node.predecessor.ip})");
+        Console.WriteLine($"Successor: {node.successor.id} ({node.successor.ip})");
+    
+        Console.WriteLine("\nFinger Table:");
+        Console.WriteLine("Start\t\tNode ID\t\tNode IP");
+        Console.WriteLine("----------------------------------------");
+        foreach (var entry in node.fingerTable.OrderBy(x => x.Key))
+        {
+            Console.WriteLine($"{entry.Key}\t\t{entry.Value.id}\t\t{entry.Value.ip}");
+        }
+        Console.WriteLine("========================================\n");
+    }
+
+    public static async Task TestRouting(M_Node startNode, ulong targetId, HashSet<string> visitedNodes = null)
+    {
+        if (visitedNodes == null)
+            visitedNodes = new HashSet<string>();
+
+        Console.WriteLine($"Testing route from Node {startNode.id} to target {targetId}");
+
+        var hops = 0;
+        var currentNodeIp = startNode.ip;
+
+        while (hops < Globals.FINGER_TABLE_SIZE) // Shouldn't take more hops than finger table size
+        {
+            if (visitedNodes.Contains(currentNodeIp))
+            {
+                Console.WriteLine("ERROR: Routing loop detected!");
+                return;
+            }
+
+            visitedNodes.Add(currentNodeIp);
+
+            FindPeerResponsibleService fprs = new FindPeerResponsibleService();
+            QueryReq req = new QueryReq() { Val = targetId };
+            QueryRes res = await fprs.ClientFind(req, currentNodeIp);
+
+            Console.WriteLine($"Hop {hops + 1}: Node {currentNodeIp} -> {res.Res}");
+
+            if (res.Res == currentNodeIp)
+                break;
+
+            currentNodeIp = res.Res;
+            hops++;
+        }
+
+        Console.WriteLine($"Route found in {hops} hops");
+        if (hops >= Math.Log2(Globals.FINGER_TABLE_SIZE))
+            Console.WriteLine("WARNING: Route took more hops than expected for efficient routing");
+    }
+
+    public static async Task TestDHT(M_Node node)
+    {
+        // Test 1: Basic connectivity
+        Console.WriteLine("=== Testing Basic Connectivity ===");
+        PrintNodeState(node);
+
+        // Test 2: Successor/Predecessor consistency
+        Console.WriteLine("=== Testing Successor/Predecessor Links ===");
+        var current = node;
+        var visited = new HashSet<string>();
+        var count = 0;
+
+        while (!visited.Contains(current.ip) && count < 100)
+        {
+            visited.Add(current.ip);
+            Console.WriteLine($"Node {current.id} -> Successor {current.successor.id}");
+
+            // Verify that this node is its successor's predecessor
+            GetPredecessorService gps = new GetPredecessorService();
+            var pred = await gps.ClientGet(current.successor.ip);
+            if (pred.Id != current.id)
+            {
+                Console.WriteLine($"ERROR: Node {current.successor.id}'s predecessor is {pred.Id}, expected {current.id}");
+            }
+
+            current = current.successor;
+            count++;
+        }
+
+        // Test 3: Routing efficiency
+        Console.WriteLine("\n=== Testing Routing Efficiency ===");
+        // Test a few random targets
+        Random rnd = new Random();
+        for (int i = 0; i < 5; i++)
+        {
+            ulong targetId = (ulong)rnd.Next(0, (int)Math.Pow(2, Globals.FINGER_TABLE_SIZE));
+            await TestRouting(node, targetId);
+        }
+
+        // Test 4: Finger table coverage
+        Console.WriteLine("\n=== Testing Finger Table Coverage ===");
+        var fingerStarts = node.fingerTable.Keys.OrderBy(k => k).ToList();
+        for (int i = 0; i < fingerStarts.Count - 1; i++)
+        {
+            var gap = fingerStarts[i + 1] - fingerStarts[i];
+            if (gap > (1UL << (i + 1)))
+            {
+                Console.WriteLine($"WARNING: Large gap between finger {i} ({fingerStarts[i]}) and {i + 1} ({fingerStarts[i + 1]})");
+            }
+        }
+    }
+
     public static async Task JoinNetwork(M_Node _node, string bootstrap_node_ip)
     {
         /*
@@ -239,6 +346,7 @@ public static class NodeService
 
             // Update other
             await UpdateOthers(_node);
+            await TestDHT(Globals._NODE);
         }
 
         Globals._NODE = _node;
