@@ -261,7 +261,10 @@ public static class NodeService
         Random rnd = new Random();
         for (int i = 0; i < 5; i++)
         {
-            ulong targetId = (ulong)rnd.Next(0, (int)Math.Pow(2, Globals.FINGER_TABLE_SIZE));
+            // Use the same modulo we use elsewhere in the Chord implementation
+            ulong modulo = 1UL << Globals.FINGER_TABLE_SIZE;
+            // Generate random ulong within our ring size
+            ulong targetId = (ulong)rnd.NextInt64(0, long.MaxValue) % modulo;
             await TestRouting(node, targetId);
         }
 
