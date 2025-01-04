@@ -61,6 +61,7 @@ app.MapGrpcService<GreeterService>();
 app.MapGrpcService<FindPeerResponsibleService>();
 app.MapGrpcService<GetNodeInfoService>();
 app.MapGrpcService<GetPredecessorService>();
+app.MapGrpcService<GetSuccessorService>();
 app.MapGrpcService<UpdatePredecessorService>();
 app.MapGrpcService<UpdateSuccessorService>();
 app.MapGrpcService<UpdateFingerTableService>();
