@@ -163,7 +163,7 @@ public static class NodeService
         Console.WriteLine("----------------------------------------");
         foreach (var entry in node.fingerTable.OrderBy(x => x.Key))
         {
-            Console.WriteLine($"{entry.Key}\t\t{entry.Value.id}\t\t{entry.Value.ip}");
+            // Console.WriteLine($"{entry.Key}\t\t{entry.Value.id}\t\t{entry.Value.ip}");
             await AgnetaHandler.Log(1, $"{entry.Key}\t\t{entry.Value.id}\t\t{entry.Value.ip}");
         }
         Console.WriteLine("========================================\n");
@@ -196,7 +196,7 @@ public static class NodeService
             QueryReq req = new QueryReq() { Val = targetId };
             QueryRes res = await fprs.ClientFind(req, currentNodeIp);
 
-            Console.WriteLine($"Hop {hops + 1}: Node {currentNodeIp} -> {res.Res}");
+            // Console.WriteLine($"Hop {hops + 1}: Node {currentNodeIp} -> {res.Res}");
             await AgnetaHandler.Log(1, $"Hop {hops + 1}: Node {currentNodeIp} -> {res.Res}");
 
             if (res.Res == currentNodeIp)
@@ -233,7 +233,7 @@ public static class NodeService
         while (!visited.Contains(current.ip) && count < 100)
         {
             visited.Add(current.ip);
-            Console.WriteLine($"Node {current.id} -> Successor {current.successor.id}");
+            // Console.WriteLine($"Node {current.id} -> Successor {current.successor.id}");
             await AgnetaHandler.Log(1, $"Node {current.id} -> Successor {current.successor.id}");
 
             // Verify that this node is its successor's predecessor
@@ -370,6 +370,7 @@ public static class NodeService
 
             // Update other
             await UpdateOthers(_node);
+            await TestDHT(Globals._NODE);
         }
 
         Globals._NODE = _node;
