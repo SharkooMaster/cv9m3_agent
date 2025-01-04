@@ -238,6 +238,7 @@ public static class NodeService
             await AgnetaHandler.Log(1, $"Node {current.id} -> Successor {current.successor.id} : {current.successor.ip}");
 
             // Verify that this node is its successor's predecessor
+            if(current.successor.ip == node.ip){ break; }
             GetPredecessor_Result pred = await gps.ClientGet(current.successor.ip);
             await AgnetaHandler.Log(1, "Predecessor recieved");
             if (pred.Id != current.id)
