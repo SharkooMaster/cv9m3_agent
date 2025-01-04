@@ -145,7 +145,7 @@ namespace Agent.Services.Agneta
 
             var buffer = Encoding.UTF8.GetBytes(message);
             await _client_ws.SendAsync(new ArraySegment<byte>(buffer), WebSocketMessageType.Text, true, CancellationToken.None);
-            Console.WriteLine($"Log sent to Agneta: {message}");
+            // Console.WriteLine($"Log sent to Agneta: {message}");
         }
 
         public async Task<string> RecieveMessageAsync()

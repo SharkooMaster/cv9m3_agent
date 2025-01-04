@@ -237,7 +237,8 @@ public static class NodeService
             await AgnetaHandler.Log(1, $"Node {current.id} -> Successor {current.successor.id} : {current.successor.ip}");
 
             // Verify that this node is its successor's predecessor
-            var pred = await gps.ClientGet(current.successor.ip);
+            GetPredecessor_Result pred = await gps.ClientGet(current.successor.ip);
+            await AgnetaHandler.Log(1, "Predecessor recieved");
             if (pred.Id != current.id)
             {
                 Console.WriteLine($"ERROR: Node {current.successor.id}'s predecessor is {pred.Id}, expected {current.id}");
@@ -246,11 +247,12 @@ public static class NodeService
 
             current = current.successor;
             count++;
+            await AgnetaHandler.Log(1, "Count updated");
         }
 
         // Test 3: Routing efficiency
-        Console.WriteLine("\n=== Testing Routing Efficiency ===");
-        await AgnetaHandler.Log(1, "\n=== Testing Routing Efficiency ===");
+        Console.WriteLine("=== Testing Routing Efficiency ===");
+        await AgnetaHandler.Log(1, "=== Testing Routing Efficiency ===");
         // Test a few random targets
         Random rnd = new Random();
         for (int i = 0; i < 5; i++)
