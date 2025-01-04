@@ -77,45 +77,6 @@ public static class NodeService
         return _node;
     }
 
-    public static async Task<M_Node> InitFingerTable(M_Node _node)
-    {
-        // First finger is just our successor
-        ulong firstFingerStart = (_node.id + 1) % (1UL << Globals.FINGER_TABLE_SIZE);
-        _node.fingerTable[firstFingerStart] = _node.successor;
-
-        // For each remaining finger
-        for (int i = 1; i < Globals.FINGER_TABLE_SIZE; i++)
-        {
-            ulong fingerStart = (_node.id + (1UL << i)) % (1UL << Globals.FINGER_TABLE_SIZE);
-
-            // If this finger start is between us and our previous finger
-            ulong prevFingerStart = (_node.id + (1UL << (i-1))) % (1UL << Globals.FINGER_TABLE_SIZE);
-            if (NodeUtils.inBetween(fingerStart, _node.id, _node.fingerTable[prevFingerStart].id))
-            {
-                // We can use the same node
-                _node.fingerTable[fingerStart] = _node.fingerTable[prevFingerStart];
-            }
-            else
-            {
-                // We need to find the responsible node through the network
-                FindPeerResponsibleService fprs = new FindPeerResponsibleService();
-                QueryReq req = new QueryReq() { Val = fingerStart };
-                // Important: Start the search from our known successor
-                QueryRes res = await fprs.ClientFind(req, _node.successor.ip);
-
-                GetNodeInfoService gnis = new GetNodeInfoService();
-                GetNodeInfo_Result nodeInfo = await gnis.ClientGet(res.Res);
-
-                _node.fingerTable[fingerStart] = new M_Node() 
-                { 
-                    id = nodeInfo.Id, 
-                    ip = nodeInfo.Ip 
-                };
-            }
-        }
-        return _node;
-    }
-
     public static async Task UpdateOthers(M_Node _node)
     {
         for (int i = 0; i < Globals.FINGER_TABLE_SIZE; i++)
@@ -296,104 +257,142 @@ public static class NodeService
 
     public static async Task JoinNetwork(M_Node _node, string bootstrap_node_ip)
     {
-        /*
-            * Assign ID to this node    [x]
-            * Find successor node through bootstrap_node [x]
-            * Get predecessor node from successor and update there routings [x]
-            * Build finger table [x]
-        */
         _node.id = NodeUtils.generateNodeID();
-        Console.WriteLine($"Joining network, id created: {_node.id.ToString()}");
-        await AgnetaHandler.Log(1, $"Joining network, id created: {_node.id.ToString()}");
+        await AgnetaHandler.Log(1, $"[DEBUG] Starting JoinNetwork - Node ID: {_node.id}, Bootstrap IP: {bootstrap_node_ip}");
 
         if(bootstrap_node_ip == _node.ip || bootstrap_node_ip == null || bootstrap_node_ip == "")
         {
-            Console.WriteLine($"Only peer in the network, creating default finger table.");
-            await AgnetaHandler.Log(1, $"Only peer in the network, creating default finger table.");
+            await AgnetaHandler.Log(1, "[DEBUG] Initializing as first node in network");
             // Only peer in the network
             _node.predecessor = _node;
             _node.successor = _node;
 
             for(int i = 0; i < Globals.FINGER_TABLE_SIZE; i++)
             {
-                // ulong fingerStart = (_node.id + (1UL << i)) % (1UL << Globals.FINGER_TABLE_SIZE);
                 ulong shift = 1UL << i;
                 ulong sum = _node.id + shift;
                 ulong modulo = (1UL << Globals.FINGER_TABLE_SIZE);
                 ulong fingerStart = sum % modulo;
+
+                await AgnetaHandler.Log(1, $"[DEBUG] Adding finger table entry {i}: Start={fingerStart}");
 
                 if (!_node.fingerTable.ContainsKey(fingerStart))
                 {
                     _node.fingerTable.Add(fingerStart, _node);
                 }
             }
-            Console.WriteLine($"fingerTable length: {_node.fingerTable.Count}");
         }
         else
         {
-            Console.WriteLine($"Bootstrap node exists");
-            await AgnetaHandler.Log(1, $"Bootstrap node exists");
-            // Use successor to create finger table
-            // First get basic info of successor
-            M_Node _successor = new M_Node();
+            await AgnetaHandler.Log(1, "[DEBUG] Joining existing network");
 
+            // Find successor
             FindPeerResponsibleService fprs = new FindPeerResponsibleService();
             QueryReq req = new QueryReq() { Val=_node.id };
             QueryRes result = await fprs.ClientFind(req, bootstrap_node_ip);
             string _successor_ip = result.Res;
-            _successor.ip = _successor_ip;
-            Console.WriteLine($"Found successor with ip: {_successor.ip}");
-            await AgnetaHandler.Log(1, $"Found successor with ip: {_successor.ip}");
 
+            await AgnetaHandler.Log(1, $"[DEBUG] Found successor IP: {_successor_ip}");
+
+            // Get successor info
             GetNodeInfoService gnis = new GetNodeInfoService();
             GetNodeInfo_Result gnis_res = await gnis.ClientGet(_successor_ip);
 
-            _successor.id = gnis_res.Id;
-            Console.WriteLine($"Successor id retrieved: {_successor.id}, my id is: {_node.id}");
-            await AgnetaHandler.Log(1, $"Successor id retrieved: {_successor.id}, my id is: {_node.id}");
+            M_Node _successor = new M_Node 
+            { 
+                id = gnis_res.Id,
+                ip = _successor_ip
+            };
 
-            // Assign new successor
-            _successor.predecessor = _node;
+            await AgnetaHandler.Log(1, $"[DEBUG] Successor details - ID: {_successor.id}, IP: {_successor.ip}");
+
+            // Set relationships
             _node.successor = _successor;
-            Console.WriteLine($"Updated my successor");
-            await AgnetaHandler.Log(1, $"Updated my successor");
 
-            // Build finger table by communicating with successor
-            Console.WriteLine($"Building finger table");
+            // Initialize finger table
+            await AgnetaHandler.Log(1, "[DEBUG] Starting finger table initialization");
             _node = await InitFingerTable(_node);
-            Console.WriteLine($"Created new finger table with help from successor");
-            await AgnetaHandler.Log(1, $"Created new finger table with help from successor");
 
-            // Get Predecessor from successor
+            // Get and set predecessor
             GetPredecessorService gps = new GetPredecessorService();
             GetPredecessor_Result gps_res = await gps.ClientGet(_successor.ip);
-            Console.WriteLine("got predecessor");
 
-            M_Node _predecessor = new M_Node() { id = gps_res.Id, ip = gps_res.Ip };
+            M_Node _predecessor = new M_Node() 
+            { 
+                id = gps_res.Id, 
+                ip = gps_res.Ip 
+            };
             _node.predecessor = _predecessor;
-            Console.WriteLine($"Predecessor retrieved from successor, id: {_node.predecessor.id}");
-            await AgnetaHandler.Log(1, $"Predecessor retrieved from successor, id: {_node.predecessor.id}");
 
-            // Update predecessor
+            await AgnetaHandler.Log(1, $"[DEBUG] Predecessor set - ID: {_predecessor.id}, IP: {_predecessor.ip}");
+
+            // Update other nodes
+            await AgnetaHandler.Log(1, "[DEBUG] Updating predecessor and successor links");
+
+            // Update successor's predecessor
             UpdatePredecessorService ups = new UpdatePredecessorService();
-            UpdatePredecessor_Req ups_req = new UpdatePredecessor_Req(){ Id = _node.id, Ip = _node.ip };
-            await ups.ClientUpdate(ups_req, _node.successor.ip);
-            Console.WriteLine($"Updated successors predecessor");
-            await AgnetaHandler.Log(1, $"Updated successors predecessor");
+            await ups.ClientUpdate(new UpdatePredecessor_Req(){ Id = _node.id, Ip = _node.ip }, _successor.ip);
 
-            // Update successor
+            // Update predecessor's successor
             UpdateSuccessorService uss = new UpdateSuccessorService();
-            UpdateSuccessor_Req uss_req = new UpdateSuccessor_Req(){ Id = _node.id, Ip = _node.ip };
-            await uss.ClientUpdate(uss_req, _node.predecessor.ip);
-            Console.WriteLine($"Updated predecessors successor");
-            await AgnetaHandler.Log(1, $"Updated predecessors successor");
+            await uss.ClientUpdate(new UpdateSuccessor_Req(){ Id = _node.id, Ip = _node.ip }, _predecessor.ip);
 
-            // Update other
+            await AgnetaHandler.Log(1, "[DEBUG] Starting UpdateOthers");
             await UpdateOthers(_node);
-            await TestDHT(Globals._NODE);
+
+            await AgnetaHandler.Log(1, "[DEBUG] Network join complete - Running DHT test");
+            await TestDHT(_node);
         }
 
         Globals._NODE = _node;
+    }
+
+    public static async Task<M_Node> InitFingerTable(M_Node _node)
+    {
+        await AgnetaHandler.Log(1, "[DEBUG] InitFingerTable - Starting initialization");
+
+        // First finger is successor
+        ulong firstFingerStart = (_node.id + 1) % (1UL << Globals.FINGER_TABLE_SIZE);
+        _node.fingerTable[firstFingerStart] = _node.successor;
+
+        await AgnetaHandler.Log(1, $"[DEBUG] First finger set - Start: {firstFingerStart}, Node: {_node.successor.id}");
+
+        // For remaining fingers
+        for (int i = 1; i < Globals.FINGER_TABLE_SIZE; i++)
+        {
+            ulong fingerStart = (_node.id + (1UL << i)) % (1UL << Globals.FINGER_TABLE_SIZE);
+            ulong prevFingerStart = (_node.id + (1UL << (i-1))) % (1UL << Globals.FINGER_TABLE_SIZE);
+
+            await AgnetaHandler.Log(1, $"[DEBUG] Processing finger {i} - Start: {fingerStart}, PrevStart: {prevFingerStart}");
+
+            if (NodeUtils.inBetween(fingerStart, _node.id, _node.fingerTable[prevFingerStart].id))
+            {
+                _node.fingerTable[fingerStart] = _node.fingerTable[prevFingerStart];
+                await AgnetaHandler.Log(1, $"[DEBUG] Reused previous finger - ID: {_node.fingerTable[fingerStart].id}");
+            }
+            else
+            {
+                FindPeerResponsibleService fprs = new FindPeerResponsibleService();
+                QueryReq req = new QueryReq() { Val = fingerStart };
+                QueryRes res = await fprs.ClientFind(req, _node.successor.ip);
+
+                await AgnetaHandler.Log(1, $"[DEBUG] Found responsible peer for finger {i}: {res.Res}");
+
+                GetNodeInfoService gnis = new GetNodeInfoService();
+                GetNodeInfo_Result nodeInfo = await gnis.ClientGet(res.Res);
+
+                _node.fingerTable[fingerStart] = new M_Node() 
+                { 
+                    id = nodeInfo.Id, 
+                    ip = nodeInfo.Ip 
+                };
+
+                await AgnetaHandler.Log(1, $"[DEBUG] Added new finger - ID: {nodeInfo.Id}, IP: {nodeInfo.Ip}");
+            }
+        }
+
+        await AgnetaHandler.Log(1, "[DEBUG] InitFingerTable - Initialization complete");
+        return _node;
     }
 
     public static async Task<string> FindPeerResponsible(M_Node _node, ulong target)
