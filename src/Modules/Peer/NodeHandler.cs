@@ -122,12 +122,12 @@ public static class NodeService
         {
             // Find last node p whose i-th finger might be us
             ulong update_start = (_node.id - (1UL << i)) % (1UL << Globals.FINGER_TABLE_SIZE);
-
-            // Find the predecessor of this position
+            
+            // Find the node responsible for update_start
             FindPeerResponsibleService fprs = new FindPeerResponsibleService();
             QueryReq req = new QueryReq() { Val = update_start };
             QueryRes res = await fprs.ClientFind(req, _node.successor.ip);
-
+            
             // Update that node's finger table
             if (res.Res != _node.ip)  // Don't update ourselves
             {
@@ -291,6 +291,7 @@ public static class NodeService
                 await AgnetaHandler.Log(1, $"WARNING: Large gap between finger {i} ({fingerStarts[i]}) and {i + 1} ({fingerStarts[i + 1]})");
             }
         }
+        await AgnetaHandler.Log(1, "\n=== Complete ===");
     }
 
     public static async Task JoinNetwork(M_Node _node, string bootstrap_node_ip)
@@ -397,57 +398,37 @@ public static class NodeService
 
     public static async Task<string> FindPeerResponsible(M_Node _node, ulong target)
     {
-        // First, handle the simple case - if we're responsible for this target
+        // First check if target is between our predecessor and us
         if (NodeUtils.inBetween(target, _node.predecessor.id, _node.id))
         {
-            Console.WriteLine($"Node {_node.id} is directly responsible for target {target}");
             return _node.ip;
         }
-    
-        // Second case - if it's between us and our successor
+
+        // Then check if target is between us and our successor
         if (NodeUtils.inBetween(target, _node.id, _node.successor.id))
         {
-            Console.WriteLine($"Successor {_node.successor.id} is responsible for target {target}");
             return _node.successor.ip;
         }
-    
-        // Find the closest preceding finger that could help us
+
+        // If not, we need to use our finger table
         ulong[] fingerTableKeys = _node.fingerTable.Keys.ToArray();
-        M_Node bestCandidate = _node;
-        
-        for (int i = Globals.FINGER_TABLE_SIZE - 1; i >= 0; i--)
+        for (int i = _node.fingerTable.Count - 1; i >= 0; i--)
         {
             M_Node finger = _node.fingerTable[fingerTableKeys[i]];
-            
-            // Skip if the finger points to ourselves
-            if (finger.ip == _node.ip)
+
+            // Skip ourselves and our immediate successor (already checked)
+            if (finger.ip == _node.ip || finger.ip == _node.successor.ip)
                 continue;
-                
-            // Skip if the finger points to our successor (we already checked that case)
-            if (finger.ip == _node.successor.ip)
-                continue;
-                
-            // If this finger is between us and the target, it's our best candidate
+
+            // If this finger is between us and target
             if (NodeUtils.inBetween(finger.id, _node.id, target))
             {
-                bestCandidate = finger;
-                break;
+                return finger.ip;
             }
         }
-    
-        // If we couldn't find a better candidate, forward to our successor
-        if (bestCandidate.id == _node.id)
-        {
-            Console.WriteLine($"No better candidate found, forwarding to successor {_node.successor.id}");
-            return _node.successor.ip;
-        }
-    
-        // Forward the query to our best candidate
-        Console.WriteLine($"Forwarding query for {target} to node {bestCandidate.id}");
-        FindPeerResponsibleService fprs = new FindPeerResponsibleService();
-        QueryReq req = new QueryReq() { Val = target };
-        QueryRes result = await fprs.ClientFind(req, bestCandidate.ip);
-        return result.Res;
+
+        // If we found nothing better, forward to our successor
+        return _node.successor.ip;
     }
 
     public static M_Node ClosestPrecedingFinger(M_Node _node, ulong target)
