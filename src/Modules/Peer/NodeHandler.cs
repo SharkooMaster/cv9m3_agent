@@ -191,18 +191,27 @@ public static class NodeService
             }
 
             visitedNodes.Add(currentNodeIp);
-
-            FindPeerResponsibleService fprs = new FindPeerResponsibleService();
-            QueryReq req = new QueryReq() { Val = targetId };
-            QueryRes res = await fprs.ClientFind(req, currentNodeIp);
+            
+            string res = "";
+            if(currentNodeIp == Globals._NODE.ip)
+            {
+                FindPeerResponsibleService fprs = new FindPeerResponsibleService();
+                QueryReq req = new QueryReq() { Val = targetId };
+                QueryRes _res = await fprs.ClientFind(req, currentNodeIp);
+                res = _res.Res;
+            }
+            else
+            {
+                res = await FindPeerResponsible(Globals._NODE, targetId);
+            }
 
             // Console.WriteLine($"Hop {hops + 1}: Node {currentNodeIp} -> {res.Res}");
-            await AgnetaHandler.Log(1, $"Hop {hops + 1}: Node {currentNodeIp} -> {res.Res}");
+            await AgnetaHandler.Log(1, $"Hop {hops + 1}: Node {currentNodeIp} -> {res}");
 
-            if (res.Res == currentNodeIp)
+            if (res == currentNodeIp)
                 break;
 
-            currentNodeIp = res.Res;
+            currentNodeIp = res;
             hops++;
         }
 
