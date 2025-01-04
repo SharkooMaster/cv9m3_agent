@@ -1,4 +1,5 @@
 
+using Agent.Modules.Agneta;
 using Agent.Utils.Globals;
 using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
@@ -24,7 +25,9 @@ public class GetPredecessorService : GetPredecessor.GetPredecessorBase
             var channel = GrpcChannel.ForAddress($"http://{_ip}:5000");
             GetPredecessor.GetPredecessorClient _client = new GetPredecessor.GetPredecessorClient(channel);
 
+            await AgnetaHandler.Log(1, "Sending");
             var response = await _client.GetAsync(new Empty());
+            await AgnetaHandler.Log(1, "Sent");
 
             return response;
         }
