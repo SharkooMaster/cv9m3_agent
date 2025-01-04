@@ -180,6 +180,7 @@ public static class NodeService
 
         var hops = 0;
         var currentNodeIp = startNode.ip;
+        FindPeerResponsibleService fprs = new FindPeerResponsibleService();
 
         while (hops < Globals.FINGER_TABLE_SIZE) // Shouldn't take more hops than finger table size
         {
@@ -193,9 +194,9 @@ public static class NodeService
             visitedNodes.Add(currentNodeIp);
             
             string res = "";
+            await AgnetaHandler.Log(1, $"Testing rout to ip: {currentNodeIp}");
             if(currentNodeIp == Globals._NODE.ip)
             {
-                FindPeerResponsibleService fprs = new FindPeerResponsibleService();
                 QueryReq req = new QueryReq() { Val = targetId };
                 QueryRes _res = await fprs.ClientFind(req, currentNodeIp);
                 res = _res.Res;
