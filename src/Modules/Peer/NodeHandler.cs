@@ -195,7 +195,7 @@ public static class NodeService
             
             string res = "";
             await AgnetaHandler.Log(1, $"Testing rout to ip: {currentNodeIp}, my ip: {Globals._NODE.ip}");
-            if(currentNodeIp == Globals._NODE.ip)
+            if(currentNodeIp != Globals._NODE.ip)
             {
                 QueryReq req = new QueryReq() { Val = targetId };
                 QueryRes _res = await fprs.ClientFind(req, currentNodeIp);
