@@ -194,7 +194,7 @@ public static class NodeService
             visitedNodes.Add(currentNodeIp);
             
             string res = "";
-            await AgnetaHandler.Log(1, $"Testing rout to ip: {currentNodeIp}");
+            await AgnetaHandler.Log(1, $"Testing rout to ip: {currentNodeIp}, my ip: {Globals._NODE.ip}");
             if(currentNodeIp == Globals._NODE.ip)
             {
                 QueryReq req = new QueryReq() { Val = targetId };
