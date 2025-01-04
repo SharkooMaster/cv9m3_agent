@@ -234,7 +234,7 @@ public static class NodeService
         {
             visited.Add(current.ip);
             // Console.WriteLine($"Node {current.id} -> Successor {current.successor.id}");
-            await AgnetaHandler.Log(1, $"Node {current.id} -> Successor {current.successor.id}");
+            await AgnetaHandler.Log(1, $"Node {current.id} -> Successor {current.successor.id} : {current.successor.ip}");
 
             // Verify that this node is its successor's predecessor
             var pred = await gps.ClientGet(current.successor.ip);
