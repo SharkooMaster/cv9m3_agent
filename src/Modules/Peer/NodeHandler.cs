@@ -306,6 +306,20 @@ public static class NodeService
 
             await AgnetaHandler.Log(1, $"[DEBUG] Successor details - ID: {_successor.id}, IP: {_successor.ip}");
 
+            _node.successor = _successor;
+            _successor.predecessor = _node;
+            
+            // Update the predecessor's successor link
+            UpdateSuccessorService uss = new UpdateSuccessorService();
+            if (_node.predecessor != null && _node.predecessor.id != _node.id)
+            {
+                await uss.ClientUpdate(new UpdateSuccessor_Req() 
+                { 
+                    Id = _node.id, 
+                    Ip = _node.ip 
+                }, _node.predecessor.ip);
+            }
+
             // Set relationships
             _node.successor = _successor;
 
@@ -334,7 +348,6 @@ public static class NodeService
             await ups.ClientUpdate(new UpdatePredecessor_Req(){ Id = _node.id, Ip = _node.ip }, _successor.ip);
 
             // Update predecessor's successor
-            UpdateSuccessorService uss = new UpdateSuccessorService();
             await uss.ClientUpdate(new UpdateSuccessor_Req(){ Id = _node.id, Ip = _node.ip }, _predecessor.ip);
 
             await AgnetaHandler.Log(1, "[DEBUG] Starting UpdateOthers");
@@ -349,85 +362,69 @@ public static class NodeService
 
     public static async Task<M_Node> InitFingerTable(M_Node _node)
     {
-        await AgnetaHandler.Log(1, "[DEBUG] InitFingerTable - Starting initialization");
-
         // First finger is successor
         ulong firstFingerStart = (_node.id + 1) % (1UL << Globals.FINGER_TABLE_SIZE);
         _node.fingerTable[firstFingerStart] = _node.successor;
-
-        await AgnetaHandler.Log(1, $"[DEBUG] First finger set - Start: {firstFingerStart}, Node: {_node.successor.id}");
-
+    
         // For remaining fingers
         for (int i = 1; i < Globals.FINGER_TABLE_SIZE; i++)
         {
             ulong fingerStart = (_node.id + (1UL << i)) % (1UL << Globals.FINGER_TABLE_SIZE);
-            ulong prevFingerStart = (_node.id + (1UL << (i-1))) % (1UL << Globals.FINGER_TABLE_SIZE);
-
-            await AgnetaHandler.Log(1, $"[DEBUG] Processing finger {i} - Start: {fingerStart}, PrevStart: {prevFingerStart}");
-
-            if (NodeUtils.inBetween(fingerStart, _node.id, _node.fingerTable[prevFingerStart].id))
+            
+            // Only reuse previous finger if really in the same interval
+            if (i > 0)
             {
-                _node.fingerTable[fingerStart] = _node.fingerTable[prevFingerStart];
-                await AgnetaHandler.Log(1, $"[DEBUG] Reused previous finger - ID: {_node.fingerTable[fingerStart].id}");
-            }
-            else
-            {
-                FindPeerResponsibleService fprs = new FindPeerResponsibleService();
-                QueryReq req = new QueryReq() { Val = fingerStart };
-                QueryRes res = await fprs.ClientFind(req, _node.successor.ip);
-
-                await AgnetaHandler.Log(1, $"[DEBUG] Found responsible peer for finger {i}: {res.Res}");
-
-                GetNodeInfoService gnis = new GetNodeInfoService();
-                GetNodeInfo_Result nodeInfo = await gnis.ClientGet(res.Res);
-
-                _node.fingerTable[fingerStart] = new M_Node() 
-                { 
-                    id = nodeInfo.Id, 
-                    ip = nodeInfo.Ip 
-                };
-
-                await AgnetaHandler.Log(1, $"[DEBUG] Added new finger - ID: {nodeInfo.Id}, IP: {nodeInfo.Ip}");
+                ulong prevStart = (_node.id + (1UL << (i-1))) % (1UL << Globals.FINGER_TABLE_SIZE);
+                ulong prevNode = _node.fingerTable[prevStart].id;
+                
+                // Check if this finger should use a different node
+                if (!NodeUtils.inBetween(fingerStart, prevNode, _node.fingerTable[prevStart].id))
+                {
+                    // Find new responsible node
+                    FindPeerResponsibleService fprs = new FindPeerResponsibleService();
+                    QueryReq req = new QueryReq() { Val = fingerStart };
+                    QueryRes res = await fprs.ClientFind(req, _node.successor.ip);
+    
+                    GetNodeInfoService gnis = new GetNodeInfoService();
+                    GetNodeInfo_Result nodeInfo = await gnis.ClientGet(res.Res);
+    
+                    _node.fingerTable[fingerStart] = new M_Node() 
+                    { 
+                        id = nodeInfo.Id, 
+                        ip = nodeInfo.Ip 
+                    };
+                }
+                else
+                {
+                    _node.fingerTable[fingerStart] = _node.fingerTable[prevStart];
+                }
             }
         }
-
-        await AgnetaHandler.Log(1, "[DEBUG] InitFingerTable - Initialization complete");
         return _node;
     }
 
     public static async Task<string> FindPeerResponsible(M_Node _node, ulong target)
     {
-        // First check if target is between our predecessor and us
-        if (NodeUtils.inBetween(target, _node.predecessor.id, _node.id))
-        {
+        // If we're alone in the network
+        if (_node.successor.id == _node.id)
             return _node.ip;
-        }
 
-        // Then check if target is between us and our successor
+        // If target is between us and our successor
         if (NodeUtils.inBetween(target, _node.id, _node.successor.id))
-        {
             return _node.successor.ip;
-        }
 
-        // If not, we need to use our finger table
-        ulong[] fingerTableKeys = _node.fingerTable.Keys.ToArray();
-        for (int i = _node.fingerTable.Count - 1; i >= 0; i--)
-        {
-            M_Node finger = _node.fingerTable[fingerTableKeys[i]];
+        // If target is between predecessor and us
+        if (NodeUtils.inBetween(target, _node.predecessor.id, _node.id))
+            return _node.ip;
 
-            // Skip ourselves and our immediate successor (already checked)
-            if (finger.ip == _node.ip || finger.ip == _node.successor.ip)
-                continue;
+        // Find closest preceding finger
+        M_Node nextHop = ClosestPrecedingFinger(_node, target);
 
-            // If this finger is between us and target
-            if (NodeUtils.inBetween(finger.id, _node.id, target))
-            {
-                return finger.ip;
-            }
-        }
+        // If we're the closest, return successor
+        if (nextHop.id == _node.id)
+            return _node.successor.ip;
 
-        // If we found nothing better, forward to our successor
-        return _node.successor.ip;
+        return nextHop.ip;
     }
 
     public static M_Node ClosestPrecedingFinger(M_Node _node, ulong target)
