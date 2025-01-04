@@ -230,7 +230,7 @@ public static class NodeService
         var count = 0;
 
         GetPredecessorService gps = new GetPredecessorService();
-        GetNodeInfoService gni = new GetNodeInfoService();
+        GetSuccessorService gss = new GetSuccessorService();
         while (!visited.Contains(current.ip) && count < 100)
         {
             visited.Add(current.ip);
@@ -247,8 +247,8 @@ public static class NodeService
             }
 
             current = current.successor;
-            GetNodeInfo_Result gni_res = await gni.ClientGet(current.ip);
-            //current.successor = gni_res.
+            M_Node gss_res = await gss.ClientGet(current.ip);
+            current.successor = gss_res;
             count++;
             await AgnetaHandler.Log(1, "Count updated");
         }
