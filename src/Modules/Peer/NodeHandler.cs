@@ -54,6 +54,8 @@ public static class NodeService
         _node = await BuildFingerTable(_node);
 
         // 4. Transfer necessary keys
+
+        Globals._NODE = _node;
     }
 
     public static async Task<M_Node> BuildFingerTable(M_Node _node)
