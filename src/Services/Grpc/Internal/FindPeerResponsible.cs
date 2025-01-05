@@ -8,7 +8,7 @@ public class FindPeerResponsibleService : FindPeerResponsible.FindPeerResponsibl
 {
     public override async Task<QueryRes> Find(QueryReq request, ServerCallContext context)
     {
-        string peerFound = await NodeService.FindPeerResponsible(Globals._NODE, request.Val);
+        string peerFound = await NodeService.FindSuccessor(Globals._NODE, request.Val);
         QueryRes resp = new QueryRes();
         resp.Res = peerFound;
 
