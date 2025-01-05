@@ -20,6 +20,8 @@ public static class NodeService
 
     public static async Task Join(M_Node _node, string bootstrapNodeIp)
     {
+        _node.id = NodeUtils.generateNodeID();
+
         if (bootstrapNodeIp == null)
         {
             // First node in network
