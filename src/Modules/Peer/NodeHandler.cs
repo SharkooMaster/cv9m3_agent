@@ -49,7 +49,41 @@ public static class NodeService
         await _updateSuccessorService.ClientUpdate(updateSuccessor_req, _node.predecessor.ip);
 
         // 3. Build finger table
+        _node = await BuildFingerTable(_node);
+
         // 4. Transfer necessary keys
+    }
+
+    public static async Task<M_Node> BuildFingerTable(M_Node _node)
+    {
+        ulong[] fingerTableKeys = _node.fingerTable.Keys.ToArray();
+        _node.fingerTable[fingerTableKeys[0]] = _node.successor;
+
+        for (int i = 1; i < Globals.FINGER_TABLE_SIZE; i++)
+        {
+            ulong fingerStart = (_node.id + (1UL << i)) % (1UL << Globals.FINGER_TABLE_SIZE);
+
+            string _ip = await FindSuccessor(_node, fingerStart);
+            GetNodeInfo_Result _getNodeInfo_Result = await _getNodeInfoService.ClientGet(_ip);
+            _node.fingerTable[fingerTableKeys[i]] = new M_Node() { id = _getNodeInfo_Result.Id, ip = _getNodeInfo_Result.Ip };
+        }
+
+        await UpdateOthers(_node);
+        return _node;
+    }
+
+    public static async Task<M_Node> UpdateOthers(M_Node _node)
+    {
+        ulong[] fingerTableKeys = _node.fingerTable.Keys.ToArray();
+        for (int i = 0; i < Globals.FINGER_TABLE_SIZE; i++)
+        {
+            ulong updateStart = (_node.id - (1UL << i)) % (1UL << Globals.FINGER_TABLE_SIZE);
+
+            string p = await FindSuccessor(_node, updateStart);
+            GetNodeInfo_Result _getNodeInfo_Result = await _getNodeInfoService.ClientGet(p);
+            _node.fingerTable[fingerTableKeys[i]] = new M_Node() { id = _getNodeInfo_Result.Id, ip = _getNodeInfo_Result.Ip };
+        }
+        return _node;
     }
 
     public static async Task<string> FindSuccessor(M_Node _node, ulong id)
@@ -88,11 +122,43 @@ public static class NodeService
     {
         // Periodically verify successor
         // and notify it about this node
+        GetPredecessor_Result _getPredecessor_Result = await _getPredecessorService.ClientGet(_node.successor.ip);
+        M_Node x = new M_Node() { id = _getPredecessor_Result.Id, ip = _getPredecessor_Result.Ip };
+
+        if(x != null && x.id != _node.id && NodeUtils.inBetween(x.id, _node.id, _node.successor.id))
+        {
+            _node.successor = x;
+        }
+
+        UpdateSuccessor_Req _updateSuccessor_Req = new UpdateSuccessor_Req() { Id = _node.id, Ip = _node.ip };
+        await _updateSuccessorService.ClientUpdate(_updateSuccessor_Req, _node.successor.ip);
     }
 
+    public static int nextFingerToStabalize = 0;
     public static async Task FixFingers(M_Node _node)
     {
         // Periodically refresh finger table entries
+        try
+        {
+            nextFingerToStabalize = (nextFingerToStabalize + 1) % Globals.FINGER_TABLE_SIZE;
+
+            ulong fingerStart = (_node.id + (1UL << nextFingerToStabalize)) % (1UL << Globals.FINGER_TABLE_SIZE);
+        
+            string _ip = await FindSuccessor(_node, fingerStart);
+            GetNodeInfo_Result _getNodeInfo_Result = await _getNodeInfoService.ClientGet(_ip);
+            M_Node responsible = new M_Node() { id = _getNodeInfo_Result.Id, ip = _getNodeInfo_Result.Ip };
+
+            ulong[] fingerTableKeys = _node.fingerTable.Keys.ToArray();
+            if(_node.fingerTable[fingerTableKeys[nextFingerToStabalize]].id != responsible.id)
+            {
+                _node.fingerTable[fingerTableKeys[nextFingerToStabalize]] = responsible;
+                await AgnetaHandler.Log(1, $"Updated finger {nextFingerToStabalize} to node {responsible.id}");
+            }
+        }
+        catch (Exception e)
+        {
+            await AgnetaHandler.Log(1, $"Failed to fix finger {nextFingerToStabalize}: {e.Message}");
+        }
     }
 
     public static async Task CheckPredecessor(M_Node _node)
