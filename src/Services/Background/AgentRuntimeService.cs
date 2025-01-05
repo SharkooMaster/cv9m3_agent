@@ -5,6 +5,7 @@ using Agent.Utils.Misc;
 using Agent.Utils.Globals;
 using Agent.Interfaces.Agneta;
 using Agent.Modules.Agneta;
+using Agent.Modules.Peer;
 namespace Agent.Services;
 
 public class AgentRuntimeService : BackgroundService
@@ -23,6 +24,9 @@ public class AgentRuntimeService : BackgroundService
             try
             {
                 await AgnetaHandler.SendUsageStats();
+                Globals._NODE = await NodeService.Stabilize(Globals._NODE);
+                Globals._NODE = await NodeService.FixFingers(Globals._NODE);
+                Globals._NODE = await NodeService.CheckPredecessor(Globals._NODE);
                 await Task.Delay(TimeSpan.FromSeconds(10), stoppingToken);
             }
             catch (TaskCanceledException)
