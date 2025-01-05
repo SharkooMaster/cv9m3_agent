@@ -32,6 +32,7 @@
 
     <Protobuf Include="Protos\Internal\GetPredecessor.proto" GrpcServices="Both" />
     <Protobuf Include="Protos\Internal\GetSuccessor.proto" GrpcServices="Both" />
+    <Protobuf Include="Protos\Internal\GetHealth.proto" GrpcServices="Both" />
     <Protobuf Include="Protos\Internal\GetNodeInfo.proto" GrpcServices="Both" />
     <Protobuf Include="Protos\Internal\UpdatePredecessor.proto" GrpcServices="Both" />
     <Protobuf Include="Protos\Internal\UpdateSuccessor.proto" GrpcServices="Both" />

@@ -12,9 +12,11 @@ public static class NodeService
 
     public static GetNodeInfoService _getNodeInfoService = new GetNodeInfoService();
     public static GetPredecessorService _getPredecessorService = new GetPredecessorService();
+    public static GetHealthService _getHealth = new GetHealthService();
 
     public static UpdateSuccessorService _updateSuccessorService = new UpdateSuccessorService();
     public static UpdatePredecessorService _updatePredecessorService = new UpdatePredecessorService();
+    public static UpdateFingerTableService _updateFingerTableService = new UpdateFingerTableService();
 
     public static async Task Join(M_Node _node, string bootstrapNodeIp)
     {
@@ -72,7 +74,7 @@ public static class NodeService
         return _node;
     }
 
-    public static async Task<M_Node> UpdateOthers(M_Node _node)
+    public static async Task UpdateOthers(M_Node _node)
     {
         ulong[] fingerTableKeys = _node.fingerTable.Keys.ToArray();
         for (int i = 0; i < Globals.FINGER_TABLE_SIZE; i++)
@@ -80,9 +82,19 @@ public static class NodeService
             ulong updateStart = (_node.id - (1UL << i)) % (1UL << Globals.FINGER_TABLE_SIZE);
 
             string p = await FindSuccessor(_node, updateStart);
-            GetNodeInfo_Result _getNodeInfo_Result = await _getNodeInfoService.ClientGet(p);
-            _node.fingerTable[fingerTableKeys[i]] = new M_Node() { id = _getNodeInfo_Result.Id, ip = _getNodeInfo_Result.Ip };
+            UpdateFingerTable_Req _updateFingerTable_Req = new UpdateFingerTable_Req() {
+                FingerIndex = i,
+                Id = _node.id,
+                Ip = _node.ip
+            };
+            await _updateFingerTableService.ClientUpdate(_updateFingerTable_Req, p);
         }
+    }
+
+    public static async Task<M_Node> UpdateFingerTable(M_Node _node, M_Node new_node, int _fingerIndex)
+    {
+        ulong[] fingerTableKeys = _node.fingerTable.Keys.ToArray();
+        _node.fingerTable[fingerTableKeys[_fingerIndex]] = new_node;
         return _node;
     }
 
@@ -118,7 +130,7 @@ public static class NodeService
         return _res.Res;
     }
 
-    public static async Task Stabilize(M_Node _node)
+    public static async Task<M_Node> Stabilize(M_Node _node)
     {
         // Periodically verify successor
         // and notify it about this node
@@ -132,10 +144,12 @@ public static class NodeService
 
         UpdateSuccessor_Req _updateSuccessor_Req = new UpdateSuccessor_Req() { Id = _node.id, Ip = _node.ip };
         await _updateSuccessorService.ClientUpdate(_updateSuccessor_Req, _node.successor.ip);
+        
+        return _node;
     }
 
     public static int nextFingerToStabalize = 0;
-    public static async Task FixFingers(M_Node _node)
+    public static async Task<M_Node> FixFingers(M_Node _node)
     {
         // Periodically refresh finger table entries
         try
@@ -159,11 +173,35 @@ public static class NodeService
         {
             await AgnetaHandler.Log(1, $"Failed to fix finger {nextFingerToStabalize}: {e.Message}");
         }
+
+        return _node;
     }
 
-    public static async Task CheckPredecessor(M_Node _node)
+    public static async Task<M_Node> CheckPredecessor(M_Node _node)
     {
         // Periodically check if predecessor is alive
+        if(_node.predecessor != null)
+        {
+            try
+            {
+                GetHealth_Result res = await _getHealth.ClientGet(_node.predecessor.ip);
+                if(res.Status != "Healthy")
+                {
+                    await AgnetaHandler.Log(1, $"CheckPredecessor failed, status: {res.Status}");
+                }
+            }
+            catch(TimeoutException)
+            {
+                await AgnetaHandler.Log(1, $"Predecessor {_node.predecessor.id} : {_node.predecessor.ip} timedout");
+                _node.predecessor = null;
+            }
+            catch(Exception ex)
+            {
+                await AgnetaHandler.Log(1, $"Failed to check predecessor: {ex.Message}");
+                _node.predecessor = null;
+            }
+        }
+        return _node;
     }
 
 }
