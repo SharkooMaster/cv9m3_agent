@@ -58,8 +58,7 @@ public static class NodeService
 
     public static async Task<M_Node> BuildFingerTable(M_Node _node)
     {
-        ulong[] fingerTableKeys = _node.fingerTable.Keys.ToArray();
-        _node.fingerTable[fingerTableKeys[0]] = _node.successor;
+        _node.fingerTable[(_node.id + (1UL << 0)) % (1UL << Globals.FINGER_TABLE_SIZE)] = _node.successor;
 
         for (int i = 1; i < Globals.FINGER_TABLE_SIZE; i++)
         {
@@ -67,7 +66,7 @@ public static class NodeService
 
             string _ip = await FindSuccessor(_node, fingerStart);
             GetNodeInfo_Result _getNodeInfo_Result = await _getNodeInfoService.ClientGet(_ip);
-            _node.fingerTable[fingerTableKeys[i]] = new M_Node() { id = _getNodeInfo_Result.Id, ip = _getNodeInfo_Result.Ip };
+            _node.fingerTable[fingerStart] = new M_Node() { id = _getNodeInfo_Result.Id, ip = _getNodeInfo_Result.Ip };
         }
 
         await UpdateOthers(_node);
