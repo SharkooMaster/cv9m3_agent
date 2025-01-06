@@ -71,6 +71,7 @@ public static class NodeService
         await AgnetaHandler.Log(1, $"Finger table built");
 
         // 4. Transfer necessary keys
+        // soon
 
         Globals._NODE = _node;
     }
