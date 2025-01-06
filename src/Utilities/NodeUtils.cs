@@ -10,7 +10,7 @@ namespace Agent.Utils;
 
 public static class NodeUtils
 {
-    public static async ulong generateNodeID()
+    public static async Task<ulong> generateNodeID()
     {
         string ip = Misc.Misc.GetLocalIPAddress();
         string port = "5000";
