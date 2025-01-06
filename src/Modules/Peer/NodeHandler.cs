@@ -25,7 +25,7 @@ public static class NodeService
 
         if (bootstrapNodeIp == null)
         {
-            await AgnetaHandler.Log(1, $"No bootstrap node detected");
+            await AgnetaHandler.Log(1, $"No bootstrap node detected.");
             // First node in network
             _node.successor = new M_Node() { id = _node.id, ip = _node.ip };
             _node.predecessor = new M_Node() { id = _node.id, ip = _node.ip };
