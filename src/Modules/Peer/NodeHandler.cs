@@ -26,8 +26,8 @@ public static class NodeService
         {
             await AgnetaHandler.Log(1, $"No bootstrap node detected");
             // First node in network
-            _node.successor = _node;
-            _node.predecessor = _node;
+            _node.successor = new M_Node() { id = _node.id, ip = _node.ip };
+            _node.predecessor = new M_Node() { id = _node.id, ip = _node.ip };
             
             await AgnetaHandler.Log(1, $"Building finger table");
             await BuildFingerTable(_node);
