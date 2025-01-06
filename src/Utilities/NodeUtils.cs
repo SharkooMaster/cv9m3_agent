@@ -2,6 +2,7 @@
 using System.Numerics;
 using System.Security.Cryptography;
 using System.Text;
+using Agent.Modules.Agneta;
 using Agent.Utils.Misc;
 using Google.Protobuf.Reflection;
 
@@ -9,12 +10,13 @@ namespace Agent.Utils;
 
 public static class NodeUtils
 {
-    public static ulong generateNodeID()
+    public static async ulong generateNodeID()
     {
         string ip = Misc.Misc.GetLocalIPAddress();
         string port = "5000";
 
         string input = $"{ip}:{port}";
+        await AgnetaHandler.Log(1, $"Hashing input: {input} to a valid id");
 
         using(SHA256 sha256 = SHA256.Create())
         {
