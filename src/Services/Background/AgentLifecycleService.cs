@@ -9,6 +9,7 @@ using Agent.Models.Misc;
 using Agent.Modules.Agneta;
 using System.Numerics;
 using Agent.Modules.Peer;
+using Agent.Utils;
 namespace Agent.Services;
 
 public class AgentLifeCycleService : IHostedService
@@ -30,6 +31,7 @@ public class AgentLifeCycleService : IHostedService
         Globals.ETCD_VALUE = _data;
 
         Globals._NODE.ip = Misc.GetLocalIPAddress();
+        Globals._NODE.id = NodeUtils.generateNodeID();
 
         // Getting target neighbor
         try

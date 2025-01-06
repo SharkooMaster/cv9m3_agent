@@ -20,8 +20,6 @@ public static class NodeService
 
     public static async Task Join(M_Node _node, string bootstrapNodeIp)
     {
-        await AgnetaHandler.Log(1, $"Joining");
-        _node.id = NodeUtils.generateNodeID();
         await AgnetaHandler.Log(1, $"Joined with id: {_node.id}");
 
         if (bootstrapNodeIp == null)
