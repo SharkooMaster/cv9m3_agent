@@ -30,7 +30,7 @@ public static class NodeService
             _node.predecessor = new M_Node() { id = _node.id, ip = _node.ip };
             
             await AgnetaHandler.Log(1, $"Building finger table");
-            await BuildFingerTable(_node);
+            await InitFingerTable(_node);
             await AgnetaHandler.Log(1, $"Finger table built");
             Globals._NODE = _node;
             return;
@@ -66,12 +66,54 @@ public static class NodeService
 
         // 3. Build finger table
         await AgnetaHandler.Log(1, $"Building finger table");
-        _node = await BuildFingerTable(_node);
+        _node = await InitFingerTable(_node);
         await AgnetaHandler.Log(1, $"Finger table built");
 
         // 4. Transfer necessary keys
 
         Globals._NODE = _node;
+    }
+
+    public static async Task<M_Node> InitFingerTable(M_Node _node)
+    {
+        ulong m = 1UL << Globals.FINGER_TABLE_SIZE;
+
+        // First finger is successor
+        ulong firstStart = (_node.id + 1) % m;
+        _node.fingerTable[firstStart] = _node.successor;
+
+        for (int i = 1; i < Globals.FINGER_TABLE_SIZE; i++)
+        {
+            ulong start = (_node.id + (1UL << i)) % m;
+
+            // Check if this finger start is between us and successor
+            if (NodeUtils.inBetween(start, _node.id, _node.successor.id))
+            {
+                // The finger should point to our successor
+                _node.fingerTable[start] = _node.successor;
+            }
+            else
+            {
+                // Need to find responsible node through network
+                string responsibleIp = await FindSuccessor(_node, start);
+                if (responsibleIp != _node.ip)
+                {
+                    GetNodeInfo_Result nodeInfo = await _getNodeInfoService.ClientGet(responsibleIp);
+                    _node.fingerTable[start] = new M_Node()
+                    {
+                        id = nodeInfo.Id,
+                        ip = nodeInfo.Ip
+                    };
+                }
+                else
+                {
+                    _node.fingerTable[start] = _node.successor;
+                }
+            }
+
+            await AgnetaHandler.Log(1, $"Finger {i} start={start} points to node {_node.fingerTable[start].id}");
+        }
+        return _node;
     }
 
     public static async Task<M_Node> _BuildFingerTable(M_Node _node)
