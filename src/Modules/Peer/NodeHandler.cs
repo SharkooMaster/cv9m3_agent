@@ -121,6 +121,8 @@ public static class NodeService
 
     public static async Task<string> FindSuccessor(M_Node _node, ulong id)
     {
+        if(_node.successor.ip == _node.ip) { return _node.ip; }
+
         // If id is between this node and its successor
         // return successor
         if(NodeUtils.inBetween(id, _node.id, _node.successor.id))
