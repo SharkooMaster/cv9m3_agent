@@ -20,40 +20,56 @@ public static class NodeService
 
     public static async Task Join(M_Node _node, string bootstrapNodeIp)
     {
+        await AgnetaHandler.Log(1, $"Joining");
         _node.id = NodeUtils.generateNodeID();
+        await AgnetaHandler.Log(1, $"Joined with id: {_node.id}");
 
         if (bootstrapNodeIp == null)
         {
+            await AgnetaHandler.Log(1, $"No bootstrap node detected");
             // First node in network
             _node.successor = _node;
             _node.predecessor = _node;
+            
+            await AgnetaHandler.Log(1, $"Building finger table");
+            await BuildFingerTable(_node);
+            await AgnetaHandler.Log(1, $"Finger table built");
             Globals._NODE = _node;
             return;
         }
 
         // 1. Find successor through bootstrap node
+        await AgnetaHandler.Log(1, $"Searching for successor through bootstrap node");
         QueryReq req = new QueryReq() { Val=_node.id };
         QueryRes res = await _findPeerResponsible.ClientFind(req, bootstrapNodeIp);
 
         GetNodeInfo_Result successor_info = await _getNodeInfoService.ClientGet(res.Res);
         M_Node _node_successor = new M_Node() { id=successor_info.Id, ip=successor_info.Ip };
+        await AgnetaHandler.Log(1, $"Succesor found: {_node_successor.ip}:{_node_successor.id}");
 
         // Get predecessor
+        await AgnetaHandler.Log(1, $"Getting predecessor");
         GetPredecessor_Result predecessor_info = await _getPredecessorService.ClientGet(_node_successor.ip);
         M_Node _node_predecessor = new M_Node() { id=predecessor_info.Id, ip=predecessor_info.Ip };
 
         _node.successor = _node_successor;
         _node.predecessor = _node_predecessor;
+        await AgnetaHandler.Log(1, $"predecessor found: {_node.predecessor.ip}:{_node.predecessor.id}");
 
         // 2. Update predecessor/successor links
+        await AgnetaHandler.Log(1, $"Updating predecessor/successor links");
         UpdatePredecessor_Req updatePredecessor_req = new UpdatePredecessor_Req() { Id=_node.id, Ip=_node.ip };
         await _updatePredecessorService.ClientUpdate(updatePredecessor_req, _node.successor.ip);
+        await AgnetaHandler.Log(1, $"Updated successors predecessor");
 
         UpdateSuccessor_Req updateSuccessor_req = new UpdateSuccessor_Req() { Id=_node.id, Ip=_node.ip };
         await _updateSuccessorService.ClientUpdate(updateSuccessor_req, _node.predecessor.ip);
+        await AgnetaHandler.Log(1, $"Updated predecessors successor");
 
         // 3. Build finger table
+        await AgnetaHandler.Log(1, $"Building finger table");
         _node = await BuildFingerTable(_node);
+        await AgnetaHandler.Log(1, $"Finger table built");
 
         // 4. Transfer necessary keys
 
@@ -85,6 +101,7 @@ public static class NodeService
             ulong updateStart = (_node.id - (1UL << i)) % (1UL << Globals.FINGER_TABLE_SIZE);
 
             string p = await FindSuccessor(_node, updateStart);
+            if(p == _node.ip) { continue; }
             UpdateFingerTable_Req _updateFingerTable_Req = new UpdateFingerTable_Req() {
                 FingerIndex = i,
                 Id = _node.id,
