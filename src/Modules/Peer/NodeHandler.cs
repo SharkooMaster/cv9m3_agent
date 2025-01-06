@@ -12,6 +12,7 @@ public static class NodeService
 
     public static GetNodeInfoService _getNodeInfoService = new GetNodeInfoService();
     public static GetPredecessorService _getPredecessorService = new GetPredecessorService();
+    public static GetSuccessorService _getSuccessorService = new GetSuccessorService();
     public static GetHealthService _getHealth = new GetHealthService();
 
     public static UpdateSuccessorService _updateSuccessorService = new UpdateSuccessorService();
@@ -303,8 +304,7 @@ public static class NodeService
                     }
 
                     // Move to successor
-                    GetSuccessor_Result succ = await _getSuccessorService.ClientGet(current.successor.ip);
-                    current = new M_Node() { id = succ.Id, ip = succ.Ip };
+                    current = await _getSuccessorService.ClientGet(current.successor.ip);
                     hops++;
                 }
             }
