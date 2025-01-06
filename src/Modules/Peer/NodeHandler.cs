@@ -89,7 +89,10 @@ public static class NodeService
             _node.fingerTable[fingerStart] = new M_Node() { id = _getNodeInfo_Result.Id, ip = _getNodeInfo_Result.Ip };
         }
 
-        await UpdateOthers(_node);
+        if(_node.successor.ip != _node.ip)
+        {
+            await UpdateOthers(_node);
+        }
         return _node;
     }
 
@@ -171,6 +174,7 @@ public static class NodeService
     public static int nextFingerToStabalize = 0;
     public static async Task<M_Node> FixFingers(M_Node _node)
     {
+        if(_node.successor.ip == _node.ip){ return _node; }
         // Periodically refresh finger table entries
         try
         {
@@ -200,7 +204,7 @@ public static class NodeService
     public static async Task<M_Node> CheckPredecessor(M_Node _node)
     {
         // Periodically check if predecessor is alive
-        if(_node.predecessor != null)
+        if(_node.predecessor != null && _node.predecessor.ip != _node.ip)
         {
             try
             {
