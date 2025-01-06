@@ -74,7 +74,7 @@ public static class NodeService
         Globals._NODE = _node;
     }
 
-    public static async Task<M_Node> BuildFingerTable(M_Node _node)
+    public static async Task<M_Node> _BuildFingerTable(M_Node _node)
     {
         _node.fingerTable[(_node.id + (1UL << 0)) % (1UL << Globals.FINGER_TABLE_SIZE)] = _node.successor;
 
@@ -98,6 +98,57 @@ public static class NodeService
         {
             await UpdateOthers(_node);
         }
+        return _node;
+    }
+
+    public static async Task<M_Node> BuildFingerTable(M_Node _node)
+    {
+        // First finger is successor
+        ulong firstStart = (_node.id + 1) % (1UL << Globals.FINGER_TABLE_SIZE);
+        _node.fingerTable[firstStart] = _node.successor;
+
+        // For each remaining finger
+        for (int i = 1; i < Globals.FINGER_TABLE_SIZE; i++)
+        {
+            ulong fingerStart = (_node.id + (1UL << i)) % (1UL << Globals.FINGER_TABLE_SIZE);
+
+            // Check if we can reuse the previous finger
+            ulong prevStart = (_node.id + (1UL << (i-1))) % (1UL << Globals.FINGER_TABLE_SIZE);
+
+            if (NodeUtils.inBetween(fingerStart, _node.id, _node.fingerTable[prevStart].id))
+            {
+                // We can reuse the previous finger
+                _node.fingerTable[fingerStart] = _node.fingerTable[prevStart];
+            }
+            else
+            {
+                // Need to find the responsible node
+                string responsibleIp = await FindSuccessor(_node, fingerStart);
+
+                if (responsibleIp != _node.ip)
+                {
+                    GetNodeInfo_Result nodeInfo = await _getNodeInfoService.ClientGet(responsibleIp);
+                    _node.fingerTable[fingerStart] = new M_Node() 
+                    { 
+                        id = nodeInfo.Id, 
+                        ip = nodeInfo.Ip 
+                    };
+                }
+                else
+                {
+                    // If we're responsible, use our successor
+                    _node.fingerTable[fingerStart] = _node.successor;
+                }
+            }
+
+            await AgnetaHandler.Log(1, $"Finger {i} start={fingerStart} points to node {_node.fingerTable[fingerStart].id}");
+        }
+
+        if (_node.successor.ip != _node.ip)
+        {
+            await UpdateOthers(_node);
+        }
+
         return _node;
     }
 
@@ -127,7 +178,7 @@ public static class NodeService
         return _node;
     }
 
-    public static async Task<string> FindSuccessor(M_Node _node, ulong id)
+    public static async Task<string> _FindSuccessor(M_Node _node, ulong id)
     {
         // If id is between this node and its successor
         // return successor
@@ -157,6 +208,33 @@ public static class NodeService
         QueryReq _req = new QueryReq() { Val=id };
         QueryRes _res = await _findPeerResponsible.ClientFind(_req, _node.successor.ip);
         return _res.Res;
+    }
+
+    public static async Task<string> FindSuccessor(M_Node _node, ulong id)
+    {
+        // If we're alone in the network
+        if (_node.successor.ip == _node.ip)
+            return _node.ip;
+    
+        // If id is between us and our successor
+        if (NodeUtils.inBetween(id, _node.id, _node.successor.id))
+            return _node.successor.ip;
+    
+        // Look through finger table from largest to smallest interval
+        ulong[] fingerTableKeys = _node.fingerTable.Keys.OrderByDescending(k => k).ToArray();
+        foreach (ulong fingerStart in fingerTableKeys)
+        {
+            M_Node finger = _node.fingerTable[fingerStart];
+            if (NodeUtils.inBetween(finger.id, _node.id, id))
+            {
+                QueryReq req = new QueryReq() { Val = id };
+                QueryRes res = await _findPeerResponsible.ClientFind(req, finger.ip);
+                return res.Res;
+            }
+        }
+    
+        // If no better choice found, forward to successor
+        return _node.successor.ip;
     }
 
     public static async Task<M_Node> Stabilize(M_Node _node)
