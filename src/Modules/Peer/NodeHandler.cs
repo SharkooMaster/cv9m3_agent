@@ -69,6 +69,10 @@ public static class NodeService
         _node = await InitFingerTable(_node);
         await AgnetaHandler.Log(1, $"Finger table built");
 
+        await AgnetaHandler.Log(1, $"Updating others finger table");
+        await UpdateOthers(_node);
+        await AgnetaHandler.Log(1, $"Updated others finger table");
+
         // 4. Transfer necessary keys
 
         Globals._NODE = _node;
