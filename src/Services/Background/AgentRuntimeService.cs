@@ -28,6 +28,8 @@ public class AgentRuntimeService : BackgroundService
                 Globals._NODE = await NodeService.FixFingers(Globals._NODE);
                 Globals._NODE = await NodeService.CheckPredecessor(Globals._NODE);
                 await Task.Delay(TimeSpan.FromSeconds(10), stoppingToken);
+
+                await NodeService.TestNetwork(Globals._NODE);
             }
             catch (TaskCanceledException)
             {

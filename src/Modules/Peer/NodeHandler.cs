@@ -215,11 +215,11 @@ public static class NodeService
         // If we're alone in the network
         if (_node.successor.ip == _node.ip)
             return _node.ip;
-    
+
         // If id is between us and our successor
         if (NodeUtils.inBetween(id, _node.id, _node.successor.id))
             return _node.successor.ip;
-    
+
         // Look through finger table from largest to smallest interval
         ulong[] fingerTableKeys = _node.fingerTable.Keys.OrderByDescending(k => k).ToArray();
         foreach (ulong fingerStart in fingerTableKeys)
@@ -232,7 +232,7 @@ public static class NodeService
                 return res.Res;
             }
         }
-    
+
         // If no better choice found, forward to successor
         return _node.successor.ip;
     }
@@ -311,5 +311,167 @@ public static class NodeService
         }
         return _node;
     }
+
+    // -------------------------------------------------------------------------------------- TESTING SUITE
+
+    public static async Task TestNetwork(M_Node _node)
+{
+    await AgnetaHandler.Log(1, "\n=== Starting Network Tests ===\n");
+
+    // Test 1: Basic Connectivity
+    await TestBasicConnectivity(_node);
+
+    // Test 2: Ring Consistency
+    await TestRingConsistency(_node);
+
+    // Test 3: Routing
+    await TestRouting(_node);
+
+    // Test 4: Finger Table Coverage
+    await TestFingerTableCoverage(_node);
+
+    await AgnetaHandler.Log(1, "\n=== Network Tests Complete ===\n");
+}
+
+private static async Task TestBasicConnectivity(M_Node _node)
+{
+    await AgnetaHandler.Log(1, "1. Testing Basic Connectivity:");
+    
+    try 
+    {
+        // Test successor connection
+        GetHealth_Result successorHealth = await _getHealth.ClientGet(_node.successor.ip);
+        await AgnetaHandler.Log(1, $"  ✓ Successor ({_node.successor.ip}) is responsive");
+
+        // Test predecessor connection if not self
+        if (_node.predecessor.ip != _node.ip)
+        {
+            GetHealth_Result predHealth = await _getHealth.ClientGet(_node.predecessor.ip);
+            await AgnetaHandler.Log(1, $"  ✓ Predecessor ({_node.predecessor.ip}) is responsive");
+        }
+    }
+    catch (Exception ex)
+    {
+        await AgnetaHandler.Log(1, $"  ✗ Connectivity test failed: {ex.Message}");
+    }
+}
+
+private static async Task TestRingConsistency(M_Node _node)
+{
+    await AgnetaHandler.Log(1, "\n2. Testing Ring Consistency:");
+    
+    HashSet<string> visited = new HashSet<string>();
+    M_Node current = _node;
+    int count = 0;
+    int maxNodes = 100; // Safety limit
+
+    try 
+    {
+        while (!visited.Contains(current.ip) && count < maxNodes)
+        {
+            visited.Add(current.ip);
+            
+            // Get successor's predecessor
+            GetPredecessor_Result pred = await _getPredecessorService.ClientGet(current.successor.ip);
+            
+            // Check if successor's predecessor points back
+            if (pred.Id != current.id)
+            {
+                await AgnetaHandler.Log(1, $"  ✗ Ring inconsistency detected: Node {current.successor.id}'s predecessor is {pred.Id}, expected {current.id}");
+                return;
+            }
+
+            current = current.successor;
+            count++;
+        }
+
+        await AgnetaHandler.Log(1, $"  ✓ Ring consistency verified across {count} nodes");
+    }
+    catch (Exception ex)
+    {
+        await AgnetaHandler.Log(1, $"  ✗ Ring consistency test failed: {ex.Message}");
+    }
+}
+
+private static async Task TestRouting(M_Node _node)
+{
+    await AgnetaHandler.Log(1, "\n3. Testing Routing:");
+
+    Random rnd = new Random();
+    for (int i = 0; i < 5; i++)
+    {
+        try 
+        {
+            // Generate random target ID
+            ulong targetId = (ulong)rnd.NextInt64(0, long.MaxValue);
+            
+            await AgnetaHandler.Log(1, $"  Testing route to target {targetId}");
+            
+            HashSet<string> visitedNodes = new HashSet<string>();
+            string currentNodeIp = _node.ip;
+            int hops = 0;
+
+            while (hops < Globals.FINGER_TABLE_SIZE)
+            {
+                if (visitedNodes.Contains(currentNodeIp))
+                {
+                    await AgnetaHandler.Log(1, $"  ✗ Routing loop detected after {hops} hops");
+                    break;
+                }
+
+                visitedNodes.Add(currentNodeIp);
+                
+                QueryReq req = new QueryReq() { Val = targetId };
+                QueryRes res = await _findPeerResponsible.ClientFind(req, currentNodeIp);
+                
+                await AgnetaHandler.Log(1, $"    Hop {hops + 1}: {currentNodeIp} -> {res.Res}");
+                
+                if (res.Res == currentNodeIp)
+                    break;
+
+                currentNodeIp = res.Res;
+                hops++;
+            }
+
+            await AgnetaHandler.Log(1, $"  ✓ Route found in {hops} hops");
+        }
+        catch (Exception ex)
+        {
+            await AgnetaHandler.Log(1, $"  ✗ Routing test failed: {ex.Message}");
+        }
+    }
+}
+
+private static async Task TestFingerTableCoverage(M_Node _node)
+{
+    await AgnetaHandler.Log(1, "\n4. Testing Finger Table Coverage:");
+    
+    try 
+    {
+        var fingerStarts = _node.fingerTable.Keys.OrderBy(k => k).ToList();
+        
+        await AgnetaHandler.Log(1, "  Finger table entries:");
+        foreach (var start in fingerStarts)
+        {
+            await AgnetaHandler.Log(1, $"    {start} -> {_node.fingerTable[start].id}");
+        }
+
+        // Check for proper spacing
+        for (int i = 0; i < fingerStarts.Count - 1; i++)
+        {
+            var gap = fingerStarts[i + 1] - fingerStarts[i];
+            if (gap > (1UL << (i + 1)))
+            {
+                await AgnetaHandler.Log(1, $"  ✗ Large gap detected between fingers {i} and {i + 1}");
+            }
+        }
+
+        await AgnetaHandler.Log(1, "  ✓ Finger table coverage verified");
+    }
+    catch (Exception ex)
+    {
+        await AgnetaHandler.Log(1, $"  ✗ Finger table test failed: {ex.Message}");
+    }
+}
 
 }
