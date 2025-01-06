@@ -83,7 +83,7 @@ public static class NodeService
             ulong fingerStart = (_node.id + (1UL << i)) % (1UL << Globals.FINGER_TABLE_SIZE);
 
             string _ip = await FindSuccessor(_node, fingerStart);
-            if(_ip == _node.ip)
+            if(_ip != _node.ip)
             {
                 GetNodeInfo_Result _getNodeInfo_Result = await _getNodeInfoService.ClientGet(_ip);
                 _node.fingerTable[fingerStart] = new M_Node() { id = _getNodeInfo_Result.Id, ip = _getNodeInfo_Result.Ip };
@@ -143,7 +143,7 @@ public static class NodeService
         }
         // Otherwise, forward to closest preceding finger
         ulong[] fingerTableKeys = _node.fingerTable.Keys.ToArray();
-        for (int i = Globals.FINGER_TABLE_SIZE - 1; i <= 0; i--)
+        for (int i = Globals.FINGER_TABLE_SIZE - 1; i >= 0; i--)
         {
             M_Node finger = _node.fingerTable[fingerTableKeys[i]];
             if(NodeUtils.inBetween(finger.id, _node.id, id))
