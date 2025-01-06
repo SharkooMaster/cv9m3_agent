@@ -83,8 +83,15 @@ public static class NodeService
             ulong fingerStart = (_node.id + (1UL << i)) % (1UL << Globals.FINGER_TABLE_SIZE);
 
             string _ip = await FindSuccessor(_node, fingerStart);
-            GetNodeInfo_Result _getNodeInfo_Result = await _getNodeInfoService.ClientGet(_ip);
-            _node.fingerTable[fingerStart] = new M_Node() { id = _getNodeInfo_Result.Id, ip = _getNodeInfo_Result.Ip };
+            if(_ip == _node.ip)
+            {
+                GetNodeInfo_Result _getNodeInfo_Result = await _getNodeInfoService.ClientGet(_ip);
+                _node.fingerTable[fingerStart] = new M_Node() { id = _getNodeInfo_Result.Id, ip = _getNodeInfo_Result.Ip };
+            }
+            else
+            {
+                _node.fingerTable[fingerStart] = new M_Node() { id = _node.id, ip = _node.ip };
+            }
         }
 
         if(_node.successor.ip != _node.ip)
@@ -96,19 +103,20 @@ public static class NodeService
 
     public static async Task UpdateOthers(M_Node _node)
     {
-        ulong[] fingerTableKeys = _node.fingerTable.Keys.ToArray();
         for (int i = 0; i < Globals.FINGER_TABLE_SIZE; i++)
         {
             ulong updateStart = (_node.id - (1UL << i)) % (1UL << Globals.FINGER_TABLE_SIZE);
 
             string p = await FindSuccessor(_node, updateStart);
-            if(p == _node.ip) { continue; }
-            UpdateFingerTable_Req _updateFingerTable_Req = new UpdateFingerTable_Req() {
-                FingerIndex = i,
-                Id = _node.id,
-                Ip = _node.ip
-            };
-            await _updateFingerTableService.ClientUpdate(_updateFingerTable_Req, p);
+            if(p != _node.ip)
+            {
+                UpdateFingerTable_Req _updateFingerTable_Req = new UpdateFingerTable_Req() {
+                    FingerIndex = i,
+                    Id = _node.id,
+                    Ip = _node.ip
+                };
+                await _updateFingerTableService.ClientUpdate(_updateFingerTable_Req, p);
+            }
         }
     }
 
@@ -121,8 +129,6 @@ public static class NodeService
 
     public static async Task<string> FindSuccessor(M_Node _node, ulong id)
     {
-        if(_node.successor.ip == _node.ip) { return _node.ip; }
-
         // If id is between this node and its successor
         // return successor
         if(NodeUtils.inBetween(id, _node.id, _node.successor.id))
