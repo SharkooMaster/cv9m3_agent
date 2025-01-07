@@ -198,29 +198,37 @@ public static class NodeService
                    id != successor.id && 
                    attempts < maxAttempts)
             {
+                await AgnetaHandler.Log(1, "here 1");
                 attempts++;
 
+                await AgnetaHandler.Log(1, "here 2");
                 // Get closest preceding finger
                 var closestNode = ClosestPrecedingFinger(current, id);
+                await AgnetaHandler.Log(1, "here 3");
                 if (closestNode == null || closestNode.ip == current.ip)
                 {
                     break;
                 }
+                await AgnetaHandler.Log(1, "here 4");
 
                 // Update current node
                 current = closestNode;
+                await AgnetaHandler.Log(1, "here 5");
 
                 // Get successor of closest node
                 try
                 {
+                    await AgnetaHandler.Log(1, "here 6");
                     var succRes = await RetryRPC(async () => 
                         await _getSuccessorService.ClientGet(current.ip));
+                    await AgnetaHandler.Log(1, "here 7");
 
                     if (succRes == null)
                     {
                         await AgnetaHandler.Log(1, "GetSuccessor returned null");
                         break;
                     }
+                    await AgnetaHandler.Log(1, "here 8");
 
                     successor = succRes;
                 }
@@ -230,6 +238,7 @@ public static class NodeService
                     break;
                 }
             }
+            await AgnetaHandler.Log(1, "here 9");
 
             return current.ip;
         }
