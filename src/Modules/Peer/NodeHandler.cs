@@ -174,32 +174,70 @@ public static class NodeService
 
     public static async Task<string> FindPredecessor(M_Node _node, ulong id)
     {
-        if (_node.successor.ip == _node.ip)
-            return _node.ip;
+        if (_node == null)
+        {
+            throw new ArgumentNullException(nameof(_node), "Node cannot be null");
+        }
 
+        // If we're the only node in the network
+        if (_node.successor == null || _node.successor.ip == _node.ip)
+        {
+            return _node.ip;
+        }
+
+        // Initialize current node
         M_Node current = new M_Node { id = _node.id, ip = _node.ip };
         M_Node successor = _node.successor;
 
-        while (!NodeUtils.inBetween(id, current.id, successor.id) && id != successor.id)
+        int maxAttempts = Globals.FINGER_TABLE_SIZE; // Prevent infinite loops
+        int attempts = 0;
+
+        try
         {
-            try
+            while (!NodeUtils.inBetween(id, current.id, successor.id) && 
+                   id != successor.id && 
+                   attempts < maxAttempts)
             {
-                var n = ClosestPrecedingFinger(current, id);
-                if (n.ip == current.ip)
+                attempts++;
+
+                // Get closest preceding finger
+                var closestNode = ClosestPrecedingFinger(current, id);
+                if (closestNode == null || closestNode.ip == current.ip)
+                {
                     break;
+                }
 
-                current = n;
-                M_Node succRes = await _getSuccessorService.ClientGet(current.ip);
-                successor = succRes;
+                // Update current node
+                current = closestNode;
+
+                // Get successor of closest node
+                try
+                {
+                    var succRes = await RetryRPC(async () => 
+                        await _getSuccessorService.ClientGet(current.ip));
+
+                    if (succRes == null)
+                    {
+                        await AgnetaHandler.Log(1, "GetSuccessor returned null");
+                        break;
+                    }
+
+                    successor = new M_Node { id = succRes.Id, ip = succRes.Ip };
+                }
+                catch (Exception ex)
+                {
+                    await AgnetaHandler.Log(1, $"Failed to get successor for {current.ip}: {ex.Message}");
+                    break;
+                }
             }
-            catch (Exception ex)
-            {
-                await AgnetaHandler.Log(1, $"FindPredecessor failed: {ex.Message}");
-                throw;
-            }
+
+            return current.ip;
         }
-
-        return current.ip;
+        catch (Exception ex)
+        {
+            await AgnetaHandler.Log(1, $"FindPredecessor encountered an error: {ex.Message}");
+            throw;
+        }
     }
 
     // Add periodic maintenance scheduler
@@ -278,23 +316,47 @@ public static class NodeService
         {
             try
             {
-                return await rpc();
+                var result = await rpc();
+                if (result == null && i < maxRetries - 1)
+                {
+                    await Task.Delay((i + 1) * 1000);
+                    continue;
+                }
+                return result;
             }
             catch (Exception ex) when (i < maxRetries - 1)
             {
                 await AgnetaHandler.Log(1, $"RPC attempt {i + 1} failed: {ex.Message}");
-                await Task.Delay((i + 1) * 1000); // Exponential backoff
+                await Task.Delay((i + 1) * 1000);
             }
         }
         return await rpc(); // Let the last attempt throw if it fails
     }
 
+
     // Improve Join method error handling
     public static async Task Join(M_Node _node, string bootstrapNodeIp)
     {
+        if (_node == null)
+        {
+            throw new ArgumentNullException(nameof(_node), "Node cannot be null");
+        }
+
         try
         {
             await AgnetaHandler.Log(1, $"Joining with id: {_node.id}");
+
+            // Initialize the finger table if null
+            if (_node.fingerTable == null)
+            {
+                _node.fingerTable = new Dictionary<ulong, M_Node>();
+            }
+
+            // Initialize successor list if null
+            if (_node.successor_list == null)
+            {
+                _node.successor_list = new List<M_Node>();
+            }
 
             if (string.IsNullOrEmpty(bootstrapNodeIp))
             {
@@ -313,43 +375,121 @@ public static class NodeService
 
     private static async Task InitializeFirstNode(M_Node _node)
     {
-        await AgnetaHandler.Log(1, "Initializing first node in network");
-        _node.successor = new M_Node { id = _node.id, ip = _node.ip };
-        _node.predecessor = new M_Node { id = _node.id, ip = _node.ip };
-        _node.successor_list = new List<M_Node> { new M_Node { id = _node.id, ip = _node.ip } };
+        try
+        {
+            await AgnetaHandler.Log(1, "Initializing first node in network");
 
-        await InitFingerTable(_node);
-        Globals._NODE = _node;
+            _node.successor = new M_Node { id = _node.id, ip = _node.ip };
+            _node.predecessor = new M_Node { id = _node.id, ip = _node.ip };
+
+            // Clear and initialize successor list
+            _node.successor_list.Clear();
+            _node.successor_list.Add(new M_Node { id = _node.id, ip = _node.ip });
+
+            await InitFingerTable(_node);
+            Globals._NODE = _node;
+
+            await AgnetaHandler.Log(1, "First node initialization complete");
+        }
+        catch (Exception ex)
+        {
+            await AgnetaHandler.Log(1, $"First node initialization failed: {ex.Message}");
+            throw;
+        }
     }
 
     private static async Task JoinExistingNetwork(M_Node _node, string bootstrapNodeIp)
     {
-        // Find successor through bootstrap node
-        var successor = await RetryRPC(async () =>
+        try
         {
-            var res = await _findPeerResponsible.ClientFind(new QueryReq { Val = _node.id }, bootstrapNodeIp);
-            var successorInfo = await _getNodeInfoService.ClientGet(res.Res);
-            return new M_Node { id = successorInfo.Id, ip = successorInfo.Ip };
-        });
+            // Find successor through bootstrap node
+            var successor = await RetryRPC(async () =>
+            {
+                var queryRes = await _findPeerResponsible.ClientFind(
+                    new QueryReq { Val = _node.id }, 
+                    bootstrapNodeIp
+                );
 
-        _node.successor = successor;
-        _node.successor_list.Add(successor);
+                if (queryRes?.Res == null)
+                {
+                    throw new Exception("Failed to find responsible peer");
+                }
 
-        // Get and update predecessor
-        var predecessor = await RetryRPC(async () =>
+                var successorInfo = await _getNodeInfoService.ClientGet(queryRes.Res);
+                if (successorInfo == null)
+                {
+                    throw new Exception("Failed to get node info for successor");
+                }
+
+                return new M_Node { id = successorInfo.Id, ip = successorInfo.Ip };
+            });
+
+            if (successor == null)
+            {
+                throw new Exception("Failed to get valid successor");
+            }
+
+            _node.successor = successor;
+            _node.successor_list.Clear();
+            _node.successor_list.Add(successor);
+
+            // Update predecessor
+            await UpdatePredecessorAndLinks(_node);
+
+            // Build finger table and update others
+            await InitFingerTable(_node);
+            await UpdateOthers(_node);
+
+            Globals._NODE = _node;
+
+            await AgnetaHandler.Log(1, "Join existing network complete");
+        }
+        catch (Exception ex)
         {
-            var predInfo = await _getPredecessorService.ClientGet(successor.ip);
-            return new M_Node { id = predInfo.Id, ip = predInfo.Ip };
-        });
+            await AgnetaHandler.Log(1, $"Join existing network failed: {ex.Message}");
+            throw;
+        }
+    }
 
-        _node.predecessor = predecessor;
-
-        // Update links first, then build finger table
-        await UpdateNodeLinks(_node);
-        await InitFingerTable(_node);
-        await UpdateOthers(_node);
-
-        Globals._NODE = _node;
+    private static async Task UpdatePredecessorAndLinks(M_Node _node)
+    {
+        try
+        {
+            // Get predecessor
+            var predInfo = await RetryRPC(async () =>
+                await _getPredecessorService.ClientGet(_node.successor.ip));
+    
+            if (predInfo == null)
+            {
+                throw new Exception("Failed to get predecessor info");
+            }
+    
+            _node.predecessor = new M_Node { id = predInfo.Id, ip = predInfo.Ip };
+    
+            // Update links
+            await RetryRPC(async () =>
+            {
+                await _updatePredecessorService.ClientUpdate(
+                    new UpdatePredecessor_Req { Id = _node.id, Ip = _node.ip },
+                    _node.successor.ip
+                );
+                return true;
+            });
+    
+            await RetryRPC(async () =>
+            {
+                await _updateSuccessorService.ClientUpdate(
+                    new UpdateSuccessor_Req { Id = _node.id, Ip = _node.ip },
+                    _node.predecessor.ip
+                );
+                return true;
+            });
+        }
+        catch (Exception ex)
+        {
+            await AgnetaHandler.Log(1, $"Update predecessor and links failed: {ex.Message}");
+            throw;
+        }
     }
 
     private static async Task UpdateNodeLinks(M_Node _node)
