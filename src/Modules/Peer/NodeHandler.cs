@@ -217,7 +217,7 @@ public static class NodeService
 
     public static async Task<M_Node> CheckPredecessor(M_Node _node)
     {
-        // Periodically check if predecessor is alive
+        // Periodically check if predecessor is alive 
         if(_node.predecessor != null && _node.predecessor.ip != _node.ip)
         {
             try
