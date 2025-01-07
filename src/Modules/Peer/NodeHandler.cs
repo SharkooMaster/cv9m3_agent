@@ -222,7 +222,7 @@ public static class NodeService
                         break;
                     }
 
-                    successor = new M_Node { id = succRes.id, ip = succRes.ip };
+                    successor = succRes;
                 }
                 catch (Exception ex)
                 {
