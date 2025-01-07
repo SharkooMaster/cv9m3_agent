@@ -259,8 +259,8 @@ public static class NodeService
                     break;
 
                 current = n;
-                GetSuccessor_Result succRes = await _getSuccessorService.ClientGet(current.ip);
-                successor = new M_Node { id = succRes.Id, ip = succRes.Ip };
+                M_Node succRes = await _getSuccessorService.ClientGet(current.ip);
+                successor = succRes;
             }
             catch (Exception ex)
             {
