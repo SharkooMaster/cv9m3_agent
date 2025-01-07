@@ -11,6 +11,7 @@ public class M_Node
     public M_Node successor {get; set;}
 
     public Dictionary<ulong, M_Node> fingerTable = new Dictionary<ulong, M_Node>();
+    public List<M_Node> successor_list = new List<M_Node>();
 
     public M_Node()
     {
