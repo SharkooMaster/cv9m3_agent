@@ -222,7 +222,7 @@ public static class NodeService
                         break;
                     }
 
-                    successor = new M_Node { id = succRes.Id, ip = succRes.Ip };
+                    successor = new M_Node { id = succRes.id, ip = succRes.ip };
                 }
                 catch (Exception ex)
                 {
@@ -458,14 +458,14 @@ public static class NodeService
             // Get predecessor
             var predInfo = await RetryRPC(async () =>
                 await _getPredecessorService.ClientGet(_node.successor.ip));
-    
+
             if (predInfo == null)
             {
                 throw new Exception("Failed to get predecessor info");
             }
-    
+
             _node.predecessor = new M_Node { id = predInfo.Id, ip = predInfo.Ip };
-    
+
             // Update links
             await RetryRPC(async () =>
             {
@@ -475,7 +475,7 @@ public static class NodeService
                 );
                 return true;
             });
-    
+
             await RetryRPC(async () =>
             {
                 await _updateSuccessorService.ClientUpdate(
