@@ -86,4 +86,16 @@ public static class NodeService
 
          return await S_FindPeerResponsible(target, node.fingerTable[resulting_key].ip);
     }
+
+    public static async Task VerifySuccessor(M_Node node)
+    {
+        GetPredecessor_Result getPredecessor_result = await _getPredecessorService.ClientGet(node.successor.ip);
+        if(getPredecessor_result.Id != node.id && getPredecessor_result.Ip != node.ip)
+        {
+            node.successor = new M_Node() { id = getPredecessor_result.Id, ip = getPredecessor_result.Ip };
+
+            UpdatePredecessor_Req updatePredecessor_req = new UpdatePredecessor_Req() { Id = node.id, Ip = node.ip };
+            await _updatePredecessorService.ClientUpdate(updatePredecessor_req, node.successor.ip);
+        }
+    }
 }
