@@ -22,7 +22,7 @@ public static class NodeService
     public static UpdatePredecessorService _updatePredecessorService = new UpdatePredecessorService();
     public static UpdateFingerTableService _updateFingerTableService = new UpdateFingerTableService();
 
-    // public static int _nextFinger = 0;
+    public static int _nextFinger = 0;
 
     public static async Task<M_Node> JoinNetwork(M_Node node, string bootstrap_node)
     {
@@ -139,32 +139,26 @@ public static class NodeService
 
     public static async Task<M_Node> FixFingerTable(M_Node node)
     {
-        //_nextFinger = (_nextFinger + 1 >= Globals.FINGER_TABLE_SIZE) ? 1 : _nextFinger + 1;
-        for (int _nextFinger = 0; _nextFinger < Globals.FINGER_TABLE_SIZE; _nextFinger++)
+        _nextFinger = (_nextFinger + 1 >= Globals.FINGER_TABLE_SIZE) ? 1 : _nextFinger + 1;
+        ulong target = (node.id + (1UL << _nextFinger)) % (1UL << Globals.FINGER_TABLE_SIZE);
+
+        ulong[] fingerTableKeys = node.fingerTable.Keys.ToArray();
+        string _new_successor = await FindSuccessor(node, target);
+
+        if(_new_successor == node.ip)
         {
-            ulong target = (node.id + (1UL << _nextFinger)) % (1UL << Globals.FINGER_TABLE_SIZE);
-
-            ulong[] fingerTableKeys = node.fingerTable.Keys.ToArray();
-            string _new_successor = await FindSuccessor(node, target);
-
-            if(_new_successor == node.ip)
-            {
-                node.fingerTable.TryUpdate(fingerTableKeys[_nextFinger], new M_Node() { id = node.id, ip = node.ip }, node.fingerTable[fingerTableKeys[_nextFinger]]);
-            }
-            else if(_new_successor == node.successor.ip)
-            {
-                node.fingerTable.TryUpdate(fingerTableKeys[_nextFinger], new M_Node() { id = node.successor.id, ip = node.successor.ip }, node.fingerTable[fingerTableKeys[_nextFinger]]);
-            }
-            else
-            {
-                GetNodeInfo_Result getNodeInfo_result = await _getNodeInfoService.ClientGet(_new_successor);
-                node.fingerTable.TryUpdate(fingerTableKeys[_nextFinger], new M_Node() { id = getNodeInfo_result.Id, ip = getNodeInfo_result.Ip }, node.fingerTable[fingerTableKeys[_nextFinger]]);
-            }
+            node.fingerTable.TryUpdate(fingerTableKeys[_nextFinger], new M_Node() { id = node.id, ip = node.ip }, node.fingerTable[fingerTableKeys[_nextFinger]]);
+        }
+        else if(_new_successor == node.successor.ip)
+        {
+            node.fingerTable.TryUpdate(fingerTableKeys[_nextFinger], new M_Node() { id = node.successor.id, ip = node.successor.ip }, node.fingerTable[fingerTableKeys[_nextFinger]]);
+        }
+        else
+        {
+            GetNodeInfo_Result getNodeInfo_result = await _getNodeInfoService.ClientGet(_new_successor);
+            node.fingerTable.TryUpdate(fingerTableKeys[_nextFinger], new M_Node() { id = getNodeInfo_result.Id, ip = getNodeInfo_result.Ip }, node.fingerTable[fingerTableKeys[_nextFinger]]);
         }
 
         return node;
     }
-
-    // TODO: 1. build finger table and stabalize finger table.
-    // TODO: 2. Implement heartbeat health checks, if one fails, ask for a new peer.
 }
