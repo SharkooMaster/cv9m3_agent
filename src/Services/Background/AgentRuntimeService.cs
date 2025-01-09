@@ -12,7 +12,7 @@ public class AgentRuntimeService : BackgroundService
 {
     private readonly IEtcdClientService? _etcdClientService;
     private readonly SemaphoreSlim _semaphore = new SemaphoreSlim(1, 1);
-    private const int DELAY_SECONDS = 2;
+    private const int DELAY_SECONDS = 5;
 
     public AgentRuntimeService()
     {
