@@ -12,7 +12,7 @@ public class AgentRuntimeService : BackgroundService
 {
     private readonly IEtcdClientService? _etcdClientService;
     private readonly SemaphoreSlim _semaphore = new SemaphoreSlim(1, 1);
-    private const int DELAY_SECONDS = 5;
+    private const int DELAY_SECONDS = 2;
 
     public AgentRuntimeService()
     {
@@ -37,6 +37,7 @@ public class AgentRuntimeService : BackgroundService
                     {
                         Globals._NODE = await NodeService.VerifySuccessor(Globals._NODE);
                         Globals._NODE = await NodeService.FixFingerTable(Globals._NODE);
+                        await AgnetaHandler.Log(1, "fixed fingertable and verified successor");
                     }
                 }
                 finally
@@ -54,6 +55,7 @@ public class AgentRuntimeService : BackgroundService
             catch (Exception ex)
             {
                 Console.WriteLine($"ERROR::AgentRuntimeService: Error in runtime jobs: {ex.Message}");
+                await AgnetaHandler.Log(1, $"ERROR::AgentRuntimeService: Error in runtime jobs: {ex.Message}");
                 // Still delay on error to prevent tight loop
                 await Task.Delay(TimeSpan.FromSeconds(DELAY_SECONDS), stoppingToken);
             }

@@ -139,7 +139,7 @@ public static class NodeService
 
     public static async Task<M_Node> FixFingerTable(M_Node node)
     {
-        _nextFinger = (_nextFinger + 1) % Globals.FINGER_TABLE_SIZE;
+        _nextFinger = (_nextFinger + 1 >= Globals.FINGER_TABLE_SIZE) ? 1 : _nextFinger + 1;
         ulong target = (node.id + (1UL << _nextFinger)) % (1UL << Globals.FINGER_TABLE_SIZE);
 
         ulong[] fingerTableKeys = node.fingerTable.Keys.ToArray();
@@ -147,12 +147,10 @@ public static class NodeService
 
         if(_new_successor == node.ip)
         {
-            node.fingerTable[fingerTableKeys[_nextFinger]] = new M_Node() { id = node.id, ip = node.ip };
             node.fingerTable.TryUpdate(fingerTableKeys[_nextFinger], new M_Node() { id = node.id, ip = node.ip }, node.fingerTable[fingerTableKeys[_nextFinger]]);
         }
         else if(_new_successor == node.successor.ip)
         {
-            node.fingerTable[fingerTableKeys[_nextFinger]] = new M_Node() { id = node.successor.id, ip = node.successor.ip };
             node.fingerTable.TryUpdate(fingerTableKeys[_nextFinger], new M_Node() { id = node.successor.id, ip = node.successor.ip }, node.fingerTable[fingerTableKeys[_nextFinger]]);
         }
         else
