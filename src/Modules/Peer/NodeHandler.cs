@@ -1,8 +1,10 @@
+using System.Linq.Expressions;
 using Agent.Interfaces;
 using Agent.Models;
 using Agent.Modules.Agneta;
 using Agent.Utils;
 using Agent.Utils.Globals;
+using Grpc.Core;
 using Xunit.Sdk;
 
 namespace Agent.Modules.Peer;
@@ -20,6 +22,8 @@ public static class NodeService
     public static UpdatePredecessorService _updatePredecessorService = new UpdatePredecessorService();
     public static UpdateFingerTableService _updateFingerTableService = new UpdateFingerTableService();
 
+    public static int _nextFinger = 0;
+
     public static async Task<M_Node> JoinNetwork(M_Node node, string bootstrap_node)
     {
         if(bootstrap_node == null)
@@ -28,6 +32,9 @@ public static class NodeService
             await AgnetaHandler.Log(1, "Only node in the network");
             node.successor   = new M_Node() { id = node.id, ip = node.ip };
             node.predecessor = new M_Node() { id = node.id, ip = node.ip };
+
+            node = await InitFingerTable(node);
+
             return node;
         }
 
@@ -52,6 +59,31 @@ public static class NodeService
         UpdateSuccessor_Req updateSuccessor_req = new UpdateSuccessor_Req() { Id = node.id, Ip = node.ip };
         await _updateSuccessorService.ClientUpdate(updateSuccessor_req, node.predecessor.ip);
 
+        node = await BuildFingerTable(node);
+
+        return node;
+    }
+
+    private static async Task<M_Node> InitFingerTable(M_Node node)
+    {
+        for (int i = 0; i < Globals.FINGER_TABLE_SIZE; i++)
+        {
+            ulong _finger = (node.id + (1UL << i)) % (1UL << Globals.FINGER_TABLE_SIZE);
+            node.fingerTable[_finger] = new M_Node() { id = node.id, ip = node.ip };
+        }
+        return node;
+    }
+
+    private static async Task<M_Node> BuildFingerTable(M_Node node)
+    {
+        for (int i = 0; i < Globals.FINGER_TABLE_SIZE; i++)
+        {
+            ulong _finger = (node.id + (1UL << i)) % (1UL << Globals.FINGER_TABLE_SIZE);
+            string _ip = await FindSuccessor(node, _finger);
+
+            GetNodeInfo_Result peer = await _getNodeInfoService.ClientGet(_ip);
+            node.fingerTable[_finger] = new M_Node() { id = peer.Id, ip = peer.Ip };
+        }
         return node;
     }
     
@@ -64,30 +96,44 @@ public static class NodeService
 
     public static async Task<string> FindSuccessor(M_Node node, ulong target)
     {
-        if(NodeUtils.inBetween(target, node.predecessor.id, node.id))
+        // if(NodeUtils.inBetween(target, node.predecessor.id, node.id))
+        // {
+        //     return node.ip;
+        // }
+        // else
+        // {
+        //     return await S_FindPeerResponsible(target, node.successor.ip);
+        // }
+
+        if(node.predecessor != null && NodeUtils.inBetween(target, node.predecessor.id, node.id))
         {
             return node.ip;
         }
+        else if(node.successor != null && NodeUtils.inBetween(target, node.id, node.successor.id))
+        {
+            return node.successor.ip;
+        }
         else
         {
-            return await S_FindPeerResponsible(target, node.successor.ip);
+            M_Node peer = await ClosestPreceedingNode(node, target);
+            return await S_FindPeerResponsible(target, peer.ip);
         }
-
+    }
+    
+    private static async Task<M_Node> ClosestPreceedingNode(M_Node node, ulong target)
+    {
         ulong[] fingerTableKeys = node.fingerTable.Keys.ToArray();
-        ulong resulting_key = node.successor.id;
-        for (int i = 0; i < node.fingerTable.Count; i++)
+        for (int i = Globals.FINGER_TABLE_SIZE - 1; i > 0; i--)
         {
-            if(node.fingerTable[fingerTableKeys[i]].id >= target)
+            if(NodeUtils.inBetween(fingerTableKeys[i], node.id, target))
             {
-                resulting_key = fingerTableKeys[i];
-                break;
+                return node.fingerTable[fingerTableKeys[i]];
             }
         }
-
-         return await S_FindPeerResponsible(target, node.fingerTable[resulting_key].ip);
+        return node;
     }
 
-    public static async Task VerifySuccessor(M_Node node)
+    public static async Task<M_Node> VerifySuccessor(M_Node node)
     {
         GetPredecessor_Result getPredecessor_result = await _getPredecessorService.ClientGet(node.successor.ip);
         if(getPredecessor_result.Id != node.id && getPredecessor_result.Ip != node.ip)
@@ -97,5 +143,34 @@ public static class NodeService
             UpdatePredecessor_Req updatePredecessor_req = new UpdatePredecessor_Req() { Id = node.id, Ip = node.ip };
             await _updatePredecessorService.ClientUpdate(updatePredecessor_req, node.successor.ip);
         }
+        return node;
     }
+
+    public static async Task<M_Node> FixFingerTable(M_Node node)
+    {
+        _nextFinger = (_nextFinger + 1) % Globals.FINGER_TABLE_SIZE;
+        ulong target = (node.id + (1UL << _nextFinger)) % (1UL << Globals.FINGER_TABLE_SIZE);
+
+        ulong[] fingerTableKeys = node.fingerTable.Keys.ToArray();
+        string _new_successor = await FindSuccessor(node, target);
+
+        if(_new_successor == node.ip)
+        {
+            node.fingerTable[fingerTableKeys[_nextFinger]] = new M_Node() { id = node.id, ip = node.ip };
+        }
+        else if(_new_successor == node.successor.ip)
+        {
+            node.fingerTable[fingerTableKeys[_nextFinger]] = new M_Node() { id = node.successor.id, ip = node.successor.ip };
+        }
+        else
+        {
+            GetNodeInfo_Result getNodeInfo_result = await _getNodeInfoService.ClientGet(_new_successor);
+            node.fingerTable[fingerTableKeys[_nextFinger]] = new M_Node() { id = getNodeInfo_result.Id, ip = getNodeInfo_result.Ip };
+        }
+
+        return node;
+    }
+
+    // TODO: 1. build finger table and stabalize finger table.
+    // TODO: 2. Implement heartbeat health checks, if one fails, ask for a new peer.
 }

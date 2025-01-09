@@ -48,7 +48,7 @@ public class AgentLifeCycleService : IHostedService
             }
             Console.WriteLine(nearestNeighbour);
 
-            await NodeService.JoinNetwork(Globals._NODE, bootstrap_node);
+            Globals._NODE = await NodeService.JoinNetwork(Globals._NODE, bootstrap_node);
         }
         catch
         {
