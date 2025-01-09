@@ -173,7 +173,7 @@ app.MapGet("/network", async () =>
         </table>
     </body>
     </html>";
-    return html;
+    return Results.Content(html, "text/html");
 });
 
 PushoverHandler.PushNotification($"Agent:{Globals.ETCD_ID}: Running");
