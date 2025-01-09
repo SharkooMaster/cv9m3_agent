@@ -31,11 +31,26 @@ public static class NodeService
             return node;
         }
 
+        // Get my successor
         string successor_ip = await S_FindPeerResponsible(node.id, bootstrap_node);
         GetNodeInfo_Result getSuccessor_res = await _getNodeInfoService.ClientGet(successor_ip);
         M_Node successor = new M_Node() { id = getSuccessor_res.Id, ip = getSuccessor_res.Ip };
 
         node.successor = successor;
+
+        // Get my successors predecessor
+        GetPredecessor_Result getPredecessor_res = await _getPredecessorService.ClientGet(node.successor.ip);
+        M_Node predecessor = new M_Node() { id = getPredecessor_res.Id, ip = getPredecessor_res.Ip };
+
+        node.predecessor = predecessor;
+
+        // Notify my successor that im its new predecessor
+        UpdatePredecessor_Req updatePredecessor_req = new UpdatePredecessor_Req() { Id = node.id, Ip = node.ip };
+        await _updatePredecessorService.ClientUpdate(updatePredecessor_req, node.successor.ip);
+
+        // Notify my predecessor that im its new successor
+        UpdateSuccessor_Req updateSuccessor_req = new UpdateSuccessor_Req() { Id = node.id, Ip = node.ip };
+        await _updateSuccessorService.ClientUpdate(updateSuccessor_req, node.predecessor.ip);
 
         return node;
     }
