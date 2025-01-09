@@ -165,9 +165,9 @@ app.MapGet("/network", async () =>
         </style>
     </head>
     <body>
-        <h1>Finger Table</h1>
-        <h3>{Misc.GetLocalIPAddress()}</h3>
-        <h3>{Globals._NODE.id}</h3>
+        <h1 style='color:white;'>Finger Table</h1>
+        <h3 style='color:white;'>{Misc.GetLocalIPAddress()}</h3>
+        <h3 style='color:white;'>{Globals._NODE.id}</h3>
         <table>
             <tr>
                 <th>Network successors list</th>

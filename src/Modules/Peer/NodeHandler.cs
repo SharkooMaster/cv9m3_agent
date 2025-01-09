@@ -68,6 +68,10 @@ public static class NodeService
         {
             return node.ip;
         }
+        else
+        {
+            return await S_FindPeerResponsible(target, node.successor.ip);
+        }
 
         ulong[] fingerTableKeys = node.fingerTable.Keys.ToArray();
         ulong resulting_key = node.successor.id;
