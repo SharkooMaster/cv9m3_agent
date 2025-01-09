@@ -132,6 +132,7 @@ app.MapGet("/network", async () =>
         M_Node res = await gss.ClientGet(_successors[^1]);
         string _ip = res.ip;
         if(_ip == Globals._NODE.ip) { break; }
+        if(_successors.Contains(_ip)) { break; }
 
         _successors.Add(_ip);
     }
