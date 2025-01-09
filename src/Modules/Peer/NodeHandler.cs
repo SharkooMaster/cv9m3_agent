@@ -26,8 +26,8 @@ public static class NodeService
         {
             await AgnetaHandler.Log(0, "Only node in the network");
             await AgnetaHandler.Log(1, "Only node in the network");
-            node.successor = node;
-            node.predecessor = node;
+            node.successor   = new M_Node() { id = node.id, ip = node.ip };
+            node.predecessor = new M_Node() { id = node.id, ip = node.ip };
             return node;
         }
 
