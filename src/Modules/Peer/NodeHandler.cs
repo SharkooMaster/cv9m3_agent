@@ -123,7 +123,7 @@ public static class NodeService
     private static async Task<M_Node> ClosestPreceedingNode(M_Node node, ulong target)
     {
         ulong[] fingerTableKeys = node.fingerTable.Keys.ToArray();
-        for (int i = Globals.FINGER_TABLE_SIZE - 1; i > 0; i--)
+        for (int i = Globals.FINGER_TABLE_SIZE - 1; i >= 0; i--)
         {
             if(NodeUtils.inBetween(fingerTableKeys[i], node.id, target))
             {
