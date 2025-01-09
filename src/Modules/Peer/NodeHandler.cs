@@ -69,7 +69,7 @@ public static class NodeService
         for (int i = 0; i < Globals.FINGER_TABLE_SIZE; i++)
         {
             ulong _finger = (node.id + (1UL << i)) % (1UL << Globals.FINGER_TABLE_SIZE);
-            node.fingerTable[_finger] = new M_Node() { id = node.id, ip = node.ip };
+            node.fingerTable.TryAdd(_finger, new M_Node() { id = node.id, ip = node.ip });
         }
         return node;
     }
@@ -82,7 +82,7 @@ public static class NodeService
             string _ip = await FindSuccessor(node, _finger);
 
             GetNodeInfo_Result peer = await _getNodeInfoService.ClientGet(_ip);
-            node.fingerTable[_finger] = new M_Node() { id = peer.Id, ip = peer.Ip };
+            node.fingerTable.TryAdd(_finger, new M_Node() { id = peer.Id, ip = peer.Ip });
         }
         return node;
     }
@@ -96,15 +96,6 @@ public static class NodeService
 
     public static async Task<string> FindSuccessor(M_Node node, ulong target)
     {
-        // if(NodeUtils.inBetween(target, node.predecessor.id, node.id))
-        // {
-        //     return node.ip;
-        // }
-        // else
-        // {
-        //     return await S_FindPeerResponsible(target, node.successor.ip);
-        // }
-
         if(node.predecessor != null && NodeUtils.inBetween(target, node.predecessor.id, node.id))
         {
             return node.ip;
@@ -157,15 +148,17 @@ public static class NodeService
         if(_new_successor == node.ip)
         {
             node.fingerTable[fingerTableKeys[_nextFinger]] = new M_Node() { id = node.id, ip = node.ip };
+            node.fingerTable.TryUpdate(fingerTableKeys[_nextFinger], new M_Node() { id = node.id, ip = node.ip }, node.fingerTable[fingerTableKeys[_nextFinger]]);
         }
         else if(_new_successor == node.successor.ip)
         {
             node.fingerTable[fingerTableKeys[_nextFinger]] = new M_Node() { id = node.successor.id, ip = node.successor.ip };
+            node.fingerTable.TryUpdate(fingerTableKeys[_nextFinger], new M_Node() { id = node.successor.id, ip = node.successor.ip }, node.fingerTable[fingerTableKeys[_nextFinger]]);
         }
         else
         {
             GetNodeInfo_Result getNodeInfo_result = await _getNodeInfoService.ClientGet(_new_successor);
-            node.fingerTable[fingerTableKeys[_nextFinger]] = new M_Node() { id = getNodeInfo_result.Id, ip = getNodeInfo_result.Ip };
+            node.fingerTable.TryUpdate(fingerTableKeys[_nextFinger], new M_Node() { id = getNodeInfo_result.Id, ip = getNodeInfo_result.Ip }, node.fingerTable[fingerTableKeys[_nextFinger]]);
         }
 
         return node;
