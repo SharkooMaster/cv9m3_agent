@@ -1,3 +1,4 @@
+
 using Agent.Services.Agneta;
 using Agent.Services.Etcd;
 using Agent.Utils.Misc;
@@ -5,15 +6,11 @@ using Agent.Utils.Globals;
 using Agent.Interfaces.Agneta;
 using Agent.Modules.Agneta;
 using Agent.Modules.Peer;
-
 namespace Agent.Services;
 
 public class AgentRuntimeService : BackgroundService
 {
     private readonly IEtcdClientService? _etcdClientService;
-    private readonly SemaphoreSlim _semaphore = new SemaphoreSlim(1, 1);
-    private readonly SemaphoreSlim _nodeLock = new SemaphoreSlim(1, 1);
-    private const int DELAY_SECONDS = 5;
 
     public AgentRuntimeService()
     {
@@ -26,50 +23,23 @@ public class AgentRuntimeService : BackgroundService
         {
             try
             {
-                // Ensure only one execution cycle runs at a time
-                await _semaphore.WaitAsync(stoppingToken);
-                
-                try
-                {
-                    // Execute tasks sequentially
-                    await AgnetaHandler.SendUsageStats();
-                    
-                    if (Globals._NODE != null)
-                    {
-                        await _nodeLock.WaitAsync(stoppingToken);
-                        try
-                        {
-                            Globals._NODE = await NodeService.VerifySuccessor(Globals._NODE);
-                            Globals._NODE = await NodeService.FixFingerTable(Globals._NODE);
-                        }
-                        finally
-                        {
-                            _nodeLock.Release();
-                        }
-                        await AgnetaHandler.Log(1, "Fixed finger table and verified successor");
-                    }
+                await AgnetaHandler.SendUsageStats();
+                Globals._NODE = await NodeService.VerifySuccessor(Globals._NODE);
+                Globals._NODE = await NodeService.FixFingerTable(Globals._NODE);
+                await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken);
 
-                }
-                finally
-                {
-                    _semaphore.Release();
-                }
-
-                // Always delay after the work is done, regardless of success or failure
-                await Task.Delay(TimeSpan.FromSeconds(DELAY_SECONDS), stoppingToken);
+                // await NodeService.TestNetwork(Globals._NODE);
             }
-            catch (OperationCanceledException)
+            catch (TaskCanceledException)
             {
                 break;
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"ERROR::AgentRuntimeService: Error in runtime jobs: {ex.Message}");
-                await AgnetaHandler.Log(1, $"ERROR::AgentRuntimeService: Error in runtime jobs: {ex.Message}");
-                // Still delay on error to prevent tight loop
-                await Task.Delay(TimeSpan.FromSeconds(DELAY_SECONDS), stoppingToken);
+                //Console.WriteLine($"Error keeping runtime jobs alive: {ex.Message}");
             }
         }
+
     }
 
     public override async Task StopAsync(CancellationToken stoppingToken)
@@ -82,11 +52,7 @@ public class AgentRuntimeService : BackgroundService
         {
             Console.WriteLine($"ERROR::AgentRuntimeService: Error stopping runtime: {ex.Message}");
         }
-        finally
-        {
-            _semaphore.Dispose();
-        }
-        
+
         await base.StopAsync(stoppingToken);
     }
 }
