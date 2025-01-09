@@ -12,7 +12,7 @@ public class AgentRuntimeService : BackgroundService
 {
     private readonly IEtcdClientService? _etcdClientService;
     private readonly SemaphoreSlim _semaphore = new SemaphoreSlim(1, 1);
-    private static readonly object _nodeLock = new object();
+    private readonly SemaphoreSlim _nodeLock = new SemaphoreSlim(1, 1);
     private const int DELAY_SECONDS = 5;
 
     public AgentRuntimeService()
@@ -36,7 +36,7 @@ public class AgentRuntimeService : BackgroundService
                     
                     if (Globals._NODE != null)
                     {
-                        await _semaphore.WaitAsync(stoppingToken);
+                        await _nodeLock.WaitAsync(stoppingToken);
                         try
                         {
                             Globals._NODE = await NodeService.VerifySuccessor(Globals._NODE);
@@ -44,7 +44,7 @@ public class AgentRuntimeService : BackgroundService
                         }
                         finally
                         {
-                            _semaphore.Release();
+                            _nodeLock.Release();
                         }
                         await AgnetaHandler.Log(1, "Fixed finger table and verified successor");
                     }
