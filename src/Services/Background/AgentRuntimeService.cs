@@ -24,10 +24,7 @@ public class AgentRuntimeService : BackgroundService
             try
             {
                 await AgnetaHandler.SendUsageStats();
-                Globals._NODE = await NodeService.Stabilize(Globals._NODE);
-                Globals._NODE = await NodeService.FixFingers(Globals._NODE);
-                Globals._NODE = await NodeService.CheckPredecessor(Globals._NODE);
-                await Task.Delay(TimeSpan.FromSeconds(10), stoppingToken);
+                await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken);
 
                 // await NodeService.TestNetwork(Globals._NODE);
             }

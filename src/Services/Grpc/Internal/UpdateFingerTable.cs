@@ -12,7 +12,7 @@ public class UpdateFingerTableService : UpdateFingerTable.UpdateFingerTableBase
     public override async Task<Empty> Update(UpdateFingerTable_Req request, ServerCallContext context)
     {
         M_Node new_node = new M_Node() { id=request.Id, ip=request.Ip };
-        Globals._NODE = await NodeService.UpdateFingerTable(Globals._NODE, new_node, request.FingerIndex);
+        //Globals._NODE = await NodeService.UpdateFingerTable(Globals._NODE, new_node, request.FingerIndex);
 
         return new Empty();
     }

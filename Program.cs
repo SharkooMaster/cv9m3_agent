@@ -15,6 +15,7 @@ using Agent.Services.PushOver;
 using Agent.Modules.Pushover;
 using Agent.Modules.Agneta;
 using Agent.Utils.Globals;
+using Agent.Models;
 
 var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddGrpc();
@@ -113,6 +114,66 @@ app.MapGet("/finger_table", () =>
         </html>";
 
     return Results.Content(html, "text/html");
+});
+
+app.MapGet("/network", async () => 
+{
+    var rows = "";
+
+    List<string> _successors = new List<string>();
+    _successors.Add(Globals._NODE.ip);
+    _successors.Add(Globals._NODE.successor.ip);
+
+    GetSuccessorService gss = new GetSuccessorService();
+    while(true)
+    {
+        if(Globals._NODE.successor.ip == Globals._NODE.ip) { break; }
+
+        M_Node res = await gss.ClientGet(_successors[^1]);
+        string _ip = res.ip;
+        if(_ip == Globals._NODE.ip) { break; }
+
+        _successors.Add(_ip);
+    }
+
+    foreach (string _ip in _successors)
+    {
+        rows += $@"<tr><td>{_ip}</td></tr>";
+    }
+
+    var html = $@"
+    <!doctype html>
+    <html>
+    <head>
+        <title>Network</title>
+        <style>
+            table {{
+                border-collapse: collapse;
+                width: 50%;
+            }}
+            th, td {{
+                border: 1px solid black;
+                text-align: left;
+                padding: 8px;
+            }}
+            th {{
+                background-color: #f2f2f2;
+            }}
+        </style>
+    </head>
+    <body>
+        <h1>Finger Table</h1>
+        <h3>{Misc.GetLocalIPAddress()}</h3>
+        <h3>{Globals._NODE.id}</h3>
+        <table>
+            <tr>
+                <th>Network successors list</th>
+            </tr>
+            {rows}
+        </table>
+    </body>
+    </html>";
+    return html;
 });
 
 PushoverHandler.PushNotification($"Agent:{Globals.ETCD_ID}: Running");
