@@ -122,19 +122,22 @@ app.MapGet("/network", async () =>
 
     List<string> _successors = new List<string>();
     _successors.Add(Globals._NODE.ip);
-    _successors.Add(Globals._NODE.successor.ip);
-
-    GetSuccessorService gss = new GetSuccessorService();
-    while(true)
+    if(Globals._NODE.successor.ip != Globals._NODE.ip)
     {
-        if(Globals._NODE.successor.ip == Globals._NODE.ip) { break; }
+        _successors.Add(Globals._NODE.successor.ip);
 
-        M_Node res = await gss.ClientGet(_successors[^1]);
-        string _ip = res.ip;
-        if(_ip == Globals._NODE.ip) { break; }
-        if(_successors.Contains(_ip)) { break; }
+        GetSuccessorService gss = new GetSuccessorService();
+        while(true)
+        {
+            if(Globals._NODE.successor.ip == Globals._NODE.ip) { break; }
 
-        _successors.Add(_ip);
+            M_Node res = await gss.ClientGet(_successors[^1]);
+            string _ip = res.ip;
+            if(_ip == Globals._NODE.ip) { break; }
+            if(_successors.Contains(_ip)) { break; }
+
+            _successors.Add(_ip);
+        }
     }
 
     foreach (string _ip in _successors)
@@ -148,6 +151,7 @@ app.MapGet("/network", async () =>
     <head>
         <title>Network</title>
         <style>
+            body{{ background-color: #141414; }}
             table {{
                 border-collapse: collapse;
                 width: 50%;
