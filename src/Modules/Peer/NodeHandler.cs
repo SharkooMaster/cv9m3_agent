@@ -107,7 +107,18 @@ public static class NodeService
         else
         {
             M_Node peer = await ClosestPreceedingNode(node, target);
-            return await S_FindPeerResponsible(target, peer.ip);
+            if(peer != null && peer.ip != node.ip)
+            {
+                return await S_FindPeerResponsible(target, peer.ip);
+            }
+            else if(peer != null && peer.ip == node.ip)
+            {
+                return node.ip;
+            }
+            else
+            {
+                return node.successor.ip;
+            }
         }
     }
     
