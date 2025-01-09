@@ -160,8 +160,6 @@ app.MapGet("/network", async () =>
                 border: 1px solid black;
                 text-align: left;
                 padding: 8px;
-            }}
-            th {{
                 background-color: #f2f2f2;
             }}
         </style>

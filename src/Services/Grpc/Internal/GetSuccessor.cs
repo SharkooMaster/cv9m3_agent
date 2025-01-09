@@ -25,7 +25,7 @@ public class GetSuccessorService : GetSuccessor.GetSuccessorBase
         GetSuccessor.GetSuccessorClient _client = new GetSuccessor.GetSuccessorClient(channel);
 
         var response = await _client.GetAsync(new Empty());
-        await AgnetaHandler.Log(1, "GetSuccessor gRPC: GetClient sent");
+        // await AgnetaHandler.Log(1, "GetSuccessor gRPC: GetClient sent");
 
         to_ret.id = response.Id;
         to_ret.ip = response.Ip;
