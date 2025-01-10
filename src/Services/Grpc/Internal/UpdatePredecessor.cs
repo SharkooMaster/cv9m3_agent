@@ -29,7 +29,7 @@ public class UpdatePredecessorService : UpdatePredecessor.UpdatePredecessorBase
         }
         catch(Exception ex)
         {
-            Console.WriteLine($"General error: {ex.Message}");
+            Console.WriteLine($"[UpdatePredecessor] General error: {ex.Message}");
             throw;
         }
     }

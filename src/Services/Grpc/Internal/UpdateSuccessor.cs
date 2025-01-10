@@ -29,7 +29,7 @@ public class UpdateSuccessorService : UpdateSuccessor.UpdateSuccessorBase
         }
         catch(Exception ex)
         {
-            Console.WriteLine($"General error: {ex.Message}");
+            Console.WriteLine($"[UpdateSuccessor] General error: {ex.Message}");
             throw;
         }
     }

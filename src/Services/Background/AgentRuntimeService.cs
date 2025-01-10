@@ -37,6 +37,7 @@ public class AgentRuntimeService : BackgroundService
             catch (Exception ex)
             {
                 //Console.WriteLine($"Error keeping runtime jobs alive: {ex.Message}");
+                await AgnetaHandler.Log(1, $"Error keeping runtime jobs alive: {ex.Message}");
             }
         }
 

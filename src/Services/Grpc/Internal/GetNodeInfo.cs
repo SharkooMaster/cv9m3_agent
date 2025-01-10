@@ -34,7 +34,7 @@ public class GetNodeInfoService : GetNodeInfo.GetNodeInfoBase
         }
         catch(Exception ex)
         {
-            Console.WriteLine($"General error: {ex.Message}");
+            Console.WriteLine($"[GetNodeInfo] General error: {ex.Message}");
             throw;
         }
     }

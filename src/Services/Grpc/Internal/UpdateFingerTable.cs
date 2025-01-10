@@ -34,7 +34,7 @@ public class UpdateFingerTableService : UpdateFingerTable.UpdateFingerTableBase
         }
         catch(Exception ex)
         {
-            Console.WriteLine($"General error: {ex.Message}");
+            Console.WriteLine($"[UpdateFingerTable] General error: {ex.Message}");
             throw;
         }
     }

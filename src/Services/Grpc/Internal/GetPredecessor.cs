@@ -38,7 +38,7 @@ public class GetPredecessorService : GetPredecessor.GetPredecessorBase
         }
         catch(Exception ex)
         {
-            Console.WriteLine($"General error: {ex.Message}");
+            Console.WriteLine($"[GetPredecessor] General error: {ex.Message}");
             throw;
         }
     }

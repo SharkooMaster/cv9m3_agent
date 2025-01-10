@@ -34,7 +34,7 @@ public class FindPeerResponsibleService : FindPeerResponsible.FindPeerResponsibl
         }
         catch(Exception ex)
         {
-            Console.WriteLine($"General error: {ex.Message}");
+            Console.WriteLine($"[FindPeerResponsible] General error: {ex.Message}");
             throw;
         }
     }
