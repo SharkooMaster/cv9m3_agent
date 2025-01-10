@@ -139,24 +139,31 @@ public static class NodeService
 
     public static async Task<M_Node> FixFingerTable(M_Node node)
     {
-        _nextFinger = (_nextFinger + 1 >= Globals.FINGER_TABLE_SIZE) ? 1 : _nextFinger + 1;
+        _nextFinger = (_nextFinger + 1 >= Globals.FINGER_TABLE_SIZE) ? 0 : _nextFinger + 1;
         ulong target = (node.id + (1UL << _nextFinger)) % (1UL << Globals.FINGER_TABLE_SIZE);
 
         ulong[] fingerTableKeys = node.fingerTable.Keys.ToArray();
         string _new_successor = await FindSuccessor(node, target);
 
+        M_Node newFingerEntry;
         if(_new_successor == node.ip)
         {
-            node.fingerTable.TryUpdate(fingerTableKeys[_nextFinger], new M_Node() { id = node.id, ip = node.ip }, node.fingerTable[fingerTableKeys[_nextFinger]]);
+            newFingerEntry = new M_Node() { id = node.id, ip = node.ip };
         }
         else if(_new_successor == node.successor.ip)
         {
-            node.fingerTable.TryUpdate(fingerTableKeys[_nextFinger], new M_Node() { id = node.successor.id, ip = node.successor.ip }, node.fingerTable[fingerTableKeys[_nextFinger]]);
+            newFingerEntry = new M_Node() { id = node.successor.id, ip = node.successor.ip };
         }
         else
         {
             GetNodeInfo_Result getNodeInfo_result = await _getNodeInfoService.ClientGet(_new_successor);
-            node.fingerTable.TryUpdate(fingerTableKeys[_nextFinger], new M_Node() { id = getNodeInfo_result.Id, ip = getNodeInfo_result.Ip }, node.fingerTable[fingerTableKeys[_nextFinger]]);
+            newFingerEntry = new M_Node() { id = getNodeInfo_result.Id, ip = getNodeInfo_result.Ip };
+        }
+
+        ulong fingerKey = fingerTableKeys[_nextFinger];
+        if(!node.fingerTable.TryUpdate(fingerKey, newFingerEntry, node.fingerTable[fingerKey]))
+        {
+            await AgnetaHandler.Log(1, $"Failed to update fingerTablekey[{fingerKey}] with newFingerEntry: {newFingerEntry.ip} from old: {node.fingerTable[fingerKey].ip}");
         }
 
         return node;
