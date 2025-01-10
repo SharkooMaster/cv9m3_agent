@@ -146,6 +146,7 @@ public static class NodeService
 
         ulong[] fingerTableKeys = node.fingerTable.Keys.ToArray();
         string _new_successor = await FindSuccessor(node, target);
+        if(_new_successor == node.ip){ return node; }
 
         M_Node newFingerEntry;
         if(_new_successor == node.ip)
