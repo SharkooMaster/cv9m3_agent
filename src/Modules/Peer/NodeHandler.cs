@@ -139,6 +139,8 @@ public static class NodeService
 
     public static async Task<M_Node> FixFingerTable(M_Node node)
     {
+        if(node.fingerTable.Count != Globals.FINGER_TABLE_SIZE){ return node; }
+
         _nextFinger = (_nextFinger + 1 >= Globals.FINGER_TABLE_SIZE) ? 0 : _nextFinger + 1;
         ulong target = (node.id + (1UL << _nextFinger)) % (1UL << Globals.FINGER_TABLE_SIZE);
 
