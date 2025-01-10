@@ -102,7 +102,6 @@ app.MapGet("/finger_table", () =>
         <body>
             <h1>Finger Table</h1>
             <h3>{Misc.GetLocalIPAddress()}</h3>
-            <h3>{Globals._NODE.id}</h3>
             <table>
                 <tr>
                     <th>Key</th>
