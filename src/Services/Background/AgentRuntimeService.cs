@@ -24,6 +24,12 @@ public class AgentRuntimeService : BackgroundService
             try
             {
                 await AgnetaHandler.SendUsageStats();
+
+                if (Globals._NODE == null)
+                {
+                    throw new NullReferenceException("Globals._NODE is null");
+                }
+
                 Globals._NODE = await NodeService.VerifySuccessor(Globals._NODE);
                 Globals._NODE = await NodeService.FixFingerTable(Globals._NODE);
                 await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken);
@@ -32,12 +38,18 @@ public class AgentRuntimeService : BackgroundService
             }
             catch (TaskCanceledException)
             {
+                await AgnetaHandler.Log(1, $"TaskCanceled, runtime service ending");
                 break;
             }
             catch (Exception ex)
             {
-                //Console.WriteLine($"Error keeping runtime jobs alive: {ex.Message}");
-                await AgnetaHandler.Log(1, $"Error keeping runtime jobs alive: {ex.Message}");
+                Console.WriteLine($"ERROR::AgentRuntimeService: {ex.Message}");
+                if (Globals._NODE == null)
+                {
+                    Console.WriteLine("ERROR::AgentRuntimeService: Globals._NODE is null.");
+                }
+                await AgnetaHandler.Log(1, $"ERROR::AgentRuntimeService: {ex}");
+                throw;
             }
         }
 
