@@ -11,8 +11,8 @@ public class GetPredecessorService : GetPredecessor.GetPredecessorBase
     {
         GetPredecessor_Result res = new GetPredecessor_Result()
         {
-            Id = Globals._NODE.predecessor.id ? Globals._NODE.id,
-            Ip = Globals._NODE.predecessor.ip ? Globals._NODE.ip
+            Id = (Globals._NODE.predecessor.id == null) ? Globals._NODE.id : Globals._NODE.predecessor.id,
+            Ip = Globals._NODE.predecessor.ip ?? Globals._NODE.ip
         };
         return res;
     }
