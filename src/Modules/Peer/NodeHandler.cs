@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Linq.Expressions;
 using Agent.Interfaces;
 using Agent.Models;
@@ -96,26 +97,26 @@ public static class NodeService
                 await AgnetaHandler.Log(1, "BuildFingerTable: node is null");
                 return null;
             }
-    
+
             if (node.fingerTable == null)
             {
                 await AgnetaHandler.Log(1, "BuildFingerTable: Creating new finger table");
                 node.fingerTable = new ConcurrentDictionary<ulong, M_Node>();
             }
-    
+
             for (int i = 0; i < Globals.FINGER_TABLE_SIZE; i++)
             {
                 try 
                 {
                     ulong _finger = (node.id + (1UL << i)) % (1UL << Globals.FINGER_TABLE_SIZE);
-                    
+
                     string _ip = await FindSuccessor(node, _finger);
                     if (string.IsNullOrEmpty(_ip))
                     {
                         await AgnetaHandler.Log(1, $"BuildFingerTable: FindSuccessor returned null/empty for finger {i} (value: {_finger})");
                         continue;
                     }
-    
+
                     GetNodeInfo_Result peer;
                     try 
                     {
@@ -131,7 +132,7 @@ public static class NodeService
                         await AgnetaHandler.Log(1, $"BuildFingerTable: Failed to get node info for IP {_ip} at finger {i}: {ex.Message}");
                         continue;
                     }
-    
+
                     if (!node.fingerTable.TryAdd(_finger, new M_Node() { id = peer.Id, ip = peer.Ip }))
                     {
                         await AgnetaHandler.Log(1, $"BuildFingerTable: Failed to add entry for finger {i} (value: {_finger}) with IP {peer.Ip}");
@@ -146,7 +147,7 @@ public static class NodeService
                     await AgnetaHandler.Log(1, $"BuildFingerTable: Error processing finger {i}: {ex.Message}");
                 }
             }
-    
+
             await AgnetaHandler.Log(1, $"BuildFingerTable: Completed building finger table. Size: {node.fingerTable.Count}");
             return node;
         }
