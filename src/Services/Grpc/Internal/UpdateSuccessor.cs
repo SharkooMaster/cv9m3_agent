@@ -1,4 +1,5 @@
 
+using Agent.Models;
 using Agent.Utils.Globals;
 using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
@@ -8,8 +9,7 @@ public class UpdateSuccessorService : UpdateSuccessor.UpdateSuccessorBase
 {
     public override async Task<Empty> Update(UpdateSuccessor_Req request, ServerCallContext context)
     {
-        Globals._NODE.successor.id = request.Id;
-        Globals._NODE.successor.ip = request.Ip;
+        Globals._NODE.successor = new M_Node() { id = request.Id, ip = request.Ip };
         return new Empty();
     }
 
