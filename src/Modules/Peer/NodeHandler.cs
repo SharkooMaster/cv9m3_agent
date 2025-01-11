@@ -97,57 +97,55 @@ public static class NodeService
                 await AgnetaHandler.Log(1, "BuildFingerTable: node is null");
                 return null;
             }
-
+    
             if (node.fingerTable == null)
             {
                 await AgnetaHandler.Log(1, "BuildFingerTable: Creating new finger table");
                 node.fingerTable = new ConcurrentDictionary<ulong, M_Node>();
             }
-
+    
             for (int i = 0; i < Globals.FINGER_TABLE_SIZE; i++)
             {
                 try 
                 {
                     ulong _finger = (node.id + (1UL << i)) % (1UL << Globals.FINGER_TABLE_SIZE);
-
                     string _ip = await FindSuccessor(node, _finger);
-                    if (string.IsNullOrEmpty(_ip))
+                    
+                    M_Node newFingerEntry;
+    
+                    // If it's pointing to self, use local info
+                    if (_ip == node.ip)
                     {
-                        await AgnetaHandler.Log(1, $"BuildFingerTable: FindSuccessor returned null/empty for finger {i} (value: {_finger})");
-                        continue;
+                        newFingerEntry = new M_Node() { id = node.id, ip = node.ip };
                     }
-
-                    GetNodeInfo_Result peer;
-                    try 
+                    // If it's pointing to successor, use successor's info that we already have
+                    else if (node.successor != null && _ip == node.successor.ip)
                     {
-                        peer = await _getNodeInfoService.ClientGet(_ip);
-                        if (peer == null)
-                        {
-                            await AgnetaHandler.Log(1, $"BuildFingerTable: GetNodeInfo returned null for IP {_ip} at finger {i}");
-                            continue;
-                        }
+                        newFingerEntry = new M_Node() { id = node.successor.id, ip = node.successor.ip };
                     }
-                    catch (Exception ex)
+                    // Only make RPC call if it's pointing to a different node
+                    else
                     {
-                        await AgnetaHandler.Log(1, $"BuildFingerTable: Failed to get node info for IP {_ip} at finger {i}: {ex.Message}");
-                        continue;
+                        var peer = await _getNodeInfoService.ClientGet(_ip);
+                        newFingerEntry = new M_Node() { id = peer.Id, ip = peer.Ip };
                     }
-
-                    if (!node.fingerTable.TryAdd(_finger, new M_Node() { id = peer.Id, ip = peer.Ip }))
+    
+                    if (!node.fingerTable.TryAdd(_finger, newFingerEntry))
                     {
-                        await AgnetaHandler.Log(1, $"BuildFingerTable: Failed to add entry for finger {i} (value: {_finger}) with IP {peer.Ip}");
+                        await AgnetaHandler.Log(1, $"BuildFingerTable: Failed to add entry for finger {i} (value: {_finger}) with IP {newFingerEntry.ip}");
                     }
                     else 
                     {
-                        await AgnetaHandler.Log(1, $"BuildFingerTable: Successfully added finger {i} (value: {_finger}) pointing to {peer.Ip}");
+                        await AgnetaHandler.Log(1, $"BuildFingerTable: Successfully added finger {i} (value: {_finger}) pointing to {newFingerEntry.ip}");
                     }
                 }
                 catch (Exception ex)
                 {
                     await AgnetaHandler.Log(1, $"BuildFingerTable: Error processing finger {i}: {ex.Message}");
+                    // Continue to next finger rather than breaking the whole process
                 }
             }
-
+    
             await AgnetaHandler.Log(1, $"BuildFingerTable: Completed building finger table. Size: {node.fingerTable.Count}");
             return node;
         }
