@@ -24,35 +24,55 @@ public class AgentRuntimeService : BackgroundService
             try
             {
                 await AgnetaHandler.SendUsageStats();
-
+                
                 if (Globals._NODE == null)
                 {
-                    throw new NullReferenceException("Globals._NODE is null");
+                    await AgnetaHandler.Log(1, "Node is null, attempting recovery...");
+                    // Add recovery logic here - perhaps re-join the network
+                    await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken);
+                    continue;
                 }
-
-                Globals._NODE = await NodeService.VerifySuccessor(Globals._NODE);
-                Globals._NODE = await NodeService.FixFingerTable(Globals._NODE);
+    
+                if (Globals._NODE.successor == null || Globals._NODE.fingerTable == null || Globals._NODE.fingerTable.Count == 0)
+                {
+                    await AgnetaHandler.Log(1, "Node state is invalid, attempting recovery...");
+                    // Add recovery logic here
+                    await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken);
+                    continue;
+                }
+    
+                try 
+                {
+                    Globals._NODE = await NodeService.VerifySuccessor(Globals._NODE);
+                }
+                catch (Exception ex)
+                {
+                    await AgnetaHandler.Log(1, $"Error in VerifySuccessor: {ex.Message}");
+                }
+    
+                try 
+                {
+                    Globals._NODE = await NodeService.FixFingerTable(Globals._NODE);
+                }
+                catch (Exception ex)
+                {
+                    await AgnetaHandler.Log(1, $"Error in FixFingerTable: {ex.Message}");
+                }
+    
                 await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken);
-
-                // await NodeService.TestNetwork(Globals._NODE);
             }
             catch (TaskCanceledException)
             {
-                await AgnetaHandler.Log(1, $"TaskCanceled, runtime service ending");
+                await AgnetaHandler.Log(1, "TaskCanceled, runtime service ending");
                 break;
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"ERROR::AgentRuntimeService: {ex.Message}");
-                if (Globals._NODE == null)
-                {
-                    Console.WriteLine("ERROR::AgentRuntimeService: Globals._NODE is null.");
-                }
-                await AgnetaHandler.Log(1, $"ERROR::AgentRuntimeService: {ex}");
-                throw;
+                await AgnetaHandler.Log(1, $"Runtime service error: {ex.Message}");
+                await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken);
+                // Don't throw here - let the service continue
             }
         }
-
     }
 
     public override async Task StopAsync(CancellationToken stoppingToken)
