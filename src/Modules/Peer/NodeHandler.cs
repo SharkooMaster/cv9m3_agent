@@ -231,10 +231,10 @@ public static class NodeService
         return node;
     } */
 
-    public static async Task<string> FindSuccessor(M_Node node, ulong target)
+/*     public static async Task<string> FindSuccessor(M_Node node, ulong target)
     {
         await AgnetaHandler.Log(1, $"FindSuccessor: Looking for successor of {target}. Current node: {node.id}");
-    
+
         if(node.predecessor != null && NodeUtils.inBetween(target, node.predecessor.id, node.id))
         {
             await AgnetaHandler.Log(1, $"FindSuccessor: Target {target} is between predecessor ({node.predecessor.id}) and self ({node.id})");
@@ -252,25 +252,42 @@ public static class NodeService
             await AgnetaHandler.Log(1, $"FindSuccessor: Found closest preceding node: {peer.id}");
             return await S_FindPeerResponsible(target, peer.ip);
         }
+    } */
+
+    public static async Task<string> FindSuccessor(M_Node node, ulong target)
+    {
+        if(node.successor != null && NodeUtils.inBetween(target, node.id, node.successor.id))
+        {
+            return node.successor.ip;
+        }
+        else if(node.predecessor != null && NodeUtils.inBetween(target, node.predecessor.id, node.id))
+        {
+            return node.ip;  // target lies between pred and self, so self is the successor
+        }
+        else
+        {
+            M_Node peer = await ClosestPreceedingNode(node, target);
+            return await S_FindPeerResponsible(target, peer.ip);
+        }
     }
-    
+
     private static async Task<M_Node> ClosestPreceedingNode(M_Node node, ulong target)
     {
         await AgnetaHandler.Log(1, $"ClosestPreceedingNode: Looking for node preceding {target} starting from {node.id}");
-        
+
         ulong[] fingerTableKeys = node.fingerTable.Keys.ToArray();
         for (int i = Globals.FINGER_TABLE_SIZE - 1; i >= 0; i--)
         {
             M_Node fingerNode = node.fingerTable[fingerTableKeys[i]];
             await AgnetaHandler.Log(1, $"ClosestPreceedingNode: Checking finger {i} - Key: {fingerTableKeys[i]}, Node: {fingerNode.id}");
-            
+
             if(NodeUtils.inBetween(fingerNode.id, node.id, target))
             {
                 await AgnetaHandler.Log(1, $"ClosestPreceedingNode: Found preceding node {fingerNode.id}");
                 return fingerNode;
             }
         }
-        
+
         await AgnetaHandler.Log(1, $"ClosestPreceedingNode: No better preceding node found, returning self");
         return node;
     }
