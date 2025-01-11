@@ -49,11 +49,6 @@ public class AgentLifeCycleService : IHostedService
             Console.WriteLine(nearestNeighbour);
 
             Globals._NODE = await NodeService.JoinNetwork(Globals._NODE, bootstrap_node);
-
-            Task stabalize = Task.Run(async () => {
-                Globals._NODE = await NodeService.VerifySuccessor(Globals._NODE);
-                Globals._NODE = await NodeService.FixFingerTable(Globals._NODE);
-            });
         }
         catch
         {
