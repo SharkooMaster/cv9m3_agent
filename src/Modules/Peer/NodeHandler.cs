@@ -74,7 +74,7 @@ public static class NodeService
         return node;
     }
 
-    private static async Task<M_Node> BuildFingerTable(M_Node node)
+/*     private static async Task<M_Node> BuildFingerTable(M_Node node)
     {
         for (int i = 0; i < Globals.FINGER_TABLE_SIZE; i++)
         {
@@ -85,6 +85,76 @@ public static class NodeService
             node.fingerTable.TryAdd(_finger, new M_Node() { id = peer.Id, ip = peer.Ip });
         }
         return node;
+    } */
+
+    private static async Task<M_Node> BuildFingerTable(M_Node node)
+    {
+        try 
+        {
+            if (node == null)
+            {
+                await AgnetaHandler.Log(1, "BuildFingerTable: node is null");
+                return null;
+            }
+    
+            if (node.fingerTable == null)
+            {
+                await AgnetaHandler.Log(1, "BuildFingerTable: Creating new finger table");
+                node.fingerTable = new ConcurrentDictionary<ulong, M_Node>();
+            }
+    
+            for (int i = 0; i < Globals.FINGER_TABLE_SIZE; i++)
+            {
+                try 
+                {
+                    ulong _finger = (node.id + (1UL << i)) % (1UL << Globals.FINGER_TABLE_SIZE);
+                    
+                    string _ip = await FindSuccessor(node, _finger);
+                    if (string.IsNullOrEmpty(_ip))
+                    {
+                        await AgnetaHandler.Log(1, $"BuildFingerTable: FindSuccessor returned null/empty for finger {i} (value: {_finger})");
+                        continue;
+                    }
+    
+                    GetNodeInfo_Result peer;
+                    try 
+                    {
+                        peer = await _getNodeInfoService.ClientGet(_ip);
+                        if (peer == null)
+                        {
+                            await AgnetaHandler.Log(1, $"BuildFingerTable: GetNodeInfo returned null for IP {_ip} at finger {i}");
+                            continue;
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        await AgnetaHandler.Log(1, $"BuildFingerTable: Failed to get node info for IP {_ip} at finger {i}: {ex.Message}");
+                        continue;
+                    }
+    
+                    if (!node.fingerTable.TryAdd(_finger, new M_Node() { id = peer.Id, ip = peer.Ip }))
+                    {
+                        await AgnetaHandler.Log(1, $"BuildFingerTable: Failed to add entry for finger {i} (value: {_finger}) with IP {peer.Ip}");
+                    }
+                    else 
+                    {
+                        await AgnetaHandler.Log(1, $"BuildFingerTable: Successfully added finger {i} (value: {_finger}) pointing to {peer.Ip}");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    await AgnetaHandler.Log(1, $"BuildFingerTable: Error processing finger {i}: {ex.Message}");
+                }
+            }
+    
+            await AgnetaHandler.Log(1, $"BuildFingerTable: Completed building finger table. Size: {node.fingerTable.Count}");
+            return node;
+        }
+        catch (Exception ex)
+        {
+            await AgnetaHandler.Log(1, $"BuildFingerTable: Unexpected error: {ex.Message}");
+            return node;
+        }
     }
     
     private static async Task<string> S_FindPeerResponsible(ulong target, string _ip)
@@ -181,35 +251,35 @@ public static class NodeService
                 await AgnetaHandler.Log(1, "VerifySuccessor: node is null");
                 return null;
             }
-    
+
             if (node.successor == null)
             {
                 await AgnetaHandler.Log(1, "VerifySuccessor: node.successor is null");
                 return node;
             }
-    
+
             if (string.IsNullOrEmpty(node.successor.ip))
             {
                 await AgnetaHandler.Log(1, "VerifySuccessor: node.successor.ip is null or empty");
                 return node;
             }
-    
+
             try 
             {
                 GetPredecessor_Result getPredecessor_result = await _getPredecessorService.ClientGet(node.successor.ip);
-                
+
                 if (getPredecessor_result == null)
                 {
                     await AgnetaHandler.Log(1, $"VerifySuccessor: getPredecessor_result is null for successor {node.successor.ip}");
                     return node;
                 }
-    
+
                 if (getPredecessor_result.Id != node.id && getPredecessor_result.Ip != node.ip)
                 {
                     await AgnetaHandler.Log(1, $"VerifySuccessor: Updating successor from {node.successor.ip} to {getPredecessor_result.Ip}");
-                    
+
                     node.successor = new M_Node() { id = getPredecessor_result.Id, ip = getPredecessor_result.Ip };
-    
+
                     try 
                     {
                         UpdatePredecessor_Req updatePredecessor_req = new UpdatePredecessor_Req() { Id = node.id, Ip = node.ip };
@@ -225,7 +295,7 @@ public static class NodeService
             {
                 await AgnetaHandler.Log(1, $"VerifySuccessor: Failed to get predecessor from {node.successor.ip}: {ex.Message}");
             }
-    
+
             return node;
         }
         catch (Exception ex)
@@ -234,7 +304,7 @@ public static class NodeService
             return node;
         }
     }
-    
+
     public static async Task<M_Node> FixFingerTable(M_Node node)
     {
         try 
@@ -244,22 +314,22 @@ public static class NodeService
                 await AgnetaHandler.Log(1, "FixFingerTable: node is null");
                 return null;
             }
-    
+
             if (node.fingerTable == null)
             {
                 await AgnetaHandler.Log(1, "FixFingerTable: node.fingerTable is null");
                 return node;
             }
-    
+
             if (node.fingerTable.Count != Globals.FINGER_TABLE_SIZE)
             {
                 await AgnetaHandler.Log(1, $"FixFingerTable: Incorrect finger table size. Expected: {Globals.FINGER_TABLE_SIZE}, Actual: {node.fingerTable.Count}");
                 return node;
             }
-    
+
             _nextFinger = (_nextFinger + 1 >= Globals.FINGER_TABLE_SIZE) ? 0 : _nextFinger + 1;
             ulong target = (node.id + (1UL << _nextFinger)) % (1UL << Globals.FINGER_TABLE_SIZE);
-    
+
             ulong[] fingerTableKeys;
             try 
             {
@@ -270,7 +340,7 @@ public static class NodeService
                 await AgnetaHandler.Log(1, $"FixFingerTable: Failed to get finger table keys: {ex.Message}");
                 return node;
             }
-    
+
             string _new_successor;
             try 
             {
@@ -286,13 +356,13 @@ public static class NodeService
                 await AgnetaHandler.Log(1, $"FixFingerTable: FindSuccessor failed for target {target}: {ex.Message}");
                 return node;
             }
-    
+
             if (_new_successor == node.ip)
             {
                 await AgnetaHandler.Log(1, $"FixFingerTable: New successor is self for finger {_nextFinger}");
                 return node;
             }
-    
+
             M_Node newFingerEntry;
             try 
             {
@@ -327,7 +397,7 @@ public static class NodeService
                         return node;
                     }
                 }
-    
+
                 ulong fingerKey = fingerTableKeys[_nextFinger];
                 if (!node.fingerTable.TryUpdate(fingerKey, newFingerEntry, node.fingerTable[fingerKey]))
                 {
@@ -338,7 +408,7 @@ public static class NodeService
             {
                 await AgnetaHandler.Log(1, $"FixFingerTable: Error while updating finger entry: {ex.Message}");
             }
-    
+
             return node;
         }
         catch (Exception ex)
