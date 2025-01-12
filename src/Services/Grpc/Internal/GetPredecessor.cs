@@ -11,8 +11,8 @@ public class GetPredecessorService : GetPredecessor.GetPredecessorBase
     {
         GetPredecessor_Result res = new GetPredecessor_Result()
         {
-            Id = (Globals._NODE.predecessor.id == null) ? Globals._NODE.id : Globals._NODE.predecessor.id,
-            Ip = Globals._NODE.predecessor.ip ?? Globals._NODE.ip
+            Id = Globals._NODE.predecessor.id,
+            Ip = Globals._NODE.predecessor.ip,
         };
         return res;
     }
@@ -21,24 +21,21 @@ public class GetPredecessorService : GetPredecessor.GetPredecessorBase
     {
         try
         {
-            Console.WriteLine("Getting predecessor");
             var channel = GrpcChannel.ForAddress($"http://{_ip}:5000");
             GetPredecessor.GetPredecessorClient _client = new GetPredecessor.GetPredecessorClient(channel);
 
-            await AgnetaHandler.Log(1, "Sending");
             var response = await _client.GetAsync(new Empty());
-            await AgnetaHandler.Log(1, "Sent");
 
             return response;
         }
         catch (RpcException ex)
         {
-            Console.WriteLine($"gRPC error: {ex.Status.StatusCode} - {ex.Status.Detail}");
+            await AgnetaHandler.Log(2, $"gRPC error: {ex.Status.StatusCode} - {ex.Status.Detail}");
             throw;
         }
         catch(Exception ex)
         {
-            Console.WriteLine($"[GetPredecessor] General error: {ex.Message}");
+            await AgnetaHandler.Log(2, $"[GetPredecessor] General error: {ex.Message}");
             throw;
         }
     }
