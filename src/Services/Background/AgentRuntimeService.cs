@@ -50,15 +50,6 @@ public class AgentRuntimeService : BackgroundService
                     await AgnetaHandler.Log(1, $"Error in VerifySuccessor: {ex.Message}");
                 }
     
-                try 
-                {
-                    Globals._NODE = await NodeService.FixFingerTable(Globals._NODE);
-                }
-                catch (Exception ex)
-                {
-                    await AgnetaHandler.Log(1, $"Error in FixFingerTable: {ex.Message}");
-                }
-    
                 await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken);
             }
             catch (TaskCanceledException)
