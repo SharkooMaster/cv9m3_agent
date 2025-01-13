@@ -121,7 +121,7 @@ public static class Misc
         return to_return;
     }
 
-    public static double CalculateDistance(float[] vec1, float[] vec2)
+    public static float CalculateDistance(float[] vec1, float[] vec2)
     {
         if (vec1 == null || vec2 == null)
             throw new ArgumentNullException("Vectors must not be null.");
@@ -129,9 +129,9 @@ public static class Misc
         if (vec1.Length != vec2.Length)
             throw new ArgumentException("Vectors must have the same dimensions.");
 
-        double dotProduct = 0.0;
-        double normVec1 = 0.0;
-        double normVec2 = 0.0;
+        float dotProduct = 0.0f;
+        float normVec1 = 0.0f;
+        float normVec2 = 0.0f;
 
         for (int i = 0; i < vec1.Length; i++)
         {
@@ -141,7 +141,7 @@ public static class Misc
         }
 
         // Calculate cosine similarity
-        double cosineSimilarity = dotProduct / (Math.Sqrt(normVec1) * Math.Sqrt(normVec2));
+        float cosineSimilarity = dotProduct / (MathF.Sqrt(normVec1) * MathF.Sqrt(normVec2));
 
         // Return cosine distance
         return 1 - cosineSimilarity;

@@ -5,6 +5,7 @@ using Agent.Models;
 using Agent.Modules.Agneta;
 using Agent.Utils;
 using Agent.Utils.Globals;
+using Agent.Utils.Misc;
 using Grpc.Core;
 using Xunit.Sdk;
 
@@ -109,6 +110,12 @@ public static class NodeService
             await _updatePredecessorService.ClientUpdate(updatePredecessor_req, node.successor.ip);
         }
         return node;
+    }
+
+    public static async Task<List<M_SearchResult>> SearchAll(M_Node node, float[] _vector, float _minimum_similarity, int _k)
+    {
+        string bucket_key = Agent.Utils.Misc.Misc.vector_to_bitstring(_vector);
+        return await node.Buckets[bucket_key].SearchData(_vector, _minimum_similarity, _k);
     }
 
 }

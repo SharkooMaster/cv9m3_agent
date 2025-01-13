@@ -13,7 +13,7 @@ public class M_Node
     public M_Node successor {get; set;}
 
     public ConcurrentDictionary<ulong, M_Node> fingerTable = new ConcurrentDictionary<ulong, M_Node>();
-    public List<M_Node> successor_list = new List<M_Node>();
+    public ConcurrentDictionary<string, M_Bucket> Buckets = new ConcurrentDictionary<string, M_Bucket>();
 
     public M_Node()
     {
