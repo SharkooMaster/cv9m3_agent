@@ -1,0 +1,26 @@
+syntax = "proto3";
+
+service SearchVector
+{
+    rpc Get (SearchVector_Req) returns (SearchVector_Result);
+}
+
+message SearchVector_Req
+{
+    uint64 key = 1;
+    repeated float vector = 2;
+
+    float minimum_similarity = 3;
+    int32 k = 4;
+}
+
+message SearchVectorObject
+{
+    float similarity_rate = 1;
+    string metadata = 2;
+}
+
+message SearchVector_Result
+{
+    repeated SearchVectorObject results = 1;
+}
