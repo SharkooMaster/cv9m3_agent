@@ -1,0 +1,16 @@
+syntax = "proto3";
+
+import "google/protobuf/empty.proto";
+
+service StoreVector
+{
+    rpc Store (StoreVector_Req) returns (google.protobuf.Empty);
+}
+
+message StoreVector_Req
+{
+    uint64 keyspace = 1;
+    string bitstring = 2;
+    repeated float vector = 3;
+    string metadata = 4;
+}

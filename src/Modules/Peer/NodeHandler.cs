@@ -112,12 +112,11 @@ public static class NodeService
         return node;
     }
 
-    public static async Task<List<M_SearchResult>> SearchAll(M_Node node, float[] _vector, float _minimum_similarity, int _k, int _m = 64)
+    public static async Task<List<M_SearchResult>> SearchAll(M_Node node, string _bitstring, float[] _vector, float _minimum_similarity, int _k)
     {
-        string bucket_key = Agent.Utils.Misc.Misc.vector_to_bitstring(_vector);
-        if(node.Buckets.ContainsKey(bucket_key))
+        if(node.Buckets.ContainsKey(_bitstring))
         {
-            return await node.Buckets[bucket_key].SearchData(_vector, _minimum_similarity, _k);
+            return await node.Buckets[_bitstring].SearchData(_vector, _minimum_similarity, _k);
         }
         return new List<M_SearchResult>();
     }

@@ -8,10 +8,11 @@ service SearchVector
 message SearchVector_Req
 {
     uint64 key = 1;
-    repeated float vector = 2;
+    string bitstring = 2;
+    repeated float vector = 3;
 
-    float minimum_similarity = 3;
-    int32 k = 4;
+    float minimum_similarity = 4;
+    int32 k = 5;
 }
 
 message SearchVectorObject

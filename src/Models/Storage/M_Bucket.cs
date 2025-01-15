@@ -7,7 +7,9 @@ public class M_Bucket
 {
     public ConcurrentBag<M_Data> data = new ConcurrentBag<M_Data>();
 
-    public async Task InsertData(M_Data _data){ data.Add(_data); }
+    public async Task InsertData(M_Data _data){
+        data.Add(_data);
+    }
     
     public async Task<List<M_SearchResult>> SearchData(float[] _vector, float _minimum_similarity, int _k)
     {
