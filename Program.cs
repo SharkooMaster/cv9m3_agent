@@ -48,6 +48,9 @@ var agnetaClientService = app.Services.GetRequiredService<AgnetaClientService>()
 await agnetaClientService.ConnectAsync();
 AgnetaHandler.SetInstance(agnetaClientService);
 
+var networkFileSystemService = app.Services.GetRequiredService<NetworkFileStorageService>();
+NetworkFileStorageHandler.SetInstance(networkFileSystemService);
+
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
