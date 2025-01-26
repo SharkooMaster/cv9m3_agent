@@ -31,6 +31,7 @@ public static class Misc
             version     = _version,
             metadata    = new {
                 environment = _env,
+                totalMem = GetAvailableMemory().ToString() + "bytes"
             }
         };
 
@@ -147,5 +148,9 @@ public static class Misc
         return 1 - cosineSimilarity;
     }
 
+    public static long GetAvailableMemory()
+    {
+        return GC.GetGCMemoryInfo().TotalAvailableMemoryBytes;
+    }
 
 }

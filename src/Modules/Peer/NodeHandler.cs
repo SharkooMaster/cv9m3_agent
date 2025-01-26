@@ -123,4 +123,9 @@ public static class NodeService
         return new List<M_SearchResult>();
     }
 
+    public static async Task<List<M_Bucket>> ReadBucketsInKeyspace()
+    {
+        //
+    }
+
 }
