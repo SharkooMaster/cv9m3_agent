@@ -59,6 +59,8 @@ public static class NodeService
         UpdateSuccessor_Req updateSuccessor_req = new UpdateSuccessor_Req() { Id = node.id, Ip = node.ip };
         await _updateSuccessorService.ClientUpdate(updateSuccessor_req, node.predecessor.ip);
 
+        // Read data into memory
+
         return node;
     }
     
