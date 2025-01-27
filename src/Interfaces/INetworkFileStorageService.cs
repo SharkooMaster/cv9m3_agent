@@ -1,5 +1,6 @@
 
 using System.Numerics;
+using Agent.Models;
 
 namespace Agent.Interfaces.Infs
 {

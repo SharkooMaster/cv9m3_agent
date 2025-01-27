@@ -12,7 +12,6 @@ namespace Agent.Services.Storage
             _nfs_path = nfs_path;
         }
 
-        // Store bucket data in files where the name of the file is the 128bit ID.
         public async Task StoreVector(string bucket_Id, M_Data data)
         {
             if(string.IsNullOrEmpty(bucket_Id)){ throw new ArgumentNullException(nameof(bucket_Id)); }
@@ -24,7 +23,7 @@ namespace Agent.Services.Storage
         public async Task<M_Bucket> ReadBucket(string bucket_Id)
         {
             string filePath = Path.Combine(_nfs_path, $"{bucket_Id}.tpdf");
-            M_Bucket new_bucket = new M_Bucket();
+            M_Bucket new_bucket = new M_Bucket(bucket_Id);
 
             if(!File.Exists(filePath)){ return new_bucket; }
 

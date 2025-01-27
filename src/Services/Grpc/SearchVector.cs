@@ -1,4 +1,5 @@
 
+using System.Text.Json;
 using Agent.Modules.Agneta;
 using Agent.Modules.Peer;
 using Agent.Utils.Globals;
@@ -13,7 +14,7 @@ public class SearchVectorService : SearchVector.SearchVectorBase
         SearchVector_Result res = new SearchVector_Result();
         foreach (var item in query_res)
         {
-            res.Results.Add(new SearchVectorObject() { SimilarityRate = item.similarity, Metadata = item.metadata });
+            res.Results.Add(new SearchVectorObject() { SimilarityRate = item.similarity, Metadata = JsonSerializer.Serialize(item.metadata) });
         }
 
         return res;

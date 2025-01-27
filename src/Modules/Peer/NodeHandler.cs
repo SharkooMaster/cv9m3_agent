@@ -116,16 +116,15 @@ public static class NodeService
 
     public static async Task<List<M_SearchResult>> SearchAll(M_Node node, string _bitstring, float[] _vector, float _minimum_similarity, int _k)
     {
-        if(node.Buckets.ContainsKey(_bitstring))
+        if(!node.Buckets.ContainsKey(_bitstring))
         {
-            return await node.Buckets[_bitstring].SearchData(_vector, _minimum_similarity, _k);
+            M_Bucket target_bucket = await NetworkFileStorageHandler.ReadBucket(_bitstring);
+            if(!node.Buckets.TryAdd(_bitstring,target_bucket))
+            {
+                await AgnetaHandler.Log(2, "Failed to add bucket imported from NFS");
+            }
         }
-        return new List<M_SearchResult>();
-    }
-
-    public static async Task<List<M_Bucket>> ReadBucketsInKeyspace()
-    {
-        //
+        return await node.Buckets[_bitstring].SearchData(_vector, _minimum_similarity, _k);
     }
 
 }
