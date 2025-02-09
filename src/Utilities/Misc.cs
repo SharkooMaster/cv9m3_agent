@@ -90,16 +90,14 @@ public static class Misc
         return double.Parse(parts[1]) / 1024;
     }
 
-    private static BigInteger ConvertBitStringToBigInteger(string bitString)
+    private static ulong ConvertBitStringToBigInteger(string bitString)
     {
         return Convert.ToUInt64(bitString, 2);
     }
 
-    public static bool IsKeyInRange(string startKey, string endKey, string incomingKey)
+    public static bool IsKeyInRange(ulong startValue, ulong endValue, string incomingKey)
     {
-        BigInteger startValue   = ConvertBitStringToBigInteger(startKey);
-        BigInteger endValue     = ConvertBitStringToBigInteger(endKey);
-        BigInteger keyValue     = ConvertBitStringToBigInteger(incomingKey);
+        ulong keyValue = ConvertBitStringToBigInteger(incomingKey);
 
         if (startValue <= endValue)
         {

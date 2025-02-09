@@ -19,6 +19,7 @@ message SearchVectorObject
 {
     float similarity_rate = 1;
     string metadata = 2;
+    uint64 id = 3;
 }
 
 message SearchVector_Result
