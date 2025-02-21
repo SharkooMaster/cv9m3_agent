@@ -124,7 +124,7 @@ public static class NodeService
 
         if(is_inRange)
         {
-            await AgnetaHandler.Log(0, "In range");
+            Console.WriteLine("In range");
             if(node.Buckets.ContainsKey(_bitstring))
             {
                 Console.WriteLine("Key exists");
@@ -134,7 +134,7 @@ public static class NodeService
         }
         else
         {
-            await AgnetaHandler.Log(0, "Not in range");
+            Console.WriteLine("Not in range");
             List<M_SearchResult> to_return = new List<M_SearchResult>();
             SearchVector_Result res = await _searchVectorService.ClientGet(_req, Globals._NODE.successor.ip);
             foreach (var item in res.Results)
