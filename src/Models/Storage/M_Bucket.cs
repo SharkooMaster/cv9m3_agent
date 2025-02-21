@@ -19,7 +19,9 @@ public class M_Bucket
         _data.id = lastId;
         lastId++;
         data.Add(_data);
+        Console.WriteLine("Storing on NFS");
         await NetworkFileStorageHandler.StoreVector(ID, _data);
+        Console.WriteLine("Done");
         return lastId;
     }
     

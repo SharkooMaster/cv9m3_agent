@@ -153,6 +153,7 @@ public static class NodeService
     public static async Task<ulong> StoreInBucket(M_Node node, string bucket_string, M_Data _data)
     {
         if(!node.Buckets.ContainsKey(bucket_string)){ node.Buckets.TryAdd(bucket_string, new M_Bucket(bucket_string)); }
+        Console.WriteLine("Inserting data");
         return await node.Buckets[bucket_string].InsertData(_data);
     }
 
