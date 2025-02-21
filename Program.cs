@@ -16,6 +16,7 @@ using Agent.Modules.Pushover;
 using Agent.Modules.Agneta;
 using Agent.Utils.Globals;
 using Agent.Models;
+using Agent.Services.Storage;
 
 var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddGrpc();
@@ -46,6 +47,9 @@ PushoverHandler.SetInstance(pushoverClientService);
 var agnetaClientService = app.Services.GetRequiredService<AgnetaClientService>();
 await agnetaClientService.ConnectAsync();
 AgnetaHandler.SetInstance(agnetaClientService);
+
+var networkFileSystemService = app.Services.GetRequiredService<NetworkFileStorageService>();
+NetworkFileStorageHandler.SetInstance(networkFileSystemService);
 
 if (app.Environment.IsDevelopment())
 {
@@ -187,4 +191,5 @@ void ConfigureServices(IServiceCollection services)
 {
     services.AddSingleton<AgnetaClientService>(new AgnetaClientService("wss://agneta-loadbalancer.default.svc.cluster.local/log/ws"));
     services.AddSingleton<PushoverClientService>(new PushoverClientService());
+    services.AddSingleton<NetworkFileStorageService>(new NetworkFileStorageService(Environment.GetEnvironmentVariable("NFS_PATH") ?? "/data"));
 }

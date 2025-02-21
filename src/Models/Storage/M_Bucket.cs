@@ -1,14 +1,22 @@
 
 using System.Collections.Concurrent;
+using System.Numerics;
 using Agent.Utils;
 using Agent.Utils.Misc;
 
 public class M_Bucket
 {
+    public string ID { get; set; }
     public ConcurrentBag<M_Data> data = new ConcurrentBag<M_Data>();
+
+    public M_Bucket(string _ID)
+    {
+        ID = _ID;
+    }
 
     public async Task InsertData(M_Data _data){
         data.Add(_data);
+        await NetworkFileStorageHandler.StoreVector(ID, _data);
     }
     
     public async Task<List<M_SearchResult>> SearchData(float[] _vector, float _minimum_similarity, int _k)

@@ -4,6 +4,8 @@ using System.Text.Json;
 using System.Net;
 using Agent.Models.Misc;
 using System.Numerics;
+using System.Threading.Tasks;
+using Agent.Modules.Agneta;
 
 namespace Agent.Utils.Misc;
 
@@ -31,6 +33,7 @@ public static class Misc
             version     = _version,
             metadata    = new {
                 environment = _env,
+                totalMem = GetAvailableMemory().ToString() + "bytes"
             }
         };
 
@@ -90,16 +93,14 @@ public static class Misc
         return double.Parse(parts[1]) / 1024;
     }
 
-    private static BigInteger ConvertBitStringToBigInteger(string bitString)
+    private static ulong ConvertBitStringToBigInteger(string bitString)
     {
         return Convert.ToUInt64(bitString, 2);
     }
 
-    public static bool IsKeyInRange(string startKey, string endKey, string incomingKey)
+    public static bool IsKeyInRange(ulong startValue, ulong endValue, string incomingKey)
     {
-        BigInteger startValue   = ConvertBitStringToBigInteger(startKey);
-        BigInteger endValue     = ConvertBitStringToBigInteger(endKey);
-        BigInteger keyValue     = ConvertBitStringToBigInteger(incomingKey);
+        ulong keyValue = ConvertBitStringToBigInteger(incomingKey);
 
         if (startValue <= endValue)
         {
@@ -147,5 +148,44 @@ public static class Misc
         return 1 - cosineSimilarity;
     }
 
+    public static long GetAvailableMemory()
+    {
+        return GC.GetGCMemoryInfo().TotalAvailableMemoryBytes;
+    }
+
+    public static BigInteger ConvertToBigInteger(string binaryString)
+    {
+        return BigInteger.Parse(binaryString, System.Globalization.NumberStyles.AllowHexSpecifier);
+    }
+
+    public static async Task<string> BigIntegerToBitString(BigInteger value)
+    {
+        if (value < 0 || value > (BigInteger.One << 128) - 1)
+        {
+            await AgnetaHandler.Log(2, "Value is out of range for a 128-bit number.");
+            throw new ArgumentOutOfRangeException("Value is out of range for a 128-bit number.");
+        }
+
+        return Convert.ToString((long)value, 2).PadLeft(128, '0');
+    }
+
+    static async Task<string> ConvertBitStringToUniqueString(string bitString)
+    {
+        // Validate the input
+        if (bitString.Length != 64)
+        {
+            await AgnetaHandler.Log(2, "Input must be a 64-bit binary string.");
+            throw new ArgumentException("Input must be a 64-bit binary string.");
+        }
+
+        byte[] bytes = new byte[8];
+        for (int i = 0; i < 8; i++)
+        {
+            string byteString = bitString.Substring(i * 8, 8);
+            bytes[i] = Convert.ToByte(byteString, 2);
+        }
+
+        return Convert.ToBase64String(bytes);
+    }
 
 }
