@@ -72,6 +72,7 @@ app.MapGrpcService<UpdatePredecessorService>();
 app.MapGrpcService<UpdateSuccessorService>();
 app.MapGrpcService<UpdateFingerTableService>();
 app.MapGrpcService<SearchVectorService>();
+app.MapGrpcService<StoreVectorService>();
 
 app.MapGet("/", () =>{ return "Hello world"; });
 app.MapGet("/health", () =>{ return "true"; });
