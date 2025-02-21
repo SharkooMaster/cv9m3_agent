@@ -16,7 +16,8 @@ namespace Agent.Services.Storage
         {
             if(string.IsNullOrEmpty(bucket_Id)){ throw new ArgumentNullException(nameof(bucket_Id)); }
 
-            string filePath = Path.Combine(_nfs_path, $"{bucket_Id}.tpdf");
+            // string filePath = Path.Combine(_nfs_path, $"{bucket_Id}.tpdf");
+            string filePath = $"{bucket_Id}.tpdf";
             await File.AppendAllTextAsync(filePath, $"{data.ToJson()}\n");
         }
 
