@@ -193,5 +193,5 @@ void ConfigureServices(IServiceCollection services)
 {
     services.AddSingleton<AgnetaClientService>(new AgnetaClientService("wss://agneta-loadbalancer.default.svc.cluster.local/log/ws"));
     services.AddSingleton<PushoverClientService>(new PushoverClientService());
-    services.AddSingleton<NetworkFileStorageService>(new NetworkFileStorageService("./data"));
+    services.AddSingleton<NetworkFileStorageService>(new NetworkFileStorageService("/var/ngs/general/data"));
 }
