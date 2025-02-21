@@ -34,6 +34,7 @@ public class M_Bucket
             if(to_return.Count == _k){ break; }
 
             float _similarity = Misc.CalculateDistance(_vector, row.vector);
+            Console.WriteLine($"sim: {_similarity}, minSim: {_minimum_similarity}");
             if(_similarity >= _minimum_similarity)
             {
                 to_return.Add(new M_SearchResult() {

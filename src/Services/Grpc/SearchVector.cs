@@ -14,6 +14,7 @@ public class SearchVectorService : SearchVector.SearchVectorBase
         Console.WriteLine("Request recieved");
         List<M_SearchResult> query_res = await NodeService.SearchAll(Globals._NODE, request.Bitstring, request.Vector.ToArray(), request.MinimumSimilarity, request.K, request);
         SearchVector_Result res = new SearchVector_Result();
+        Console.WriteLine($"query_res length: {query_res.Count}");
         foreach (var item in query_res)
         {
             res.Results.Add(new SearchVectorObject() {
@@ -24,6 +25,7 @@ public class SearchVectorService : SearchVector.SearchVectorBase
             });
         }
         res.TargetIp = Misc.GetLocalIPAddress();
+        Console.WriteLine($"res length: {res.Results.Count}");
 
         return res;
     }
