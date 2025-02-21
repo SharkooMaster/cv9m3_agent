@@ -100,6 +100,8 @@ public static class Misc
 
     public static bool IsKeyInRange(ulong startValue, ulong endValue, string incomingKey)
     {
+        if(startValue == endValue){ return true; }
+
         ulong keyValue = ConvertBitStringToBigInteger(incomingKey);
 
         if (startValue <= endValue)
