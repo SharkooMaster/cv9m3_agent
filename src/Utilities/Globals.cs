@@ -15,6 +15,8 @@ public static class Globals
 
     public static string AgentsLoadbalancer = "http://agent-loadbalancer.default.svc.cluster.local:5000";
 
+    public static int RPU_SECTION = 0;
+    public static int RPU_SECTION_MAX = 3;
     public static int FINGER_TABLE_SIZE = 63;
     public static int SUCCESSOR_LIST_SIZE = 4;
     public static M_Node _NODE = new M_Node();

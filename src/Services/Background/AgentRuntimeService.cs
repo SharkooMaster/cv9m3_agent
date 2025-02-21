@@ -25,6 +25,8 @@ public class AgentRuntimeService : BackgroundService
             await AgnetaHandler.SendUsageStats();
             M_Node temp = await NodeService.VerifySuccessor(Globals._NODE);
             Globals._NODE = temp;
+
+            BackgrounfServiceManager.RunRoutineMethods();
     
             await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken);
         }

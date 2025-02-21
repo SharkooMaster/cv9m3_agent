@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Linq.Expressions;
+using System.Text.Json;
 using Agent.Interfaces;
 using Agent.Models;
 using Agent.Modules.Agneta;
@@ -23,6 +24,8 @@ public static class NodeService
     public static UpdateSuccessorService _updateSuccessorService = new UpdateSuccessorService();
     public static UpdatePredecessorService _updatePredecessorService = new UpdatePredecessorService();
     public static UpdateFingerTableService _updateFingerTableService = new UpdateFingerTableService();
+    
+    public static SearchVectorService _searchVectorService = new SearchVectorService();
 
     public static int _nextFinger = 0;
 
@@ -58,6 +61,8 @@ public static class NodeService
         // Notify my predecessor that im its new successor
         UpdateSuccessor_Req updateSuccessor_req = new UpdateSuccessor_Req() { Id = node.id, Ip = node.ip };
         await _updateSuccessorService.ClientUpdate(updateSuccessor_req, node.predecessor.ip);
+
+        // Read data into memory
 
         return node;
     }
@@ -112,13 +117,37 @@ public static class NodeService
         return node;
     }
 
-    public static async Task<List<M_SearchResult>> SearchAll(M_Node node, string _bitstring, float[] _vector, float _minimum_similarity, int _k)
+    public static async Task<List<M_SearchResult>> SearchAll(M_Node node, string _bitstring, float[] _vector, float _minimum_similarity, int _k, SearchVector_Req _req)
     {
-        if(node.Buckets.ContainsKey(_bitstring))
+        Console.WriteLine("Searching");
+        bool is_inRange = Agent.Utils.Misc.Misc.IsKeyInRange(Globals._NODE.id, Globals._NODE.successor.id, _bitstring);
+
+        if(is_inRange)
         {
-            return await node.Buckets[_bitstring].SearchData(_vector, _minimum_similarity, _k);
+            await AgnetaHandler.Log(0, "In range");
+            if(node.Buckets.ContainsKey(_bitstring))
+            {
+                Console.WriteLine("Key exists");
+                return await node.Buckets[_bitstring].SearchData(_vector, _minimum_similarity, _k);
+            }
+            return new List<M_SearchResult>();
         }
-        return new List<M_SearchResult>();
+        else
+        {
+            await AgnetaHandler.Log(0, "Not in range");
+            List<M_SearchResult> to_return = new List<M_SearchResult>();
+            SearchVector_Result res = await _searchVectorService.ClientGet(_req, Globals._NODE.successor.ip);
+            foreach (var item in res.Results)
+            {
+                to_return.Add(new M_SearchResult()
+                {
+                    id=item.Id,
+                    metadata=JsonSerializer.Deserialize<JsonElement>(item.Metadata.ToString()),
+                    similarity=item.SimilarityRate
+                });
+            }
+            return to_return;
+        }
     }
 
 }
