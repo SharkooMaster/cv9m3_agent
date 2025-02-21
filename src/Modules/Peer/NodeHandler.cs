@@ -130,6 +130,21 @@ public static class NodeService
                 Console.WriteLine("Key exists");
                 return await node.Buckets[_bitstring].SearchData(_vector, _minimum_similarity, _k);
             }
+            else
+            {
+                M_Bucket read_bucket = await NetworkFileStorageHandler.ReadBucket(_bitstring);
+                if(read_bucket.data.Count > 0)
+                {
+                    if(!node.Buckets.TryAdd(_bitstring, read_bucket))
+                    {
+                        Console.WriteLine("Failed to import bucket from NFS");
+                    }
+                    else
+                    {
+                        return await node.Buckets[_bitstring].SearchData(_vector, _minimum_similarity, _k);
+                    }
+                }
+            }
             return new List<M_SearchResult>();
         }
         else
