@@ -144,10 +144,7 @@ public static class Misc
         }
 
         // Calculate cosine similarity
-        float cosineSimilarity = dotProduct / (MathF.Sqrt(normVec1) * MathF.Sqrt(normVec2));
-
-        // Return cosine distance
-        return 1 - cosineSimilarity;
+        return dotProduct / (MathF.Sqrt(normVec1) * MathF.Sqrt(normVec2));
     }
 
     public static long GetAvailableMemory()
