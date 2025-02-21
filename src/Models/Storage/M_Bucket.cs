@@ -7,6 +7,7 @@ using Agent.Utils.Misc;
 public class M_Bucket
 {
     public string ID { get; set; }
+    public ulong lastId = 0; // Possibly needs atomic operations to avoid collision
     public ConcurrentBag<M_Data> data = new ConcurrentBag<M_Data>();
 
     public M_Bucket(string _ID)
@@ -14,9 +15,12 @@ public class M_Bucket
         ID = _ID;
     }
 
-    public async Task InsertData(M_Data _data){
+    public async Task<ulong> InsertData(M_Data _data){
+        _data.id = lastId;
+        lastId++;
         data.Add(_data);
         await NetworkFileStorageHandler.StoreVector(ID, _data);
+        return lastId;
     }
     
     public async Task<List<M_SearchResult>> SearchData(float[] _vector, float _minimum_similarity, int _k)

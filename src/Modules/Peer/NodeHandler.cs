@@ -150,4 +150,9 @@ public static class NodeService
         }
     }
 
+    public static async Task<ulong> StoreInBucket(M_Node node, string bucket_string, M_Data _data)
+    {
+        return await node.Buckets[bucket_string].InsertData(_data);
+    }
+
 }

@@ -3,6 +3,7 @@ using System.Text.Json;
 using Agent.Modules.Agneta;
 using Agent.Modules.Peer;
 using Agent.Utils.Globals;
+using Agent.Utils.Misc;
 using Grpc.Core;
 using Grpc.Net.Client;
 
@@ -15,8 +16,14 @@ public class SearchVectorService : SearchVector.SearchVectorBase
         SearchVector_Result res = new SearchVector_Result();
         foreach (var item in query_res)
         {
-            res.Results.Add(new SearchVectorObject() { SimilarityRate = item.similarity, Metadata = item.metadata.ToString() });
+            res.Results.Add(new SearchVectorObject() {
+                SimilarityRate = item.similarity,
+                Metadata = item.metadata.ToString(),
+                Id = Convert.ToUInt64(request.Bitstring, 2),
+                Index = item.id
+            });
         }
+        res.TargetIp = Misc.GetLocalIPAddress();
 
         return res;
     }

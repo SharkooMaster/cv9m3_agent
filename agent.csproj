@@ -41,6 +41,7 @@
     <Protobuf Include="Protos\Internal\UpdateFingerTable.proto" GrpcServices="Both" />
 
     <Protobuf Include="Protos\SearchVector.proto" GrpcServices="Both" />
+    <Protobuf Include="Protos\StoreVector.proto" GrpcServices="Server" />
   </ItemGroup>
 
   <PropertyGroup>
