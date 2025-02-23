@@ -34,7 +34,9 @@ public class SearchVectorService : SearchVector.SearchVectorBase
     {
         try
         {
-            var channel = GrpcChannel.ForAddress($"http://{_ip}:5000");
+            var channel = GrpcChannel.ForAddress($"http://{_ip}:5000", new GrpcChannelOptions{
+                MaxReceiveMessageSize = 1000*1024*1024
+            });
             SearchVector.SearchVectorClient _client = new SearchVector.SearchVectorClient(channel);
 
             return await _client.GetAsync(req);
