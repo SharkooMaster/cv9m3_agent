@@ -33,7 +33,7 @@ builder.WebHost.ConfigureKestrel(options =>
     options.ListenAnyIP(5001, o => o.Protocols = HttpProtocols.Http1);
     //options.ListenLocalhost(5000, o => o.Protocols = HttpProtocols.Http2);
     //options.ListenLocalhost(5001, o => o.Protocols = HttpProtocols.Http1AndHttp2);
-    options.Limits.MaxRequestBodySize = 52428800;
+    options.Limits.MaxRequestBodySize = 1024 * 1024 * 1024;
 });
 
 builder.Services.AddEndpointsApiExplorer();
