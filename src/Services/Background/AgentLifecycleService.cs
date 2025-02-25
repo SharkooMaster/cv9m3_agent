@@ -43,7 +43,8 @@ public class AgentLifeCycleService : IHostedService
                 ServiceData neighbourData = JsonConvert.DeserializeObject<ServiceData>(nearestNeighbour.Data);
                 if(neighbourData.Host != Globals._NODE.ip)
                 {
-                    bootstrap_node = neighbourData.Host;
+                    Console.WriteLine("found peer");
+                    bootstrap_node = neighbourData.Host + ":5000";
                 }
             }
             //Console.Writeline(nearestNeighbour);
