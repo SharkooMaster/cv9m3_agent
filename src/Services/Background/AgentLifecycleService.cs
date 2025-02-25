@@ -44,7 +44,7 @@ public class AgentLifeCycleService : IHostedService
                 if(neighbourData.Host != Globals._NODE.ip)
                 {
                     Console.WriteLine("found peer");
-                    bootstrap_node = neighbourData.Host + ":5000";
+                    bootstrap_node = neighbourData.Host;
                 }
             }
             //Console.Writeline(nearestNeighbour);
