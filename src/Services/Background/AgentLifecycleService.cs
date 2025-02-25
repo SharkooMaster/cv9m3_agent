@@ -17,7 +17,7 @@ public class AgentLifeCycleService : IHostedService
     //private readonly IEtcdClientService _etcdClientService;
     public AgentLifeCycleService()
     {
-        Console.WriteLine("INFO::AgentLifecycleService: Initiating AgentLifeCycleService");
+        //Console.Writeline("INFO::AgentLifecycleService: Initiating AgentLifeCycleService");
         //_etcdClientService = etcdClientService;
     }
 
@@ -46,13 +46,13 @@ public class AgentLifeCycleService : IHostedService
                     bootstrap_node = neighbourData.Host;
                 }
             }
-            Console.WriteLine(nearestNeighbour);
+            //Console.Writeline(nearestNeighbour);
 
             Globals._NODE = await NodeService.JoinNetwork(Globals._NODE, bootstrap_node);
         }
         catch
         {
-            Console.WriteLine("ERROR::AgentLifeCycleService: Could not read propery (host) on aquired neighbour");
+            //Console.Writeline("ERROR::AgentLifeCycleService: Could not read propery (host) on aquired neighbour");
         }
     }
 

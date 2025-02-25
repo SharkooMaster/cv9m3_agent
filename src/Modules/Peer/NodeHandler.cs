@@ -62,8 +62,6 @@ public static class NodeService
         UpdateSuccessor_Req updateSuccessor_req = new UpdateSuccessor_Req() { Id = node.id, Ip = node.ip };
         await _updateSuccessorService.ClientUpdate(updateSuccessor_req, node.predecessor.ip);
 
-        // Read data into memory
-
         return node;
     }
     
@@ -119,15 +117,15 @@ public static class NodeService
 
     public static async Task<List<M_SearchResult>> SearchAll(M_Node node, string _bitstring, float[] _vector, float _minimum_similarity, int _k, SearchVector_Req _req)
     {
-        Console.WriteLine("Searching");
+        //Console.Writeline("Searching");
         bool is_inRange = Agent.Utils.Misc.Misc.IsKeyInRange(Globals._NODE.id, Globals._NODE.successor.id, _bitstring);
 
         if(is_inRange)
         {
-            Console.WriteLine("In range");
+            //Console.Writeline("In range");
             if(node.Buckets.ContainsKey(_bitstring))
             {
-                Console.WriteLine("Key exists");
+                //Console.Writeline("Key exists");
                 return await node.Buckets[_bitstring].SearchData(_vector, _minimum_similarity, _k);
             }
             else
@@ -137,7 +135,7 @@ public static class NodeService
                 {
                     if(!node.Buckets.TryAdd(_bitstring, read_bucket))
                     {
-                        Console.WriteLine("Failed to import bucket from NFS");
+                        //Console.Writeline("Failed to import bucket from NFS");
                     }
                     else
                     {
@@ -149,7 +147,7 @@ public static class NodeService
         }
         else
         {
-            Console.WriteLine("Not in range");
+            //Console.Writeline("Not in range");
             List<M_SearchResult> to_return = new List<M_SearchResult>();
             SearchVector_Result res = await _searchVectorService.ClientGet(_req, Globals._NODE.successor.ip);
             foreach (var item in res.Results)
@@ -168,7 +166,7 @@ public static class NodeService
     public static async Task<ulong> StoreInBucket(M_Node node, string bucket_string, M_Data _data)
     {
         if(!node.Buckets.ContainsKey(bucket_string)){ node.Buckets.TryAdd(bucket_string, new M_Bucket(bucket_string)); }
-        Console.WriteLine("Inserting data");
+        //Console.Writeline("Inserting data");
         return await node.Buckets[bucket_string].InsertData(_data);
     }
 

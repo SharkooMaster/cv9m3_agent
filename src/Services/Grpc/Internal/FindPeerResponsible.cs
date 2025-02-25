@@ -17,7 +17,7 @@ public class FindPeerResponsibleService : FindPeerResponsible.FindPeerResponsibl
 
     public async Task<QueryRes> ClientFind(QueryReq request, string _ip)
     {
-        Console.WriteLine("Sending grpc request, ClientFind (FindPeerResponsibleService)");
+        //Console.Writeline("Sending grpc request, ClientFind (FindPeerResponsibleService)");
         try
         {
             var channel = GrpcChannel.ForAddress($"http://{_ip}:5000", Globals.GRPC_OPTIONS);
@@ -29,12 +29,12 @@ public class FindPeerResponsibleService : FindPeerResponsible.FindPeerResponsibl
         }
         catch (RpcException ex)
         {
-            Console.WriteLine($"gRPC error: {ex.Status.StatusCode} - {ex.Status.Detail}");
+            //Console.Writeline($"gRPC error: {ex.Status.StatusCode} - {ex.Status.Detail}");
             throw;
         }
         catch(Exception ex)
         {
-            Console.WriteLine($"[FindPeerResponsible] General error: {ex.Message}");
+            //Console.Writeline($"[FindPeerResponsible] General error: {ex.Message}");
             throw;
         }
     }

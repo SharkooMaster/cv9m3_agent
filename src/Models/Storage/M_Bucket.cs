@@ -19,9 +19,9 @@ public class M_Bucket
         _data.id = lastId;
         lastId++;
         data.Add(_data);
-        Console.WriteLine("Storing on NFS");
+        //Console.Writeline("Storing on NFS");
         await NetworkFileStorageHandler.StoreVector(ID, _data);
-        Console.WriteLine("Done");
+        //Console.Writeline("Done");
         return lastId;
     }
     
@@ -34,7 +34,7 @@ public class M_Bucket
             if(to_return.Count == _k){ break; }
 
             float _similarity = Misc.CalculateDistance(_vector, row.vector);
-            Console.WriteLine($"sim: {_similarity}, minSim: {_minimum_similarity}");
+            //Console.Writeline($"sim: {_similarity}, minSim: {_minimum_similarity}");
             if(_similarity >= _minimum_similarity)
             {
                 to_return.Add(new M_SearchResult() {

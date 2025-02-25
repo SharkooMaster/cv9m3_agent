@@ -15,7 +15,7 @@ public class PushoverClientService : IPushoverClientService
 
         if(_token == "" || _user_key == "")
         {
-            Console.WriteLine("ERROR::PushoverClientServices:Failed to retrieve pushover credentials from environment");
+            //Console.Writeline("ERROR::PushoverClientServices:Failed to retrieve pushover credentials from environment");
         }
     }
 
@@ -34,9 +34,9 @@ public class PushoverClientService : IPushoverClientService
 
         if(!response.IsSuccessStatusCode)
         {
-            Console.WriteLine($"ERROR::PushoverClientServices: Could not push notification => {response.Content.ReadAsStringAsync().Result}");
-            Console.WriteLine($"token: {_token}");
-            Console.WriteLine($"userKey: {_user_key}");
+            //Console.Writeline($"ERROR::PushoverClientServices: Could not push notification => {response.Content.ReadAsStringAsync().Result}");
+            //Console.Writeline($"token: {_token}");
+            //Console.Writeline($"userKey: {_user_key}");
         }
     }
 }
