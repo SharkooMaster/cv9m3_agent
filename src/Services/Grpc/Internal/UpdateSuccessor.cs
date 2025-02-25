@@ -17,7 +17,7 @@ public class UpdateSuccessorService : UpdateSuccessor.UpdateSuccessorBase
     {
         try
         {
-            var channel = GrpcChannel.ForAddress($"http://{_ip}:5000");
+            var channel = GrpcChannel.ForAddress($"http://{_ip}:5000", Globals.GRPC_OPTIONS);
             UpdateSuccessor.UpdateSuccessorClient _client = new UpdateSuccessor.UpdateSuccessorClient(channel);
 
             await _client.UpdateAsync(req);

@@ -21,7 +21,7 @@ public class GetSuccessorService : GetSuccessor.GetSuccessorBase
     {
         M_Node to_ret = new M_Node();
 
-        var channel = GrpcChannel.ForAddress($"http://{_ip}:5000");
+        var channel = GrpcChannel.ForAddress($"http://{_ip}:5000", Globals.GRPC_OPTIONS);
         GetSuccessor.GetSuccessorClient _client = new GetSuccessor.GetSuccessorClient(channel);
 
         var response = await _client.GetAsync(new Empty());

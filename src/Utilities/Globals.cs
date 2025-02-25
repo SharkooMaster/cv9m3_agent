@@ -1,6 +1,7 @@
 
 using System.Numerics;
 using Agent.Models;
+using Grpc.Net.Client;
 // using Models;
 
 namespace Agent.Utils.Globals;
@@ -14,6 +15,11 @@ public static class Globals
     public static long ETCD_LEASE_ID = -1;
 
     public static string AgentsLoadbalancer = "http://agent-loadbalancer.default.svc.cluster.local:5000";
+
+    public static GrpcChannelOptions GRPC_OPTIONS = new GrpcChannelOptions{
+        MaxReceiveMessageSize = 1000*1024*1024,
+        MaxSendMessageSize = 1000*1024*1024
+    };
 
     public static int RPU_SECTION = 0;
     public static int RPU_SECTION_MAX = 3;
