@@ -15,9 +15,15 @@ public class M_Bucket
         ID = _ID;
     }
 
-    public async Task<ulong> InsertData(M_Data _data){
-        _data.id = lastId;
+    public async Task<ulong> BookId()
+    {
+        ulong to_return = lastId;
         lastId++;
+        return to_return;
+    }
+
+    public async Task<ulong> InsertData(M_Data _data, ulong _id){
+        _data.id = _id;
         data.Add(_data);
         //Console.Writeline("Storing on NFS");
         await NetworkFileStorageHandler.StoreVector(ID, _data);

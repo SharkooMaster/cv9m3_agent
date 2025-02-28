@@ -122,10 +122,8 @@ public static class NodeService
 
         if(is_inRange)
         {
-            Console.WriteLine("In range");
             if(node.Buckets.ContainsKey(_bitstring))
             {
-                Console.WriteLine("Key exists");
                 return await node.Buckets[_bitstring].SearchData(_vector, _minimum_similarity, _k);
             }
             else
@@ -147,7 +145,6 @@ public static class NodeService
         }
         else
         {
-            Console.WriteLine("Not in range");
             List<M_SearchResult> to_return = new List<M_SearchResult>();
             SearchVector_Result res = await _searchVectorService.ClientGet(_req, Globals._NODE.successor.ip);
             foreach (var item in res.Results)
@@ -166,8 +163,12 @@ public static class NodeService
     public static async Task<ulong> StoreInBucket(M_Node node, string bucket_string, M_Data _data)
     {
         if(!node.Buckets.ContainsKey(bucket_string)){ node.Buckets.TryAdd(bucket_string, new M_Bucket(bucket_string)); }
-        Console.WriteLine("Inserting data");
-        return await node.Buckets[bucket_string].InsertData(_data);
+        ulong _id = await node.Buckets[bucket_string].BookId();
+
+        await BackgrounfServiceManager.RegisterFireMethod("StoreInBucket::" + DateTime.Now.ToString("h:mm:ss"), async () => {
+            await node.Buckets[bucket_string].InsertData(_data, _id);
+        });
+        return _id;
     }
 
 }
