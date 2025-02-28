@@ -18,17 +18,16 @@ public class M_Bucket
     public async Task<ulong> BookId()
     {
         ulong to_return = lastId;
-        lastId++;
+        Interlocked.Increment(ref lastId);
         return to_return;
     }
 
-    public async Task<ulong> InsertData(M_Data _data, ulong _id){
+    public async Task InsertData(M_Data _data, ulong _id){
         _data.id = _id;
         data.Add(_data);
         //Console.Writeline("Storing on NFS");
         await NetworkFileStorageHandler.StoreVector(ID, _data);
         //Console.Writeline("Done");
-        return lastId;
     }
     
     public async Task<List<M_SearchResult>> SearchData(float[] _vector, float _minimum_similarity, int _k)

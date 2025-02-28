@@ -166,7 +166,7 @@ public static class NodeService
 
         ulong _id = await bucket.BookId();
 
-        string methodName = $"StoreInBucket::{DateTime.Now:HH:mm:ss tt}";
+        string methodName = $"StoreInBucket::{DateTime.Now:HH:mm:ss}_{bucket_string[..10]}";
         await BackgrounfServiceManager.RegisterFireMethod(methodName, async () =>
         {
             await bucket.InsertData(_data, _id);
