@@ -34,10 +34,7 @@ public class M_Bucket
     {
         List<M_SearchResult> to_return = new List<M_SearchResult>();
 
-        foreach (var row in data)
-        {
-            if(to_return.Count == _k){ break; }
-
+        Parallel.ForEach(data, row => {
             float _similarity = Misc.CalculateDistance(_vector, row.vector);
             //Console.Writeline($"sim: {_similarity}, minSim: {_minimum_similarity}");
             if(_similarity >= _minimum_similarity)
@@ -48,7 +45,7 @@ public class M_Bucket
                     metadata = row.metadata
                 });
             }
-        }
+        });
 
         return to_return;
     }
