@@ -32,12 +32,12 @@ public class M_Bucket
     
     public async Task<List<M_SearchResult>> SearchData(float[] _vector, float _minimum_similarity, int _k)
     {
-        List<M_SearchResult> to_return = new List<M_SearchResult>();
+        ConcurrentBag<M_SearchResult> to_return = new ConcurrentBag<M_SearchResult>();
 
         Parallel.ForEach(data, row => {
             float _similarity = Misc.CalculateDistance(_vector, row.vector);
             //Console.Writeline($"sim: {_similarity}, minSim: {_minimum_similarity}");
-            if(_similarity >= _minimum_similarity)
+            if(_similarity >= _minimum_similarity && to_return.Count != _k)
             {
                 to_return.Add(new M_SearchResult() {
                     id = row.id,
@@ -47,7 +47,7 @@ public class M_Bucket
             }
         });
 
-        return to_return;
+        return to_return.ToList();
     }
 
 }
