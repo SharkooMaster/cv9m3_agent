@@ -20,14 +20,15 @@ public static class BackgrounfServiceManager
     {
         if(!FireMethods.TryAdd(_name, _func))
         {
-            await AgnetaHandler.Log(2, $"Failed to register routine: {_name}");
+            // await AgnetaHandler.Log(2, $"Failed to register routine: {_name}");
+            Console.WriteLine($"Failed to register routine: {_name}");
         }
     }
 
     public static async void RunRoutineMethods()
     {
         string[] RoutineMethodsKeys = RoutineMethods.Keys.ToArray();
-        for (int i = 0; i < RoutineMethods.Count; i++)
+        for (int i = 0; i < RoutineMethodsKeys.Length; i++)
         {
             try
             {
@@ -42,19 +43,20 @@ public static class BackgrounfServiceManager
 
     public static async void RunFireMethods()
     {
-        string[] FireMethodsKeys = RoutineMethods.Keys.ToArray();
-        for (int i = 0; i < RoutineMethods.Count; i++)
+        string[] FireMethodsKeys = FireMethods.Keys.ToArray();
+        for (int i = 0; i < FireMethodsKeys.Length; i++)
         {
             try
             {
                 FireMethods[FireMethodsKeys[i]]();
-                if(FireMethods.TryRemove(FireMethodsKeys[i], out Action temp))
+                if(FireMethods.TryRemove(FireMethodsKeys[i], out _))
                 {
                 }
             }
             catch (System.Exception)
             {
-                await AgnetaHandler.Log(2, $"Failed to run FireRoutine {FireMethodsKeys[i]}");
+                // await AgnetaHandler.Log(2, $"Failed to run FireRoutine {FireMethodsKeys[i]}");
+                Console.WriteLine($"Failed to run FireRoutine {FireMethodsKeys[i]}");
             }
         }
     }

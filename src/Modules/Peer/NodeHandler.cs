@@ -162,12 +162,16 @@ public static class NodeService
 
     public static async Task<ulong> StoreInBucket(M_Node node, string bucket_string, M_Data _data)
     {
-        if(!node.Buckets.ContainsKey(bucket_string)){ node.Buckets.TryAdd(bucket_string, new M_Bucket(bucket_string)); }
-        ulong _id = await node.Buckets[bucket_string].BookId();
+        var bucket = node.Buckets.GetOrAdd(bucket_string, _ => new M_Bucket(bucket_string));
 
-        await BackgrounfServiceManager.RegisterFireMethod("StoreInBucket::" + DateTime.Now.ToString("h:mm:ss mm"), async () => {
-            await node.Buckets[bucket_string].InsertData(_data, _id);
+        ulong _id = await bucket.BookId();
+
+        string methodName = $"StoreInBucket::{DateTime.Now:HH:mm:ss tt}";
+        await BackgrounfServiceManager.RegisterFireMethod(methodName, async () =>
+        {
+            await bucket.InsertData(_data, _id);
         });
+
         return _id;
     }
 
