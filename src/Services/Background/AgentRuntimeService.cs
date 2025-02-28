@@ -29,7 +29,7 @@ public class AgentRuntimeService : BackgroundService
             BackgrounfServiceManager.RunRoutineMethods();
             BackgrounfServiceManager.RunFireMethods();
     
-            await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken);
+            await Task.Delay(TimeSpan.FromSeconds(30), stoppingToken);
         }
     }
 

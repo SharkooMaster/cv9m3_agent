@@ -1,11 +1,12 @@
 
+using System.Collections.Concurrent;
 using System.Threading.Tasks;
 using Agent.Modules.Agneta;
 
 public static class BackgrounfServiceManager
 {
-    public static Dictionary<string ,Action> RoutineMethods = new Dictionary<string, Action>();
-    public static Dictionary<string ,Action> FireMethods = new Dictionary<string, Action>();
+    public static ConcurrentDictionary<string ,Action> RoutineMethods = new ConcurrentDictionary<string, Action>();
+    public static ConcurrentDictionary<string ,Action> FireMethods = new ConcurrentDictionary<string, Action>();
 
     public static async Task RegisterRoutineMethod(string _name, Action _func)
     {
@@ -47,11 +48,13 @@ public static class BackgrounfServiceManager
             try
             {
                 FireMethods[FireMethodsKeys[i]]();
-                FireMethods.Remove(FireMethodsKeys[i]);
+                if(FireMethods.TryRemove(FireMethodsKeys[i], out Action temp))
+                {
+                }
             }
             catch (System.Exception)
             {
-                await AgnetaHandler.Log(2, $"Failed to run routine {FireMethodsKeys[i]}");
+                await AgnetaHandler.Log(2, $"Failed to run FireRoutine {FireMethodsKeys[i]}");
             }
         }
     }
