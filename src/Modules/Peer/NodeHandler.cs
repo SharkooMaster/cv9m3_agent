@@ -118,7 +118,7 @@ public static class NodeService
     public static async Task<List<M_SearchResult>> SearchAll(M_Node node, string _bitstring, float[] _vector, float _minimum_similarity, int _k, SearchVector_Req _req)
     {
         //Console.Writeline("Searching");
-        bool is_inRange = Agent.Utils.Misc.Misc.IsKeyInRange(Globals._NODE.id, Globals._NODE.successor.id, _bitstring);
+        bool is_inRange = Agent.Utils.Misc.Misc.IsKeyInRange(node.id, Globals._NODE.successor.id, _bitstring);
 
         if(is_inRange)
         {
@@ -145,18 +145,27 @@ public static class NodeService
         }
         else
         {
-            List<M_SearchResult> to_return = new List<M_SearchResult>();
-            SearchVector_Result res = await _searchVectorService.ClientGet(_req, Globals._NODE.successor.ip);
-            foreach (var item in res.Results)
+            Console.WriteLine("Out of range");
+            try
             {
-                to_return.Add(new M_SearchResult()
+                List<M_SearchResult> to_return = new List<M_SearchResult>();
+                SearchVector_Result res = await _searchVectorService.ClientGet(_req, node.successor.ip);
+                foreach (var item in res.Results)
                 {
-                    id=item.Id,
-                    metadata=JsonSerializer.Deserialize<JsonElement>(item.Metadata.ToString()),
-                    similarity=item.SimilarityRate
-                });
+                    to_return.Add(new M_SearchResult()
+                    {
+                        id=item.Id,
+                        metadata=JsonSerializer.Deserialize<JsonElement>(item.Metadata.ToString()),
+                        similarity=item.SimilarityRate
+                    });
+                }
+                return to_return;
             }
-            return to_return;
+            catch (System.Exception)
+            {
+                Console.WriteLine("ERROR: Couldnt forward request to correct peer (successor)");
+                throw;
+            }
         }
     }
 
