@@ -14,7 +14,7 @@ public static class Globals
     public static string ETCD_VALUE = "";
     public static long ETCD_LEASE_ID = -1;
 
-    public static string AgentsLoadbalancer = "http://agent-loadbalancer.default.svc.cluster.local.:5000";
+    public static string AgentsLoadbalancer = "http://192.168.50.243:80";
 
     public static GrpcChannelOptions GRPC_OPTIONS = new GrpcChannelOptions{
         MaxReceiveMessageSize = 1000*1024*1024,
