@@ -195,7 +195,7 @@ app.Run();
 await AgnetaHandler.Close();
 void ConfigureServices(IServiceCollection services)
 {
-    services.AddSingleton<AgnetaClientService>(new AgnetaClientService("wss://192.168.50.240/log/ws"));
+    services.AddSingleton<AgnetaClientService>(new AgnetaClientService("wss://agneta-loadbalancer/log/ws"));
     services.AddSingleton<PushoverClientService>(new PushoverClientService());
     services.AddSingleton<NetworkFileStorageService>(new NetworkFileStorageService(Environment.GetEnvironmentVariable("NFS_PATH") ?? "./data"));
 }
