@@ -34,7 +34,7 @@ public class SearchVectorService : SearchVector.SearchVectorBase
     {
         try
         {
-            var channel = GrpcChannel.ForAddress($"http://{_ip}:5000", Globals.GRPC_OPTIONS);
+            var channel = GrpcChannel.ForAddress($"http://{_ip}:80", Globals.GRPC_OPTIONS);
             SearchVector.SearchVectorClient _client = new SearchVector.SearchVectorClient(channel);
 
             return await _client.GetAsync(req);

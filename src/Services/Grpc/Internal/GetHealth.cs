@@ -13,7 +13,7 @@ public class GetHealthService : GetHealth.GetHealthBase
 
     public async Task<GetHealth_Result> ClientGet(string _ip)
     {
-        var channel = GrpcChannel.ForAddress($"http://{_ip}:5000", Globals.GRPC_OPTIONS);
+        var channel = GrpcChannel.ForAddress($"http://{_ip}:80", Globals.GRPC_OPTIONS);
         GetHealth.GetHealthClient _client = new GetHealth.GetHealthClient(channel);
 
         var result = await _client.GetAsync(new Empty());

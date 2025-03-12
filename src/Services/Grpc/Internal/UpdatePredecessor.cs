@@ -17,7 +17,7 @@ public class UpdatePredecessorService : UpdatePredecessor.UpdatePredecessorBase
     {
         try
         {
-            var channel = GrpcChannel.ForAddress($"http://{_ip}:5000", Globals.GRPC_OPTIONS);
+            var channel = GrpcChannel.ForAddress($"http://{_ip}:80", Globals.GRPC_OPTIONS);
             UpdatePredecessor.UpdatePredecessorClient _client = new UpdatePredecessor.UpdatePredecessorClient(channel);
 
             await _client.UpdateAsync(req);
