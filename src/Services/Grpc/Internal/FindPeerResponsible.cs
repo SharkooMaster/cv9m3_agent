@@ -20,7 +20,7 @@ public class FindPeerResponsibleService : FindPeerResponsible.FindPeerResponsibl
         //Console.Writeline("Sending grpc request, ClientFind (FindPeerResponsibleService)");
         try
         {
-            var channel = GrpcChannel.ForAddress($"http://{_ip}:80", Globals.GRPC_OPTIONS);
+            var channel = GrpcChannel.ForAddress($"http://{_ip}:5000", Globals.GRPC_OPTIONS);
             FindPeerResponsible.FindPeerResponsibleClient _client = new FindPeerResponsible.FindPeerResponsibleClient(channel);
 
             var response = await _client.FindAsync(request);

@@ -20,7 +20,7 @@ public class GetNodeInfoService : GetNodeInfo.GetNodeInfoBase
     {
         try
         {
-            var channel = GrpcChannel.ForAddress($"http://{_ip}:80", Globals.GRPC_OPTIONS);
+            var channel = GrpcChannel.ForAddress($"http://{_ip}:5000", Globals.GRPC_OPTIONS);
             GetNodeInfo.GetNodeInfoClient _client = new GetNodeInfo.GetNodeInfoClient(channel);
 
             var response = await _client.GetAsync(new Empty());

@@ -22,7 +22,7 @@ public class UpdateFingerTableService : UpdateFingerTable.UpdateFingerTableBase
         try
         {
             //Console.Writeline("Sending UpdateFingerTable request");
-            var channel = GrpcChannel.ForAddress($"http://{_ip}:80", Globals.GRPC_OPTIONS);
+            var channel = GrpcChannel.ForAddress($"http://{_ip}:5000", Globals.GRPC_OPTIONS);
             UpdateFingerTable.UpdateFingerTableClient _client = new UpdateFingerTable.UpdateFingerTableClient(channel);
 
             await _client.UpdateAsync(req);

@@ -21,7 +21,7 @@ public class GetPredecessorService : GetPredecessor.GetPredecessorBase
     {
         try
         {
-            var channel = GrpcChannel.ForAddress($"http://{_ip}:80", Globals.GRPC_OPTIONS);
+            var channel = GrpcChannel.ForAddress($"http://{_ip}:5000", Globals.GRPC_OPTIONS);
             GetPredecessor.GetPredecessorClient _client = new GetPredecessor.GetPredecessorClient(channel);
 
             var response = await _client.GetAsync(new Empty());
