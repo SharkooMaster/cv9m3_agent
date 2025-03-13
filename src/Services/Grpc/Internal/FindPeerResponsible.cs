@@ -29,12 +29,12 @@ public class FindPeerResponsibleService : FindPeerResponsible.FindPeerResponsibl
         }
         catch (RpcException ex)
         {
-            //Console.Writeline($"gRPC error: {ex.Status.StatusCode} - {ex.Status.Detail}");
+            Console.Writeline($"gRPC error: {ex.Status.StatusCode} - {ex.Status.Detail}");
             throw;
         }
         catch(Exception ex)
         {
-            //Console.Writeline($"[FindPeerResponsible] General error: {ex.Message}");
+            Console.Writeline($"[FindPeerResponsible] General error: {ex.Message}");
             throw;
         }
     }
