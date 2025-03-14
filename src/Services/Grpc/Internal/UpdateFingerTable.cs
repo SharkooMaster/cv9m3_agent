@@ -21,7 +21,7 @@ public class UpdateFingerTableService : UpdateFingerTable.UpdateFingerTableBase
     {
         try
         {
-            //Console.Writeline("Sending UpdateFingerTable request");
+            //Console.WriteLine("Sending UpdateFingerTable request");
             var channel = GrpcChannel.ForAddress($"http://{_ip}:5000", Globals.GRPC_OPTIONS);
             UpdateFingerTable.UpdateFingerTableClient _client = new UpdateFingerTable.UpdateFingerTableClient(channel);
 
@@ -29,12 +29,12 @@ public class UpdateFingerTableService : UpdateFingerTable.UpdateFingerTableBase
         }
         catch (RpcException ex)
         {
-            //Console.Writeline($"gRPC error: {ex.Status.StatusCode} - {ex.Status.Detail}");
+            //Console.WriteLine($"gRPC error: {ex.Status.StatusCode} - {ex.Status.Detail}");
             throw;
         }
         catch(Exception ex)
         {
-            //Console.Writeline($"[UpdateFingerTable] General error: {ex.Message}");
+            //Console.WriteLine($"[UpdateFingerTable] General error: {ex.Message}");
             throw;
         }
     }

@@ -29,12 +29,12 @@ public class GetNodeInfoService : GetNodeInfo.GetNodeInfoBase
         }
         catch (RpcException ex)
         {
-            //Console.Writeline($"gRPC error: {ex.Status.StatusCode} - {ex.Status.Detail}");
+            //Console.WriteLine($"gRPC error: {ex.Status.StatusCode} - {ex.Status.Detail}");
             throw;
         }
         catch(Exception ex)
         {
-            //Console.Writeline($"[GetNodeInfo] General error: {ex.Message}");
+            //Console.WriteLine($"[GetNodeInfo] General error: {ex.Message}");
             throw;
         }
     }

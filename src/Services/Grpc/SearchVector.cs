@@ -11,10 +11,10 @@ public class SearchVectorService : SearchVector.SearchVectorBase
 {
     public override async Task<SearchVector_Result> Get(SearchVector_Req request, ServerCallContext context)
     {
-        //Console.Writeline("Request recieved");
+        //Console.WriteLine("Request recieved");
         List<M_SearchResult> query_res = await NodeService.SearchAll(Globals._NODE, request.Bitstring, request.Vector.ToArray(), request.MinimumSimilarity, request.K, request);
         SearchVector_Result res = new SearchVector_Result();
-        //Console.Writeline($"query_res length: {query_res.Count}");
+        //Console.WriteLine($"query_res length: {query_res.Count}");
         foreach (var item in query_res)
         {
             res.Results.Add(new SearchVectorObject() {
@@ -25,7 +25,7 @@ public class SearchVectorService : SearchVector.SearchVectorBase
             });
         }
         res.TargetIp = Misc.GetLocalIPAddress();
-        //Console.Writeline($"res length: {res.Results.Count}");
+        //Console.WriteLine($"res length: {res.Results.Count}");
 
         return res;
     }

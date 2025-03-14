@@ -24,12 +24,12 @@ public class UpdatePredecessorService : UpdatePredecessor.UpdatePredecessorBase
         }
         catch (RpcException ex)
         {
-            //Console.Writeline($"gRPC error: {ex.Status.StatusCode} - {ex.Status.Detail}");
+            //Console.WriteLine($"gRPC error: {ex.Status.StatusCode} - {ex.Status.Detail}");
             throw;
         }
         catch(Exception ex)
         {
-            //Console.Writeline($"[UpdatePredecessor] General error: {ex.Message}");
+            //Console.WriteLine($"[UpdatePredecessor] General error: {ex.Message}");
             throw;
         }
     }
