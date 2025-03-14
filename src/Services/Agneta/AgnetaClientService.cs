@@ -43,7 +43,7 @@ namespace Agent.Services.Agneta
             catch (Exception ex)
             {
                 // Log or handle the detailed exception information
-                Console.Writeline($"Failed to create AgnetaClientService: {ex}");
+                Console.WriteLine($"Failed to create AgnetaClientService: {ex}");
 
                 // Optionally rethrow to allow higher-level handling
                 throw;
@@ -54,7 +54,7 @@ namespace Agent.Services.Agneta
         {
             try
             {
-                //Console.Writeline("Contacting Agneta: Assign neighbour");
+                //Console.WriteLine("Contacting Agneta: Assign neighbour");
                 
                 var data = new { ip = Globals._NODE.ip };
                 string _json = System.Text.Json.JsonSerializer.Serialize(data);
@@ -64,7 +64,7 @@ namespace Agent.Services.Agneta
                 if (response.IsSuccessStatusCode)
                 {
                     var jsonResponse = await response.Content.ReadAsStringAsync();
-                    Console.Writeline($"Contacting Agneta returned successful: {jsonResponse}");
+                    Console.WriteLine($"Contacting Agneta returned successful: {jsonResponse}");
 
                     if(jsonResponse != null && jsonResponse != "403")
                     {
@@ -74,18 +74,18 @@ namespace Agent.Services.Agneta
                     }
                     else
                     {
-                        Console.Writeline("ERROR::AgnetaClientService: Failed to ge assigned neighbour. Response not a valid json. Standby");
+                        Console.WriteLine("ERROR::AgnetaClientService: Failed to ge assigned neighbour. Response not a valid json. Standby");
                         return null;
                     }
                 }
                 else
                 {
-                    Console.Writeline($"ERROR::AgnetaClientService: Failed to get assigned neighbour. Status Code: {response.StatusCode}");
+                    Console.WriteLine($"ERROR::AgnetaClientService: Failed to get assigned neighbour. Status Code: {response.StatusCode}");
                 }
             }
             catch (Exception ex)
             {
-                Console.Writeline($"ERROR::AgnetaClientService: Failed to get assigned neighbour. Exception: {ex.Message}");
+                Console.WriteLine($"ERROR::AgnetaClientService: Failed to get assigned neighbour. Exception: {ex.Message}");
             }
 
             return null;
@@ -110,7 +110,7 @@ namespace Agent.Services.Agneta
             
             if(!response.IsSuccessStatusCode)
             {
-                //Console.Writeline($"ERROR::AgnetaClientService: Failed to send usage statistics -> {Globals.ETCD_ID}");
+                //Console.WriteLine($"ERROR::AgnetaClientService: Failed to send usage statistics -> {Globals.ETCD_ID}");
             }
         }
 
@@ -128,7 +128,7 @@ namespace Agent.Services.Agneta
                 catch (Exception ex)
                 {
                     // Log or handle the detailed exception information
-                    //Console.Writeline($"Failed to connect: {ex}");
+                    //Console.WriteLine($"Failed to connect: {ex}");
                     
                     // Optionally rethrow to allow higher-level handling
                     throw;
@@ -145,7 +145,7 @@ namespace Agent.Services.Agneta
 
             var buffer = Encoding.UTF8.GetBytes(message);
             await _client_ws.SendAsync(new ArraySegment<byte>(buffer), WebSocketMessageType.Text, true, CancellationToken.None);
-            // //Console.Writeline($"Log sent to Agneta: {message}");
+            // //Console.WriteLine($"Log sent to Agneta: {message}");
         }
 
         public async Task<string> RecieveMessageAsync()
