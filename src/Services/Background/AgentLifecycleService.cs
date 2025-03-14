@@ -53,7 +53,7 @@ public class AgentLifeCycleService : IHostedService
         }
         catch
         {
-            //Console.WriteLine("ERROR::AgentLifeCycleService: Could not read propery (host) on aquired neighbour");
+            Console.WriteLine("ERROR::AgentLifeCycleService: Could not read propery (host) on aquired neighbour");
         }
     }
 
