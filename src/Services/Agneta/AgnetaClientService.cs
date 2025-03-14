@@ -43,7 +43,7 @@ namespace Agent.Services.Agneta
             catch (Exception ex)
             {
                 // Log or handle the detailed exception information
-                //Console.Writeline($"Failed to create AgnetaClientService: {ex}");
+                Console.Writeline($"Failed to create AgnetaClientService: {ex}");
 
                 // Optionally rethrow to allow higher-level handling
                 throw;
@@ -64,7 +64,7 @@ namespace Agent.Services.Agneta
                 if (response.IsSuccessStatusCode)
                 {
                     var jsonResponse = await response.Content.ReadAsStringAsync();
-                    //Console.Writeline($"Contacting Agneta returned successful: {jsonResponse}");
+                    Console.Writeline($"Contacting Agneta returned successful: {jsonResponse}");
 
                     if(jsonResponse != null && jsonResponse != "403")
                     {
@@ -74,18 +74,18 @@ namespace Agent.Services.Agneta
                     }
                     else
                     {
-                        //Console.Writeline("ERROR::AgnetaClientService: Failed to ge assigned neighbour. Response not a valid json. Standby");
+                        Console.Writeline("ERROR::AgnetaClientService: Failed to ge assigned neighbour. Response not a valid json. Standby");
                         return null;
                     }
                 }
                 else
                 {
-                    //Console.Writeline($"ERROR::AgnetaClientService: Failed to get assigned neighbour. Status Code: {response.StatusCode}");
+                    Console.Writeline($"ERROR::AgnetaClientService: Failed to get assigned neighbour. Status Code: {response.StatusCode}");
                 }
             }
             catch (Exception ex)
             {
-                //Console.Writeline($"ERROR::AgnetaClientService: Failed to get assigned neighbour. Exception: {ex.Message}");
+                Console.Writeline($"ERROR::AgnetaClientService: Failed to get assigned neighbour. Exception: {ex.Message}");
             }
 
             return null;
