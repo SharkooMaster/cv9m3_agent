@@ -37,8 +37,8 @@ namespace Agent.Services.Agneta
                 };
 
                 _client = new HttpClient(handler);
-                _url = "https://agneta-loadbalancer.default.svc.cluster.local:443";
-                _uri = new Uri(uri);
+                _url = "https://10.97.41.12:443";
+                _uri = new Uri(_url);
             }
             catch (Exception ex)
             {
