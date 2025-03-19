@@ -29,12 +29,12 @@ public class UpdateFingerTableService : UpdateFingerTable.UpdateFingerTableBase
         }
         catch (RpcException ex)
         {
-            //Console.WriteLine($"gRPC error: {ex.Status.StatusCode} - {ex.Status.Detail}");
+            Console.WriteLine($"gRPC error: {ex.Status.StatusCode} - {ex.Status.Detail}");
             throw;
         }
         catch(Exception ex)
         {
-            //Console.WriteLine($"[UpdateFingerTable] General error: {ex.Message}");
+            Console.WriteLine($"[UpdateFingerTable] General error: {ex.Message}");
             throw;
         }
     }
