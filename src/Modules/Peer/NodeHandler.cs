@@ -122,6 +122,7 @@ public static class NodeService
 
         if(is_inRange)
         {
+            Console.WriteLine("In range");
             if(node.Buckets.ContainsKey(_bitstring))
             {
                 return await node.Buckets[_bitstring].SearchData(_vector, _minimum_similarity, _k);
@@ -178,7 +179,7 @@ public static class NodeService
         string methodName = $"StoreInBucket::{DateTime.Now:HH:mm:ss.fff}_{Guid.NewGuid()}";
         await BackgrounfServiceManager.RegisterFireMethod(methodName, async () =>
         {
-            await bucket.InsertData(_data, _id);
+            bucket.InsertData(_data, _id);
         });
 
         return _id;

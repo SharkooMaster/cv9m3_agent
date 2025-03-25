@@ -10,7 +10,7 @@ public class StoreVectorService : StoreVector.StoreVectorBase
 {
     public override async Task<StoreVector_Res> Store(StoreVector_Req request, ServerCallContext context)
     {
-        //Console.WriteLine("Storing vector");
+        Console.WriteLine("Storing vector");
         M_Data _data = new M_Data();
         _data.vector = request.Vector.ToArray();
         _data.metadata = JsonDocument.Parse(request.Metadata).RootElement;

@@ -15,7 +15,7 @@ public class AgentRuntimeService : BackgroundService
 
     public AgentRuntimeService()
     {
-        //Console.WriteLine("INFO::AgentRuntimeService: Initiating AgentRuntimeService");
+        Console.WriteLine("INFO::AgentRuntimeService: Initiating AgentRuntimeService");
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -29,7 +29,7 @@ public class AgentRuntimeService : BackgroundService
             BackgrounfServiceManager.RunRoutineMethods();
             BackgrounfServiceManager.RunFireMethods();
     
-            await Task.Delay(TimeSpan.FromSeconds(30), stoppingToken);
+            await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken);
         }
     }
 
@@ -37,11 +37,11 @@ public class AgentRuntimeService : BackgroundService
     {
         try
         {
-            //Console.WriteLine("INFO::AgentRuntimeService: Agent runtime stopped gracefully.");
+            Console.WriteLine("INFO::AgentRuntimeService: Agent runtime stopped gracefully.");
         }
         catch (Exception ex)
         {
-            //Console.WriteLine($"ERROR::AgentRuntimeService: Error stopping runtime: {ex.Message}");
+            Console.WriteLine($"ERROR::AgentRuntimeService: Error stopping runtime: {ex.Message}");
         }
 
         await base.StopAsync(stoppingToken);

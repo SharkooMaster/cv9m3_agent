@@ -44,7 +44,7 @@ public static class AgnetaHandler
             _log.LogMessageText = _message;
 
             await _instance.SendMessageAsync(JsonConvert.SerializeObject(_log));
-            // //Console.Writeline("Sent a message");
+            //Console.Writeline("Sent a message");
         }
         else
         {
