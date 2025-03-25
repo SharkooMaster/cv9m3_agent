@@ -115,7 +115,7 @@ public static class NodeService
         return node;
     }
 
-    public static async Task<List<M_SearchResult>> SearchAll(M_Node node, string _bitstring, float[] _vector, float _minimum_similarity, int _k, SearchVector_Req _req)
+    public static async Task<(List<M_SearchResult>, bool)> SearchAll(M_Node node, string _bitstring, float[] _vector, float _minimum_similarity, int _k, SearchVector_Req _req)
     {
         //Console.Writeline("Searching");
         bool is_inRange = Agent.Utils.Misc.Misc.IsKeyInRange(node.id, Globals._NODE.successor.id, _bitstring);
@@ -125,7 +125,7 @@ public static class NodeService
             Console.WriteLine("In range");
             if(node.Buckets.ContainsKey(_bitstring))
             {
-                return await node.Buckets[_bitstring].SearchData(_vector, _minimum_similarity, _k);
+                return (await node.Buckets[_bitstring].SearchData(_vector, _minimum_similarity, _k), false);
             }
             else
             {
@@ -138,18 +138,19 @@ public static class NodeService
                     }
                     else
                     {
-                        return await node.Buckets[_bitstring].SearchData(_vector, _minimum_similarity, _k);
+                        return (await node.Buckets[_bitstring].SearchData(_vector, _minimum_similarity, _k), false);
                     }
                 }
             }
-            return new List<M_SearchResult>();
+            return (new List<M_SearchResult>(), false);
         }
         else
         {
             Console.WriteLine("Out of range");
             try
             {
-                List<M_SearchResult> to_return = new List<M_SearchResult>();
+                return (new List<M_SearchResult>(), true);
+/*                 List<M_SearchResult> to_return = new List<M_SearchResult>();
                 SearchVector_Result res = await _searchVectorService.ClientGet(_req, node.successor.ip);
                 foreach (var item in res.Results)
                 {
@@ -160,7 +161,7 @@ public static class NodeService
                         similarity=item.SimilarityRate
                     });
                 }
-                return to_return;
+                return to_return; */
             }
             catch (System.Exception)
             {
@@ -179,7 +180,7 @@ public static class NodeService
         string methodName = $"StoreInBucket::{DateTime.Now:HH:mm:ss.fff}_{Guid.NewGuid()}";
         await BackgrounfServiceManager.RegisterFireMethod(methodName, async () =>
         {
-            bucket.InsertData(_data, _id);
+            await bucket.InsertData(_data, _id);
         });
 
         return _id;

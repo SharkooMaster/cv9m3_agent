@@ -12,7 +12,7 @@ public class SearchVectorService : SearchVector.SearchVectorBase
     public override async Task<SearchVector_Result> Get(SearchVector_Req request, ServerCallContext context)
     {
         //Console.WriteLine("Request recieved");
-        List<M_SearchResult> query_res = await NodeService.SearchAll(
+        (List<M_SearchResult>, bool) query_res = await NodeService.SearchAll(
             Globals._NODE,
             request.Bitstring,
             request.Vector.ToArray(),
@@ -21,9 +21,14 @@ public class SearchVectorService : SearchVector.SearchVectorBase
             request
         );
         SearchVector_Result res = new SearchVector_Result();
+        if(query_res.Item2)
+        {
+            res.Forward = true;
+            res.TargetIp = Globals._NODE.successor.ip;
+        }
         //Console.WriteLine($"query_res length: {query_res.Count}");
 
-        foreach (var item in query_res)
+        foreach (var item in query_res.Item1)
         {
             res.Results.Add(new SearchVectorObject() {
                 SimilarityRate = item.similarity,

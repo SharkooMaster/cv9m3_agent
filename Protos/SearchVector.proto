@@ -27,4 +27,5 @@ message SearchVector_Result
 {
     repeated SearchVectorObject results = 1;
     string targetIp = 2;
+    bool forward = 3;
 }
