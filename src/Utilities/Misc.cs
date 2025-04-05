@@ -187,4 +187,10 @@ public static class Misc
         return Convert.ToBase64String(bytes);
     }
 
+    public static double GetLoadAverage()
+    {
+        string[] parts = File.ReadAllText("/proc/loadavg").Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        return double.Parse(parts[0]);
+    }
+
 }
