@@ -13,6 +13,7 @@ message StoreVector_Req
     repeated float vector = 2;
     string metadata = 3;
     string targetIp = 4;
+    string headRouteID = 5;
 }
 
 message StoreVector_Res

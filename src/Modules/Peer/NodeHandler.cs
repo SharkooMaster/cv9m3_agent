@@ -118,34 +118,73 @@ public static class NodeService
     public static async Task<(List<M_SearchResult>, bool)> SearchAll(M_Node node, string _bitstring, float[] _vector, float _minimum_similarity, int _k, SearchVector_Req _req)
     {
         //Console.Writeline("Searching");
+        await ClmsHandler.RegisterRoutePoint(_req.HeadRouteID, "Agent", "A1");
         bool is_inRange = Agent.Utils.Misc.Misc.IsKeyInRange(node.id, Globals._NODE.successor.id, _bitstring);
 
-        if(is_inRange)
+        await ClmsHandler.AddEventToRoutePoint(_req.HeadRouteID, new M_CLMSEvent()
         {
-            Console.WriteLine("In range");
+            level = "1", stepName = "SearchAll:Start", type = "step", message = $"Checking if request is in range"
+        });
+
+        if (is_inRange)
+        {
+            await ClmsHandler.AddEventToRoutePoint(_req.HeadRouteID, new M_CLMSEvent()
+            {
+                level = "1", stepName = "SearchAll:Start", type = "step", message = $"Request is in range"
+            });
+
             if(node.Buckets.ContainsKey(_bitstring))
             {
+                await ClmsHandler.AddEventToRoutePoint(_req.HeadRouteID, new M_CLMSEvent()
+                {
+                    level = "1", stepName = "SearchAll:Searching", type = "step", message = $"Bucket found"
+                });
+                await ClmsHandler.SendRoutePoint(_req.HeadRouteID);
                 return (await node.Buckets[_bitstring].SearchData(_vector, _minimum_similarity, _k), false);
             }
             else
             {
+                await ClmsHandler.AddEventToRoutePoint(_req.HeadRouteID, new M_CLMSEvent()
+                {
+                    level = "1", stepName = "SearchAll:Searching", type = "step", message = $"bucket key not found, checking NFS"
+                });
                 M_Bucket read_bucket = await NetworkFileStorageHandler.ReadBucket(_bitstring);
                 if(read_bucket.data.Count > 0)
                 {
                     if(!node.Buckets.TryAdd(_bitstring, read_bucket))
                     {
+                        await ClmsHandler.AddEventToRoutePoint(_req.HeadRouteID, new M_CLMSEvent()
+                        {
+                            level = "1", stepName = "SearchAll:Searching", type = "step", message = $"Failed to find bucket in NFS"
+                        });
                         Console.WriteLine("Failed to import bucket from NFS");
                     }
                     else
                     {
+                        await ClmsHandler.AddEventToRoutePoint(_req.HeadRouteID, new M_CLMSEvent()
+                        {
+                            level = "1", stepName = "SearchAll:final", type = "step", message = $"Bucket found, returning data found"
+                        });
+                        await ClmsHandler.SendRoutePoint(_req.HeadRouteID);
                         return (await node.Buckets[_bitstring].SearchData(_vector, _minimum_similarity, _k), false);
                     }
                 }
             }
+            await ClmsHandler.AddEventToRoutePoint(_req.HeadRouteID, new M_CLMSEvent()
+            {
+                level = "1", stepName = "SearchAll:final", type = "step", message = $"Nothing found. Returning empty"
+            });
+            await ClmsHandler.SendRoutePoint(_req.HeadRouteID);
             return (new List<M_SearchResult>(), false);
         }
         else
         {
+            await ClmsHandler.AddEventToRoutePoint(_req.HeadRouteID, new M_CLMSEvent()
+            {
+                level = "1", stepName = "SearchAll:final", type = "response", message = $"Bucket key out of range"
+            });
+            await ClmsHandler.SendRoutePoint(_req.HeadRouteID);
+
             Console.WriteLine("Out of range");
             try
             {
@@ -171,17 +210,33 @@ public static class NodeService
         }
     }
 
-    public static async Task<ulong> StoreInBucket(M_Node node, string bucket_string, M_Data _data)
+    public static async Task<ulong> StoreInBucket(M_Node node, string bucket_string, M_Data _data, string HeadRouteID)
     {
+        await ClmsHandler.RegisterRoutePoint(HeadRouteID, "Agent", "A1");
+        await ClmsHandler.AddEventToRoutePoint(HeadRouteID, new M_CLMSEvent()
+        {
+            level = "1", stepName = "StoreInBucket:Start", type = "step", message = $"Preparing to store in bucket"
+        });
+
         var bucket = node.Buckets.GetOrAdd(bucket_string, _ => new M_Bucket(bucket_string));
 
         ulong _id = await bucket.BookId();
+        await ClmsHandler.AddEventToRoutePoint(HeadRouteID, new M_CLMSEvent()
+        {
+            level = "1", stepName = "StoreInBucket:process", type = "step", message = $"Vector ID booked {_id}"
+        });
 
         string methodName = $"StoreInBucket::{DateTime.Now:HH:mm:ss.fff}_{Guid.NewGuid()}";
         await BackgrounfServiceManager.RegisterFireMethod(methodName, async () =>
         {
             await bucket.InsertData(_data, _id);
         });
+
+        await ClmsHandler.AddEventToRoutePoint(HeadRouteID, new M_CLMSEvent()
+        {
+            level = "1", stepName = "StoreInBucket:process", type = "step", message = $"Registered fireMethod to store on NFS"
+        });
+        await ClmsHandler.SendRoutePoint(HeadRouteID);
 
         return _id;
     }
