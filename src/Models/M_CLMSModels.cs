@@ -28,7 +28,6 @@ public class M_RoutePoint
     public string ToJson()
     {
         string toRet = JsonSerializer.Serialize(this);
-        Console.WriteLine(toRet);
         return toRet;
     }
 }
