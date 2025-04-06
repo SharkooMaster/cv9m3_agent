@@ -55,7 +55,7 @@ public class ClmsClientService : ICLMSClientService
     {
         if(!routePoints.ContainsKey(_headRouteID))
         {
-            await RegisterRoutePoint(_headRouteID, "Cross", "A1");
+            await RegisterRoutePoint(_headRouteID, "Agent", "A1");
         }
         routePoints[_headRouteID].Events.Add(clmsEvent);
     }
