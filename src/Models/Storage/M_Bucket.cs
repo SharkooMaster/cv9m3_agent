@@ -34,9 +34,9 @@ public class M_Bucket
     {
         ConcurrentBag<M_SearchResult> to_return = new ConcurrentBag<M_SearchResult>();
 
-        Parallel.ForEach(data, row => {
+        ParallelOptions options = new ParallelOptions() { MaxDegreeOfParallelism = 4 };
+        Parallel.ForEach(data, options, row => {
             float _similarity = Misc.CalculateDistance(_vector, row.vector);
-            //Console.Writeline($"sim: {_similarity}, minSim: {_minimum_similarity}");
             if(_similarity >= _minimum_similarity && to_return.Count != _k)
             {
                 to_return.Add(new M_SearchResult() {

@@ -136,12 +136,12 @@ public static class Misc
         float normVec1 = 0.0f;
         float normVec2 = 0.0f;
 
-        for (int i = 0; i < vec1.Length; i++)
+        Parallel.For(0, vec1.Length, (i) =>
         {
             dotProduct += vec1[i] * vec2[i];
             normVec1 += vec1[i] * vec1[i];
             normVec2 += vec2[i] * vec2[i];
-        }
+        });
 
         // Calculate cosine similarity
         return dotProduct / (MathF.Sqrt(normVec1) * MathF.Sqrt(normVec2));
