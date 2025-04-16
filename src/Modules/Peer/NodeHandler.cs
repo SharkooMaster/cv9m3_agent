@@ -14,23 +14,18 @@ namespace Agent.Modules.Peer;
 
 public static class NodeService
 {
-    public static FindPeerResponsibleService _findPeerResponsible = new FindPeerResponsibleService();
-
-    public static GetNodeInfoService _getNodeInfoService = new GetNodeInfoService();
-    public static GetPredecessorService _getPredecessorService = new GetPredecessorService();
-    public static GetSuccessorService _getSuccessorService = new GetSuccessorService();
-    public static GetHealthService _getHealth = new GetHealthService();
-
-    public static UpdateSuccessorService _updateSuccessorService = new UpdateSuccessorService();
-    public static UpdatePredecessorService _updatePredecessorService = new UpdatePredecessorService();
-    public static UpdateFingerTableService _updateFingerTableService = new UpdateFingerTableService();
-    
-    public static SearchVectorService _searchVectorService = new SearchVectorService();
-
     public static int _nextFinger = 0;
 
     public static async Task<M_Node> JoinNetwork(M_Node node, string bootstrap_node)
     {
+        GetNodeInfoService _getNodeInfoService = new GetNodeInfoService();
+        GetPredecessorService _getPredecessorService = new GetPredecessorService();
+        GetSuccessorService _getSuccessorService = new GetSuccessorService();
+        GetHealthService _getHealth = new GetHealthService();
+
+        UpdateSuccessorService _updateSuccessorService = new UpdateSuccessorService();
+        UpdatePredecessorService _updatePredecessorService = new UpdatePredecessorService();
+
         if(bootstrap_node == null)
         {
             await AgnetaHandler.Log(1, "Only node in the network");
@@ -67,6 +62,8 @@ public static class NodeService
     
     private static async Task<string> S_FindPeerResponsible(ulong target, string _ip)
     {
+        FindPeerResponsibleService _findPeerResponsible = new FindPeerResponsibleService();
+
         QueryReq req = new QueryReq() { Val = target };
         QueryRes res = await _findPeerResponsible.ClientFind(req, _ip);
         return res.Res;
@@ -104,6 +101,9 @@ public static class NodeService
 
     public static async Task<M_Node> VerifySuccessor(M_Node node)
     {
+        GetPredecessorService _getPredecessorService = new GetPredecessorService();
+        UpdatePredecessorService _updatePredecessorService = new UpdatePredecessorService();
+
         GetPredecessor_Result getPredecessor_result = await _getPredecessorService.ClientGet(node.successor.ip);
         if(getPredecessor_result.Id != node.id && getPredecessor_result.Ip != node.ip)
         {
