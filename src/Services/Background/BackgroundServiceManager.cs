@@ -44,7 +44,8 @@ public static class BackgrounfServiceManager
     public static async Task RunFireMethods()
     {
         string[] FireMethodsKeys = FireMethods.Keys.ToArray();
-        for (int i = 0; i < FireMethodsKeys.Length; i++)
+        ParallelOptions options = new ParallelOptions() { MaxDegreeOfParallelism = 2 };
+        await Parallel.ForAsync(0, FireMethodsKeys.Length, options, async (i, ct) =>
         {
             try
             {
@@ -58,7 +59,7 @@ public static class BackgrounfServiceManager
                 // await AgnetaHandler.Log(2, $"Failed to run FireRoutine {FireMethodsKeys[i]}");
                 Console.WriteLine($"Failed to run FireRoutine {FireMethodsKeys[i]}");
             }
-        }
+        });
     }
 
 }
