@@ -25,7 +25,7 @@ public static class BackgrounfServiceManager
         }
     }
 
-    public static async void RunRoutineMethods()
+    public static async Task RunRoutineMethods()
     {
         string[] RoutineMethodsKeys = RoutineMethods.Keys.ToArray();
         for (int i = 0; i < RoutineMethodsKeys.Length; i++)
@@ -41,7 +41,7 @@ public static class BackgrounfServiceManager
         }
     }
 
-    public static async void RunFireMethods()
+    public static async Task RunFireMethods()
     {
         string[] FireMethodsKeys = FireMethods.Keys.ToArray();
         for (int i = 0; i < FireMethodsKeys.Length; i++)

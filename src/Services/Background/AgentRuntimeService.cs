@@ -26,8 +26,8 @@ public class AgentRuntimeService : BackgroundService
             M_Node temp = await NodeService.VerifySuccessor(Globals._NODE);
             Globals._NODE = temp;
 
-            BackgrounfServiceManager.RunRoutineMethods();
-            BackgrounfServiceManager.RunFireMethods();
+            await BackgrounfServiceManager.RunRoutineMethods();
+            await BackgrounfServiceManager.RunFireMethods();
     
             await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken);
         }
