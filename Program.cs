@@ -21,6 +21,13 @@ using Agent.Services.Clms;
 using Agent.Modules;
 
 var builder = WebApplication.CreateBuilder(args);
+
+builder.Services.AddLogging( logging => 
+{
+    logging.AddConsole();
+    logging.SetMinimumLevel(LogLevel.Debug);
+});
+
 builder.Services.AddGrpc(options => {
     options.MaxReceiveMessageSize = 1000 * 1024 * 1024;
     options.MaxSendMessageSize = 1000 * 1024 * 1024;
