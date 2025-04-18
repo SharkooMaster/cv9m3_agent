@@ -17,8 +17,7 @@ public class UpdatePredecessorService : UpdatePredecessor.UpdatePredecessorBase
     {
         try
         {
-            var channel = GrpcChannelFactory.GetChannel(_ip);
-            UpdatePredecessor.UpdatePredecessorClient _client = new UpdatePredecessor.UpdatePredecessorClient(channel);
+            var _client = GrpcChannelFactory.GetClient(ip: _ip, chan => new UpdatePredecessor.UpdatePredecessorClient(chan));
 
             var deadline = DateTime.UtcNow.AddSeconds(5);
             await _client.UpdateAsync(req, deadline: deadline, cancellationToken: ct);

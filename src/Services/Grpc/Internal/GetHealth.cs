@@ -13,8 +13,7 @@ public class GetHealthService : GetHealth.GetHealthBase
 
     public async Task<GetHealth_Result> ClientGet(string _ip, CancellationToken ct = default)
     {
-        var channel = GrpcChannelFactory.GetChannel(_ip);
-        GetHealth.GetHealthClient _client = new GetHealth.GetHealthClient(channel);
+        var _client = GrpcChannelFactory.GetClient(ip: _ip, chan => new GetHealth.GetHealthClient(chan));
 
         var deadline = DateTime.UtcNow.AddSeconds(5);
         var result = await _client.GetAsync(new Empty(), deadline: deadline, cancellationToken: ct);

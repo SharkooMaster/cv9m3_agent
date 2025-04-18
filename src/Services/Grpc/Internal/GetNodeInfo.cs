@@ -20,8 +20,7 @@ public class GetNodeInfoService : GetNodeInfo.GetNodeInfoBase
     {
         try
         {
-            var channel = GrpcChannelFactory.GetChannel(_ip);
-            GetNodeInfo.GetNodeInfoClient _client = new GetNodeInfo.GetNodeInfoClient(channel);
+            var _client = GrpcChannelFactory.GetClient(ip: _ip, chan => new GetNodeInfo.GetNodeInfoClient(chan));
 
             var deadline = DateTime.UtcNow.AddSeconds(5);
             var response = await _client.GetAsync(new Empty(), deadline: deadline, cancellationToken: ct);

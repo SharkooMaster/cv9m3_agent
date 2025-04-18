@@ -21,9 +21,7 @@ public class UpdateFingerTableService : UpdateFingerTable.UpdateFingerTableBase
     {
         try
         {
-            //Console.WriteLine("Sending UpdateFingerTable request");
-            var channel = GrpcChannelFactory.GetChannel(_ip);
-            UpdateFingerTable.UpdateFingerTableClient _client = new UpdateFingerTable.UpdateFingerTableClient(channel);
+            var _client = GrpcChannelFactory.GetClient(ip: _ip, chan => new UpdateFingerTable.UpdateFingerTableClient(chan));
 
             var deadline = DateTime.UtcNow.AddSeconds(5);
             await _client.UpdateAsync(req, deadline: deadline, cancellationToken: ct);
