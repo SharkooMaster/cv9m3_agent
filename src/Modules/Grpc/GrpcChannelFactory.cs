@@ -19,6 +19,7 @@ public static class GrpcChannelFactory
                 KeepAlivePingTimeout = TimeSpan.FromSeconds(10)
             };
 
+            Console.WriteLine($"### Connecting to endpoint: http://{ipAddr}:5000 ###");
             return GrpcChannel.ForAddress($"http://{ipAddr}:5000", new GrpcChannelOptions
             {
                 HttpHandler = handler,
