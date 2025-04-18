@@ -18,7 +18,8 @@ public class SearchVectorService : SearchVector.SearchVectorBase
             request.Vector.ToArray(),
             request.MinimumSimilarity,
             request.K,
-            request
+            request,
+            context
         );
         SearchVector_Result res = new SearchVector_Result();
         if(query_res.Item2)
@@ -43,14 +44,15 @@ public class SearchVectorService : SearchVector.SearchVectorBase
         return res;
     }
 
-    public async Task<SearchVector_Result> ClientGet(SearchVector_Req req, string _ip)
+    public async Task<SearchVector_Result> ClientGet(SearchVector_Req req, string _ip, CancellationToken ct = default)
     {
         try
         {
-            var channel = GrpcChannel.ForAddress($"http://{_ip}:5000", Globals.GRPC_OPTIONS);
+            var channel = GrpcChannelFactory.GetChannel(_ip);
             SearchVector.SearchVectorClient _client = new SearchVector.SearchVectorClient(channel);
 
-            return await _client.GetAsync(req);
+            var deadline = DateTime.UtcNow.AddSeconds(5);
+            return await _client.GetAsync(req, deadline: deadline, cancellationToken: ct);
         }
         catch(RpcException ex)
         {

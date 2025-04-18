@@ -17,15 +17,16 @@ public class UpdateFingerTableService : UpdateFingerTable.UpdateFingerTableBase
         return new Empty();
     }
 
-    public async Task ClientUpdate(UpdateFingerTable_Req req, string _ip)
+    public async Task ClientUpdate(UpdateFingerTable_Req req, string _ip, CancellationToken ct = default)
     {
         try
         {
             //Console.WriteLine("Sending UpdateFingerTable request");
-            var channel = GrpcChannel.ForAddress($"http://{_ip}:5000", Globals.GRPC_OPTIONS);
+            var channel = GrpcChannelFactory.GetChannel(_ip);
             UpdateFingerTable.UpdateFingerTableClient _client = new UpdateFingerTable.UpdateFingerTableClient(channel);
 
-            await _client.UpdateAsync(req);
+            var deadline = DateTime.UtcNow.AddSeconds(5);
+            await _client.UpdateAsync(req, deadline: deadline, cancellationToken: ct);
         }
         catch (RpcException ex)
         {

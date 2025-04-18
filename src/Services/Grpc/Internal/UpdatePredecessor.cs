@@ -13,14 +13,15 @@ public class UpdatePredecessorService : UpdatePredecessor.UpdatePredecessorBase
         return new Empty();
     }
 
-    public async Task ClientUpdate(UpdatePredecessor_Req req, string _ip)
+    public async Task ClientUpdate(UpdatePredecessor_Req req, string _ip, CancellationToken ct = default)
     {
         try
         {
-            var channel = GrpcChannel.ForAddress($"http://{_ip}:5000", Globals.GRPC_OPTIONS);
+            var channel = GrpcChannelFactory.GetChannel(_ip);
             UpdatePredecessor.UpdatePredecessorClient _client = new UpdatePredecessor.UpdatePredecessorClient(channel);
 
-            await _client.UpdateAsync(req);
+            var deadline = DateTime.UtcNow.AddSeconds(5);
+            await _client.UpdateAsync(req, deadline: deadline, cancellationToken: ct);
         }
         catch (RpcException ex)
         {

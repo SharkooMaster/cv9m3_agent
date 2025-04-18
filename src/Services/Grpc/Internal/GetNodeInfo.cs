@@ -16,15 +16,15 @@ public class GetNodeInfoService : GetNodeInfo.GetNodeInfoBase
         return res;
     }
 
-    public async Task<GetNodeInfo_Result> ClientGet(string _ip)
+    public async Task<GetNodeInfo_Result> ClientGet(string _ip, CancellationToken ct = default)
     {
         try
         {
-            var channel = GrpcChannel.ForAddress($"http://{_ip}:5000", Globals.GRPC_OPTIONS);
+            var channel = GrpcChannelFactory.GetChannel(_ip);
             GetNodeInfo.GetNodeInfoClient _client = new GetNodeInfo.GetNodeInfoClient(channel);
 
-            var response = await _client.GetAsync(new Empty());
-
+            var deadline = DateTime.UtcNow.AddSeconds(5);
+            var response = await _client.GetAsync(new Empty(), deadline: deadline, cancellationToken: ct);
             return response;
         }
         catch (RpcException ex)

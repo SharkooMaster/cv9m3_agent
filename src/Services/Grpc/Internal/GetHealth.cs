@@ -11,12 +11,13 @@ public class GetHealthService : GetHealth.GetHealthBase
         return new GetHealth_Result() { Status = "Healthy" };
     }
 
-    public async Task<GetHealth_Result> ClientGet(string _ip)
+    public async Task<GetHealth_Result> ClientGet(string _ip, CancellationToken ct = default)
     {
-        var channel = GrpcChannel.ForAddress($"http://{_ip}:5000", Globals.GRPC_OPTIONS);
+        var channel = GrpcChannelFactory.GetChannel(_ip);
         GetHealth.GetHealthClient _client = new GetHealth.GetHealthClient(channel);
 
-        var result = await _client.GetAsync(new Empty());
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        var result = await _client.GetAsync(new Empty(), deadline: deadline, cancellationToken: ct);
         return result;
     }
 }

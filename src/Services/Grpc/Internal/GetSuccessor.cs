@@ -17,15 +17,15 @@ public class GetSuccessorService : GetSuccessor.GetSuccessorBase
         return res;
     }
 
-    public async Task<M_Node> ClientGet(string _ip)
+    public async Task<M_Node> ClientGet(string _ip, CancellationToken ct = default)
     {
         M_Node to_ret = new M_Node();
 
-        var channel = GrpcChannel.ForAddress($"http://{_ip}:5000", Globals.GRPC_OPTIONS);
+        var channel = GrpcChannelFactory.GetChannel(_ip);
         GetSuccessor.GetSuccessorClient _client = new GetSuccessor.GetSuccessorClient(channel);
 
-        var response = await _client.GetAsync(new Empty());
-        // await AgnetaHandler.Log(1, "GetSuccessor gRPC: GetClient sent");
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        var response = await _client.GetAsync(new Empty(), deadline: deadline, cancellationToken: ct);
 
         to_ret.id = response.Id;
         to_ret.ip = response.Ip;

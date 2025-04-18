@@ -15,15 +15,15 @@ public class FindPeerResponsibleService : FindPeerResponsible.FindPeerResponsibl
         return resp;
     }
 
-    public async Task<QueryRes> ClientFind(QueryReq request, string _ip)
+    public async Task<QueryRes> ClientFind(QueryReq request, string _ip, CancellationToken ct = default)
     {
-        //Console.WriteLine("Sending grpc request, ClientFind (FindPeerResponsibleService)");
         try
         {
-            var channel = GrpcChannel.ForAddress($"http://{_ip}:5000", Globals.GRPC_OPTIONS);
+            var channel = GrpcChannelFactory.GetChannel(_ip);
             FindPeerResponsible.FindPeerResponsibleClient _client = new FindPeerResponsible.FindPeerResponsibleClient(channel);
 
-            var response = await _client.FindAsync(request);
+            var deadline = DateTime.UtcNow.AddSeconds(5);
+            var response = await _client.FindAsync(request, deadline: deadline, cancellationToken: ct);
 
             return response;
         }

@@ -7,6 +7,7 @@ using Agent.Modules.Agneta;
 using Agent.Utils;
 using Agent.Utils.Globals;
 using Agent.Utils.Misc;
+using Google.Api;
 using Grpc.Core;
 using Xunit.Sdk;
 
@@ -104,7 +105,7 @@ public static class NodeService
         GetPredecessorService _getPredecessorService = new GetPredecessorService();
         UpdatePredecessorService _updatePredecessorService = new UpdatePredecessorService();
 
-        GetPredecessor_Result getPredecessor_result = await _getPredecessorService.ClientGet(node.successor.ip);
+        GetPredecessor_Result getPredecessor_result = await _getPredecessorService.ClientGet(node.successor.ip, CancellationToken.None);
         if(getPredecessor_result.Id != node.id && getPredecessor_result.Ip != node.ip)
         {
             node.successor = new M_Node() { id = getPredecessor_result.Id, ip = getPredecessor_result.Ip };
@@ -115,7 +116,7 @@ public static class NodeService
         return node;
     }
 
-    public static async Task<(List<M_SearchResult>, bool)> SearchAll(M_Node node, string _bitstring, float[] _vector, float _minimum_similarity, int _k, SearchVector_Req _req)
+    public static async Task<(List<M_SearchResult>, bool)> SearchAll(M_Node node, string _bitstring, float[] _vector, float _minimum_similarity, int _k, SearchVector_Req _req, ServerCallContext context)
     {
         //Console.Writeline("Searching");
         bool is_inRange = Agent.Utils.Misc.Misc.IsKeyInRange(node.id, Globals._NODE.successor.id, _bitstring);
@@ -138,7 +139,6 @@ public static class NodeService
                     }
                     else
                     {
-                        await ClmsHandler.SendRoutePoint(_req.HeadRouteID);
                         return (await node.Buckets[_bitstring].SearchData(_vector, _minimum_similarity, _k), false);
                     }
                 }

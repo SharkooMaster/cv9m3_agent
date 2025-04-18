@@ -17,16 +17,15 @@ public class GetPredecessorService : GetPredecessor.GetPredecessorBase
         return res;
     }
 
-    public async Task<GetPredecessor_Result> ClientGet(string _ip)
+    public async Task<GetPredecessor_Result> ClientGet(string _ip, CancellationToken ct = default)
     {
         try
         {
-            var channel = GrpcChannel.ForAddress($"http://{_ip}:5000", Globals.GRPC_OPTIONS);
+            var channel = GrpcChannelFactory.GetChannel(_ip);
             GetPredecessor.GetPredecessorClient _client = new GetPredecessor.GetPredecessorClient(channel);
 
-            var response = await _client.GetAsync(new Empty());
-
-            return response;
+            var deadline = DateTime.UtcNow.AddSeconds(5);
+            return await _client.GetAsync(new Empty(), deadline: deadline, cancellationToken: ct);
         }
         catch (RpcException ex)
         {
