@@ -28,6 +28,7 @@ builder.Services.AddLogging( logging =>
     logging.SetMinimumLevel(LogLevel.Debug);
 });
 
+
 builder.Services.AddGrpc(options => {
     options.MaxReceiveMessageSize = 1000 * 1024 * 1024;
     options.MaxSendMessageSize = 1000 * 1024 * 1024;
@@ -43,6 +44,10 @@ builder.WebHost.ConfigureKestrel(options =>
     //options.ListenLocalhost(5000, o => o.Protocols = HttpProtocols.Http2);
     //options.ListenLocalhost(5001, o => o.Protocols = HttpProtocols.Http1AndHttp2);
     options.Limits.MaxRequestBodySize = 1024 * 1024 * 1024;
+
+    options.Limits.KeepAliveTimeout = TimeSpan.FromMinutes(10);
+    options.Limits.Http2.KeepAlivePingDelay = TimeSpan.FromSeconds(30);
+    options.Limits.Http2.KeepAlivePingTimeout = TimeSpan.FromSeconds(60);
 });
 
 builder.Services.AddEndpointsApiExplorer();
