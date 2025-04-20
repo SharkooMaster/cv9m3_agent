@@ -123,13 +123,12 @@ public static class NodeService
 
         if (is_inRange)
         {
-
-            if(node.Buckets.ContainsKey(_bitstring))
-            {
-                return (await node.Buckets[_bitstring].SearchData(_vector, _minimum_similarity, _k), false);
-            }
-            else
-            {
+            //if(node.Buckets.ContainsKey(_bitstring))
+            //{
+            //    return (await node.Buckets[_bitstring].SearchData(_vector, _minimum_similarity, _k), false);
+            //}
+            //else
+            //{
                 M_Bucket read_bucket = await NetworkFileStorageHandler.ReadBucket(_bitstring);
                 if(read_bucket.data.Count > 0)
                 {
@@ -142,7 +141,7 @@ public static class NodeService
                         return (await node.Buckets[_bitstring].SearchData(_vector, _minimum_similarity, _k), false);
                     }
                 }
-            }
+            //}
             return (new List<M_SearchResult>(), false);
         }
         else
