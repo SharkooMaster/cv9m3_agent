@@ -21,7 +21,7 @@ public class UpdateFingerTableService : UpdateFingerTable.UpdateFingerTableBase
     {
         try
         {
-            var _client = GrpcChannelFactory.GetClient(ip: _ip, chan => new UpdateFingerTable.UpdateFingerTableClient(chan));
+            var _client = GrpcChannelFactory.GetClient(target: _ip, ctor: chan => new UpdateFingerTable.UpdateFingerTableClient(chan), roundRobin: false);
 
             var deadline = DateTime.UtcNow.AddSeconds(5);
             await _client.UpdateAsync(req, deadline: deadline, cancellationToken: ct);

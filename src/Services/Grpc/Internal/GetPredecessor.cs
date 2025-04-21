@@ -21,7 +21,7 @@ public class GetPredecessorService : GetPredecessor.GetPredecessorBase
     {
         try
         {
-            var _client = GrpcChannelFactory.GetClient(ip: _ip, chan => new GetPredecessor.GetPredecessorClient(chan));
+            var _client = GrpcChannelFactory.GetClient(target: _ip, ctor: chan => new GetPredecessor.GetPredecessorClient(chan), roundRobin: false);
 
             var deadline = DateTime.UtcNow.AddSeconds(5);
             return await _client.GetAsync(new Empty(), deadline: deadline, cancellationToken: ct);

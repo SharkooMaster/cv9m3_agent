@@ -21,7 +21,7 @@ public class GetSuccessorService : GetSuccessor.GetSuccessorBase
     {
         M_Node to_ret = new M_Node();
 
-        var _client = GrpcChannelFactory.GetClient(ip: _ip, chan => new GetSuccessor.GetSuccessorClient(chan));
+        var _client = GrpcChannelFactory.GetClient(target: _ip, ctor: chan => new GetSuccessor.GetSuccessorClient(chan), roundRobin: false);
 
         var deadline = DateTime.UtcNow.AddSeconds(5);
         var response = await _client.GetAsync(new Empty(), deadline: deadline, cancellationToken: ct);
