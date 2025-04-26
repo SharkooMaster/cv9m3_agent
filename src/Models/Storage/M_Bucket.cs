@@ -41,7 +41,7 @@ public class M_Bucket
                 to_return.Add(new M_SearchResult() {
                     id = row.id,
                     similarity = _similarity,
-                    metadata = row.metadata
+                    chunk = row.chunk
                 });
             }
         });

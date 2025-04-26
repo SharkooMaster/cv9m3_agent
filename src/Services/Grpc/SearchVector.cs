@@ -4,6 +4,7 @@ using Agent.Modules.Agneta;
 using Agent.Modules.Peer;
 using Agent.Utils.Globals;
 using Agent.Utils.Misc;
+using Google.Protobuf;
 using Grpc.Core;
 using Grpc.Net.Client;
 
@@ -33,9 +34,8 @@ public class SearchVectorService : SearchVector.SearchVectorBase
         {
             res.Results.Add(new SearchVectorObject() {
                 SimilarityRate = item.similarity,
-                Metadata = item.metadata.ToString(),
-                Id = Convert.ToUInt64(request.Bitstring, 2),
-                Index = item.id
+                Chunk = ByteString.CopyFrom(item.chunk),
+                Id = Convert.ToUInt64(request.Bitstring, 2)
             });
         }
         res.TargetIp = Misc.GetLocalIPAddress();

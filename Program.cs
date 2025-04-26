@@ -69,7 +69,8 @@ var agnetaClientService = app.Services.GetRequiredService<AgnetaClientService>()
 await agnetaClientService.ConnectAsync();
 AgnetaHandler.SetInstance(agnetaClientService);
 
-var networkFileSystemService = app.Services.GetRequiredService<NetworkFileStorageService>();
+//var networkFileSystemService = app.Services.GetRequiredService<NetworkFileStorageService>();
+var networkFileSystemService = app.Services.GetRequiredService<GcsSqlStorageService>(); // Drop in replacement for nfs with gcp
 NetworkFileStorageHandler.SetInstance(networkFileSystemService);
 
 if (app.Environment.IsDevelopment())
@@ -215,5 +216,10 @@ void ConfigureServices(IServiceCollection services)
     services.AddSingleton<ClmsClientService>(new ClmsClientService());
     services.AddSingleton<AgnetaClientService>(new AgnetaClientService("wss://agneta-loadbalancer.default.svc.cluster.local:443/log/ws"));
     services.AddSingleton<PushoverClientService>(new PushoverClientService());
-    services.AddSingleton<NetworkFileStorageService>(new NetworkFileStorageService(Environment.GetEnvironmentVariable("NFS_PATH") ?? "./data"));
+    services.AddSingleton<GcsSqlStorageService>(
+        new GcsSqlStorageService(
+            "cross-global-chunks", 
+            "Host=34.88.135.194;Port=5432;Username=postgres;Database=compressiondb;SSL Mode=Disable;"
+            )
+    );
 }

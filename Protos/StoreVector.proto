@@ -11,7 +11,7 @@ message StoreVector_Req
 {
     string bitstring = 1;
     repeated float vector = 2;
-    string metadata = 3;
+    bytes chunk = 3;
     string targetIp = 4;
     string headRouteID = 5;
 }

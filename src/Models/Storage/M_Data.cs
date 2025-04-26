@@ -7,7 +7,7 @@ public class M_Data
 {
     public ulong id { get; set; }
     public float[] vector { get; set; }
-    public JsonElement metadata { get; set; }
+    public byte[] chunk { get; set; }
     [JsonIgnore] public List<int> rpu = new List<int>(); // Requests per unit
     
     public void IncrementRPU() => rpu[Globals.RPU_SECTION] += 1;
