@@ -12,14 +12,16 @@ namespace Agent.Services;
 public class AgentRuntimeService : BackgroundService
 {
     private readonly IEtcdClientService? _etcdClientService;
+    private readonly IHostApplicationLifetime _appLifetime;
 
-    public AgentRuntimeService()
+    public AgentRuntimeService(IHostApplicationLifetime appLifetime)
     {
         Console.WriteLine("INFO::AgentRuntimeService: Initiating AgentRuntimeService");
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        await Task.Run(() => _appLifetime.ApplicationStarted.WaitHandle.WaitOne());
         Console.WriteLine("Running fire method");
         await BackgrounfServiceManager.RunFireMethods();
 
