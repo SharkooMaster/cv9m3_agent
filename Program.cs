@@ -219,7 +219,7 @@ void ConfigureServices(IServiceCollection services)
     services.AddSingleton<GcsSqlStorageService>(
         new GcsSqlStorageService(
             "cross-global-chunks", 
-            "Host=127.0.0.1;Port=5432;Username=postgres;Database=compressiondb;SSL Mode=Disable;"
+            "Host=cloudsql-proxy.cross-test.svc.cluster.local;Port=5432;Username=postgres;Database=compressiondb;SSL Mode=Disable;"
             )
     );
 }
