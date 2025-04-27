@@ -18,8 +18,11 @@ public class AgentLifeCycleService : IHostedService
 {
     private static readonly Random _random = new Random();
     //private readonly IEtcdClientService _etcdClientService;
-    public AgentLifeCycleService()
+    private readonly IHostApplicationLifetime _appLifetime;
+
+    public AgentLifeCycleService(IHostApplicationLifetime appLifetime)
     {
+        _appLifetime = appLifetime;
         //Console.WriteLine("INFO::AgentLifecycleService: Initiating AgentLifeCycleService");
         //_etcdClientService = etcdClientService;
     }
@@ -104,6 +107,7 @@ public class AgentLifeCycleService : IHostedService
                 }
             }
 
+            await Task.Run(() => _appLifetime.ApplicationStarted.WaitHandle.WaitOne());
             Globals._NODE = await NodeService.JoinNetwork(Globals._NODE, bootstrap_node);
         }
         catch(Exception ex)
