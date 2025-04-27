@@ -2,6 +2,8 @@
 using System;
 using System.IO;
 using System.Numerics;
+using System.Security.Cryptography;
+using System.Text;
 using System.Threading.Tasks;
 using Agent.Interfaces.Infs;
 using Google.Cloud.Storage.V1;
@@ -49,11 +51,30 @@ public class GcsSqlStorageService : INetworkFileStorageService
         await StoreChunkAsync(data.vector, data.chunk, bucket_Id);
     }
 
+    public static string GenerateChunkKey(float[] vector)
+    {
+        using var sha256 = SHA256.Create();
+        // Convert the float array into bytes
+        var byteArray = new byte[vector.Length * sizeof(float)];
+        Buffer.BlockCopy(vector, 0, byteArray, 0, byteArray.Length);
+
+        var hashBytes = sha256.ComputeHash(byteArray);
+
+        // Convert to a readable hex string
+        var sb = new StringBuilder();
+        foreach (var b in hashBytes)
+        {
+            sb.Append(b.ToString("x2")); // two-digit hex
+        }
+        return sb.ToString();
+    }
+
+
     public async Task<bool> StoreChunkAsync(float[] hash, byte[] data, string bucketID)
     {
         try
         {
-            string objectName = $"chunks/{hash}";
+            string objectName = $"chunks/{GenerateChunkKey(hash)}";
 
             // Check if chunk already exists in GCS
             var existingObjects = _storageClient.ListObjects(_bucketName, objectName);
