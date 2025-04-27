@@ -22,7 +22,11 @@ public class AgentRuntimeService : BackgroundService
     {
         while (!stoppingToken.IsCancellationRequested)
         {
-            await AgnetaHandler.SendUsageStats();
+            if(!AgnetaHandler.disabled)
+            {
+                await AgnetaHandler.SendUsageStats();
+            }
+
             M_Node temp = await NodeService.VerifySuccessor(Globals._NODE);
             Globals._NODE = temp;
 
