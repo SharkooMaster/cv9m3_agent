@@ -76,16 +76,17 @@ public class AgentLifeCycleService : IHostedService
                 // Use headless service
                 var addresses = await Dns.GetHostAddressesAsync("agent-headless.cross-test.svc.cluster.local");
                 var myIp = Environment.GetEnvironmentVariable("MY_POD_IP");
-                Console.WriteLine(myIp);
+                Console.WriteLine($"pod ip: {myIp}");
 
                 var peerAddresses = addresses.Where(ip => ip.ToString() != myIp).ToList();
 
                 if (peerAddresses.Count == 0)
                 {
-                    Console.WriteLine("No agents found.");
+                    Console.WriteLine("No agents found. Starting standalone");
                 }
                 else
                 {
+                    Console.WriteLine($"Found {peerAddresses.Count} other agents. Checking reachability...");
                     foreach (var ip in peerAddresses.OrderBy(_ => Guid.NewGuid())) // randomize order
                     {
                         if (await IsAgentReachable(ip.ToString()))
