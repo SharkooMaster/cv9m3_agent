@@ -15,7 +15,7 @@ public static class Globals
     public static string ETCD_VALUE = "";
     public static long ETCD_LEASE_ID = -1;
 
-    public static string AgentsLoadbalancer = "http://agent-loadbalancer.default.svc.cluster.local:80";
+    public static string AgentsLoadbalancer = "agent-headless.default.svc.cluster.local";
 
     public static GrpcChannelOptions GRPC_OPTIONS = new GrpcChannelOptions
     {
