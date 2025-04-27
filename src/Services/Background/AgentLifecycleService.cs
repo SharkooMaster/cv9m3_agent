@@ -10,6 +10,7 @@ using Agent.Modules.Agneta;
 using System.Numerics;
 using Agent.Modules.Peer;
 using Agent.Utils;
+using System.Net;
 namespace Agent.Services;
 
 public class AgentLifeCycleService : IHostedService
@@ -37,17 +38,36 @@ public class AgentLifeCycleService : IHostedService
         try
         {
             string bootstrap_node = null;
-            var nearestNeighbour = await AgnetaHandler.GetNeighbour();
-            if(nearestNeighbour.NodeID != "none")
+
+            if(!AgnetaHandler.disabled)
             {
-                ServiceData neighbourData = JsonConvert.DeserializeObject<ServiceData>(nearestNeighbour.Data);
-                if(neighbourData.Host != Globals._NODE.ip)
+                var nearestNeighbour = await AgnetaHandler.GetNeighbour();
+                if(nearestNeighbour.NodeID != "none")
                 {
-                    Console.WriteLine("found peer");
-                    bootstrap_node = neighbourData.Host;
+                    ServiceData neighbourData = JsonConvert.DeserializeObject<ServiceData>(nearestNeighbour.Data);
+                    if(neighbourData.Host != Globals._NODE.ip)
+                    {
+                        Console.WriteLine("found peer");
+                        bootstrap_node = neighbourData.Host;
+                    }
                 }
             }
-            //Console.WriteLine(nearestNeighbour);
+            else
+            {
+                // Use headless service
+                var addresses = await Dns.GetHostAddressesAsync("agent-headless.cross-test.svc.cluster.local");
+                if (addresses.Length == 0)
+                {
+                    Console.WriteLine("No agents found.");
+                    return;
+                }
+
+                var random = new Random();
+                var selectedIp = addresses[random.Next(addresses.Length)];
+
+                Console.WriteLine($"Randomly selected agent: {selectedIp}");
+                bootstrap_node = selectedIp.ToString();
+            }
 
             Globals._NODE = await NodeService.JoinNetwork(Globals._NODE, bootstrap_node);
         }

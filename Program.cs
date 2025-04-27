@@ -67,8 +67,12 @@ var pushoverClientService = app.Services.GetRequiredService<PushoverClientServic
 PushoverHandler.SetInstance(pushoverClientService);
 
 var agnetaClientService = app.Services.GetRequiredService<AgnetaClientService>();
-await agnetaClientService.ConnectAsync();
-AgnetaHandler.SetInstance(agnetaClientService);
+AgnetaHandler.disabled = true;
+if(!AgnetaHandler.disabled)
+{
+    await agnetaClientService.ConnectAsync();
+    AgnetaHandler.SetInstance(agnetaClientService);
+}
 
 //var networkFileSystemService = app.Services.GetRequiredService<NetworkFileStorageService>();
 var networkFileSystemService = app.Services.GetRequiredService<GcsSqlStorageService>(); // Drop in replacement for nfs with gcp

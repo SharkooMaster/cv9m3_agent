@@ -28,6 +28,8 @@ public static class AgnetaHandler
 
     public static AgnetaClientService Instance => _instance ?? throw new InvalidOperationException("AgnetaClientService not initialized.");
 
+    public static bool disabled = false;
+
     public static void SetInstance(AgnetaClientService instance)
     {
         _instance = instance ?? throw new ArgumentNullException(nameof(instance));
@@ -35,6 +37,8 @@ public static class AgnetaHandler
 
     public static async Task Log(int _level, string _message)
     {
+        if(disabled) { return; }
+
         if(_instance != null)
         {
             LogMessage _log = new LogMessage();
@@ -55,16 +59,19 @@ public static class AgnetaHandler
 
     public static async Task SendUsageStats()
     {
+        if(disabled) { return; }
         await _instance.SendUsageStatistics();
     }
 
     public static async Task<NeighbourData> GetNeighbour()
     {
+        if(disabled) { return null; }
         return await _instance.GetAssignedNeighbour();
     }
 
     public static async Task Close()
     {
+        if(disabled) { return; }
         await _instance.SendCloseAsync();
     }
 }
