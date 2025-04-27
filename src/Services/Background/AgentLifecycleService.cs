@@ -46,6 +46,7 @@ public class AgentLifeCycleService : IHostedService
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
+        await Task.Run(() => _appLifetime.ApplicationStarted.WaitHandle.WaitOne());
         string _id = Misc.GenerateId();
         string _data = Misc.GetServiceInfo("agent", _id);
 
@@ -107,7 +108,6 @@ public class AgentLifeCycleService : IHostedService
                 }
             }
 
-            await Task.Run(() => _appLifetime.ApplicationStarted.WaitHandle.WaitOne());
             Globals._NODE = await NodeService.JoinNetwork(Globals._NODE, bootstrap_node);
         }
         catch(Exception ex)

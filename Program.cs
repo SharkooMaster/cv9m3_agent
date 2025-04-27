@@ -217,7 +217,7 @@ PushoverHandler.PushNotification($"Agent:{Globals.ETCD_ID}: Running");
 
 app.Run();
 
-await AgnetaHandler.Close();
+// await AgnetaHandler.Close();
 void ConfigureServices(IServiceCollection services)
 {
     services.AddSingleton<ClmsClientService>(new ClmsClientService());
