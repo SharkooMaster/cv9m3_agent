@@ -17,6 +17,7 @@ public class AgentRuntimeService : BackgroundService
     public AgentRuntimeService(IHostApplicationLifetime appLifetime)
     {
         Console.WriteLine("INFO::AgentRuntimeService: Initiating AgentRuntimeService");
+        _appLifetime = appLifetime;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
