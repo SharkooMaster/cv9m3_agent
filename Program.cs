@@ -225,7 +225,12 @@ void ConfigureServices(IServiceCollection services)
         Username = "postgres",
         Password = Environment.GetEnvironmentVariable("DB_PASSWORD"),
         Database = "compressiondb",
-        SslMode = SslMode.Disable
+        SslMode = SslMode.Disable,
+        Pooling = true,
+        MinPoolSize = 1,
+        MaxPoolSize = 20,
+        Timeout = 15,
+        CommandTimeout = 30
     };
 
     services.AddSingleton<GcsSqlStorageService>(
