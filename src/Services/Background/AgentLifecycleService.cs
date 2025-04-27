@@ -11,6 +11,7 @@ using System.Numerics;
 using Agent.Modules.Peer;
 using Agent.Utils;
 using System.Net;
+using System.Net.Sockets;
 namespace Agent.Services;
 
 public class AgentLifeCycleService : IHostedService
@@ -21,6 +22,23 @@ public class AgentLifeCycleService : IHostedService
     {
         //Console.WriteLine("INFO::AgentLifecycleService: Initiating AgentLifeCycleService");
         //_etcdClientService = etcdClientService;
+    }
+
+    public static async Task<bool> IsAgentReachable(string ip, int port = 5000)
+    {
+        try
+        {
+            using var client = new TcpClient();
+            var connectTask = client.ConnectAsync(ip, port);
+            var timeoutTask = Task.Delay(2000); // 2 seconds timeout
+
+            var completedTask = await Task.WhenAny(connectTask, timeoutTask);
+            return completedTask == connectTask && client.Connected;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     public async Task StartAsync(CancellationToken cancellationToken)
@@ -68,10 +86,20 @@ public class AgentLifeCycleService : IHostedService
                 }
                 else
                 {
-                    var selectedIp = peerAddresses[_random.Next(peerAddresses.Count)];
+                    foreach (var ip in peerAddresses.OrderBy(_ => Guid.NewGuid())) // randomize order
+                    {
+                        if (await IsAgentReachable(ip.ToString()))
+                        {
+                            Console.WriteLine($"Selected reachable peer: {ip}");
+                            bootstrap_node = ip.ToString();
+                            break;
+                        }
+                    }
 
-                    Console.WriteLine($"Randomly selected agent: {selectedIp}");
-                    bootstrap_node = selectedIp.ToString();
+                    if (bootstrap_node == null)
+                    {
+                        Console.WriteLine("No reachable agents found. Starting standalone.");
+                    }
                 }
             }
 
