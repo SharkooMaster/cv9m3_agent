@@ -15,6 +15,7 @@ namespace Agent.Services;
 
 public class AgentLifeCycleService : IHostedService
 {
+    private static readonly Random _random = new Random();
     //private readonly IEtcdClientService _etcdClientService;
     public AgentLifeCycleService()
     {
@@ -57,6 +58,7 @@ public class AgentLifeCycleService : IHostedService
                 // Use headless service
                 var addresses = await Dns.GetHostAddressesAsync("agent-headless.cross-test.svc.cluster.local");
                 var myIp = Environment.GetEnvironmentVariable("MY_POD_IP");
+                Console.WriteLine(myIp);
 
                 var peerAddresses = addresses.Where(ip => ip.ToString() != myIp).ToList();
 
@@ -66,8 +68,7 @@ public class AgentLifeCycleService : IHostedService
                 }
                 else
                 {
-                    var random = new Random();
-                    var selectedIp = peerAddresses[random.Next(peerAddresses.Count)];
+                    var selectedIp = peerAddresses[_random.Next(peerAddresses.Count)];
 
                     Console.WriteLine($"Randomly selected agent: {selectedIp}");
                     bootstrap_node = selectedIp.ToString();
