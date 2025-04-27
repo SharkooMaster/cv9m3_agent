@@ -56,17 +56,22 @@ public class AgentLifeCycleService : IHostedService
             {
                 // Use headless service
                 var addresses = await Dns.GetHostAddressesAsync("agent-headless.cross-test.svc.cluster.local");
-                if (addresses.Length == 0)
+                var myIp = Environment.GetEnvironmentVariable("MY_POD_IP");
+
+                var peerAddresses = addresses.Where(ip => ip.ToString() != myIp).ToList();
+
+                if (peerAddresses.Count == 0)
                 {
                     Console.WriteLine("No agents found.");
-                    return;
                 }
+                else
+                {
+                    var random = new Random();
+                    var selectedIp = peerAddresses[random.Next(peerAddresses.Count)];
 
-                var random = new Random();
-                var selectedIp = addresses[random.Next(addresses.Length)];
-
-                Console.WriteLine($"Randomly selected agent: {selectedIp}");
-                bootstrap_node = selectedIp.ToString();
+                    Console.WriteLine($"Randomly selected agent: {selectedIp}");
+                    bootstrap_node = selectedIp.ToString();
+                }
             }
 
             Globals._NODE = await NodeService.JoinNetwork(Globals._NODE, bootstrap_node);
