@@ -90,7 +90,7 @@ public class GcsSqlStorageService : INetworkFileStorageService
             // Upload chunk
             using var memoryStream = new MemoryStream(data);
             await _storageClient.UploadObjectAsync(_bucketName, objectName, null, memoryStream);
-            Console.WriteLine($"Uploaded chunk {hash} to GCS.");
+            // Console.WriteLine($"Uploaded chunk {hash} to GCS.");
 
             // Insert metadata into PostgreSQL
             await InsertChunkMetadataAsync(hash, objectName, data.Length, bucketID);
@@ -127,7 +127,7 @@ public class GcsSqlStorageService : INetworkFileStorageService
         {
             // Step 2: Insert bucket if it doesn't exist
             var insertBucketCmd = new NpgsqlCommand(@"
-            INSERT INTO bucket_keys (bucket_name, count)
+            INSERT INTO bucket_keys (bucket_name, usage_count)
             VALUES (@bucketName, 0)
             RETURNING id
         ", conn);
