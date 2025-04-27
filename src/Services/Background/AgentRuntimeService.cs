@@ -20,6 +20,8 @@ public class AgentRuntimeService : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        await BackgrounfServiceManager.RunFireMethods();
+
         while (!stoppingToken.IsCancellationRequested)
         {
             if(!AgnetaHandler.disabled)
