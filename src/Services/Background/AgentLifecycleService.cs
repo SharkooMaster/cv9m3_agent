@@ -76,33 +76,41 @@ public class AgentLifeCycleService : IHostedService
             }
             else
             {
-                // Use headless service
                 var addresses = await Dns.GetHostAddressesAsync("agent-headless.cross-test.svc.cluster.local");
-                var myIp = Environment.GetEnvironmentVariable("MY_POD_IP");
-                Console.WriteLine($"pod ip: {myIp}");
 
-                var peerAddresses = addresses.Where(ip => ip.ToString() != myIp).ToList();
-
-                if (peerAddresses.Count == 0)
+                if (addresses == null || addresses.Length == 0)
                 {
-                    Console.WriteLine("No agents found. Starting standalone");
+                    Console.WriteLine("DNS lookup succeeded, but no agents found.");
+                    // No peers at all, continue standalone
                 }
                 else
                 {
-                    Console.WriteLine($"Found {peerAddresses.Count} other agents. Checking reachability...");
-                    foreach (var ip in peerAddresses.OrderBy(_ => Guid.NewGuid())) // randomize order
-                    {
-                        if (await IsAgentReachable(ip.ToString()))
-                        {
-                            Console.WriteLine($"Selected reachable peer: {ip}");
-                            bootstrap_node = ip.ToString();
-                            break;
-                        }
-                    }
+                    var myIp = Environment.GetEnvironmentVariable("MY_POD_IP");
+                    Console.WriteLine($"pod ip: {myIp}");
 
-                    if (bootstrap_node == null)
+                    var peerAddresses = addresses.Where(ip => ip.ToString() != myIp).ToList();
+
+                    if (peerAddresses.Count == 0)
                     {
-                        Console.WriteLine("No reachable agents found. Starting standalone.");
+                        Console.WriteLine("No other agents available (excluding self). Starting standalone.");
+                    }
+                    else
+                    {
+                        Console.WriteLine($"Found {peerAddresses.Count} other agents. Checking reachability...");
+                        foreach (var ip in peerAddresses.OrderBy(_ => Guid.NewGuid())) // randomize order
+                        {
+                            if (await IsAgentReachable(ip.ToString()))
+                            {
+                                Console.WriteLine($"Selected reachable peer: {ip}");
+                                bootstrap_node = ip.ToString();
+                                break;
+                            }
+                        }
+
+                        if (bootstrap_node == null)
+                        {
+                            Console.WriteLine("No reachable agents found. Starting standalone.");
+                        }
                     }
                 }
             }
