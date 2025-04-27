@@ -19,6 +19,7 @@ using Agent.Models;
 using Agent.Services.Storage;
 using Agent.Services.Clms;
 using Agent.Modules;
+using Npgsql;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -216,10 +217,21 @@ void ConfigureServices(IServiceCollection services)
     services.AddSingleton<ClmsClientService>(new ClmsClientService());
     services.AddSingleton<AgnetaClientService>(new AgnetaClientService("wss://agneta-loadbalancer.default.svc.cluster.local:443/log/ws"));
     services.AddSingleton<PushoverClientService>(new PushoverClientService());
+
+    var pgbuilder = new NpgsqlConnectionStringBuilder
+    {
+        Host = "cloudsql-proxy.cross-test.svc.cluster.local",
+        Port = 5432,
+        Username = "postgres",
+        Password = Environment.GetEnvironmentVariable("DB_PASSWORD"),
+        Database = "compressiondb",
+        SslMode = SslMode.Disable
+    };
+
     services.AddSingleton<GcsSqlStorageService>(
         new GcsSqlStorageService(
             "cross-global-chunks", 
-            "Host=cloudsql-proxy.cross-test.svc.cluster.local;Port=5432;Username=postgres;Database=compressiondb;SSL Mode=Disable;"
-            )
+            pgbuilder.ConnectionString
+        )
     );
 }
