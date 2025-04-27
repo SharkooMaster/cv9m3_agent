@@ -220,9 +220,9 @@ void ConfigureServices(IServiceCollection services)
 
     var pgbuilder = new NpgsqlConnectionStringBuilder
     {
-        Host = "cloudsql-proxy.cross-test.svc.cluster.local",
-        Port = 5432,
-        Username = "postgres",
+        Host = Environment.GetEnvironmentVariable("DB_HOST"),
+        Port = Convert.ToInt32(Environment.GetEnvironmentVariable("DB_PORT")),
+        Username = Environment.GetEnvironmentVariable("DB_USER"),
         Password = Environment.GetEnvironmentVariable("DB_PASSWORD"),
         Database = "compressiondb",
         SslMode = SslMode.Disable,
