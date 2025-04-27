@@ -107,7 +107,7 @@ public class AgentLifeCycleService : IHostedService
                 }
             }
 
-            await BackgrounfServiceManager.RegisterFireMethod("JoinCluster", async () => {
+            _ = BackgrounfServiceManager.RegisterFireMethod("JoinCluster", async () => {
                 Globals._NODE = await NodeService.JoinNetwork(Globals._NODE, bootstrap_node);
             });
         }

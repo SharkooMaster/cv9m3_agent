@@ -20,6 +20,7 @@ public class AgentRuntimeService : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        Console.WriteLine("Running fire method");
         await BackgrounfServiceManager.RunFireMethods();
 
         while (!stoppingToken.IsCancellationRequested)
