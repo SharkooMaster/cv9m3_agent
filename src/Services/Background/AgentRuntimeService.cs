@@ -26,12 +26,13 @@ public class AgentRuntimeService : BackgroundService
         await Task.Delay(5000);
         Console.WriteLine("Done waitin");
 
-        _appLifetime.ApplicationStarted.WaitHandle.WaitOne();
+        await Task.Run(() => _appLifetime.ApplicationStarted.WaitHandle.WaitOne());
         Console.WriteLine("Running fire method");
         await BackgrounfServiceManager.RunFireMethods();
 
         while (!stoppingToken.IsCancellationRequested)
         {
+            Console.WriteLine("runtime tick");
             if(!AgnetaHandler.disabled)
             {
                 await AgnetaHandler.SendUsageStats();
