@@ -21,6 +21,9 @@ using Agent.Services.Clms;
 using Agent.Modules;
 using Npgsql;
 
+// IMPORTANT
+AgnetaHandler.disabled = true;
+
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddLogging( logging => 
@@ -67,7 +70,6 @@ var pushoverClientService = app.Services.GetRequiredService<PushoverClientServic
 PushoverHandler.SetInstance(pushoverClientService);
 
 var agnetaClientService = app.Services.GetRequiredService<AgnetaClientService>();
-AgnetaHandler.disabled = true;
 if(!AgnetaHandler.disabled)
 {
     await agnetaClientService.ConnectAsync();
