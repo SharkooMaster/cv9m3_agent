@@ -37,8 +37,15 @@ public class AgentRuntimeService : BackgroundService
                 await AgnetaHandler.SendUsageStats();
             }
 
-            M_Node temp = await NodeService.VerifySuccessor(Globals._NODE);
-            Globals._NODE = temp;
+            if (Globals._NODE != null && Globals._NODE.successor != null)
+            {
+                M_Node temp = await NodeService.VerifySuccessor(Globals._NODE);
+                Globals._NODE = temp;
+            }
+            else
+            {
+                Console.WriteLine("Waiting for node to join network...");
+            }
 
             await BackgrounfServiceManager.RunRoutineMethods();
             await BackgrounfServiceManager.RunFireMethods();
