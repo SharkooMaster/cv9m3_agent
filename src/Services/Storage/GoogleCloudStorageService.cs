@@ -109,15 +109,43 @@ public class GcsSqlStorageService : INetworkFileStorageService
         await using var conn = new NpgsqlConnection(_postgresConnectionString);
         await conn.OpenAsync();
 
-        var cmd = new NpgsqlCommand(@"
-            INSERT INTO vectors (vector, storage_guid, size, created_at, bucket_id)
-            VALUES (@vector, @storagePath, @size, NOW(), (SELECT id FROM bucket_keys WHERE bucket_name = @bucketName LIMIT 1))
+        int bucketId;
+
+        // Step 1: Check if bucket exists
+        var checkBucketCmd = new NpgsqlCommand(@"
+        SELECT id FROM bucket_keys WHERE bucket_name = @bucketName LIMIT 1
+    ", conn);
+
+        checkBucketCmd.Parameters.AddWithValue("@bucketName", bucketName);
+        var result = await checkBucketCmd.ExecuteScalarAsync();
+
+        if (result != null)
+        {
+            bucketId = (int)result;
+        }
+        else
+        {
+            // Step 2: Insert bucket if it doesn't exist
+            var insertBucketCmd = new NpgsqlCommand(@"
+            INSERT INTO bucket_keys (bucket_name, count)
+            VALUES (@bucketName, 0)
+            RETURNING id
         ", conn);
+
+            insertBucketCmd.Parameters.AddWithValue("@bucketName", bucketName);
+            bucketId = (int)(await insertBucketCmd.ExecuteScalarAsync());
+        }
+
+        // Step 3: Insert into vectors table
+        var cmd = new NpgsqlCommand(@"
+        INSERT INTO vectors (vector, storage_guid, size, created_at, bucket_id)
+        VALUES (@vector, @storagePath, @size, NOW(), @bucketId)
+    ", conn);
 
         cmd.Parameters.AddWithValue("@vector", vector);
         cmd.Parameters.AddWithValue("@storagePath", storagePath);
         cmd.Parameters.AddWithValue("@size", size);
-        cmd.Parameters.AddWithValue("@bucketName", bucketName);
+        cmd.Parameters.AddWithValue("@bucketId", bucketId);
 
         await cmd.ExecuteNonQueryAsync();
     }
