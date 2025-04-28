@@ -214,10 +214,22 @@ app.MapGet("/network", async () =>
     return Results.Content(html, "text/html");
 });
 
+var temp = async () => {
+    try
+    {
+        Globals._NODE = await NodeService.JoinNetwork(Globals._NODE, Globals.bootstrap_node);
+    }
+    catch (Exception ex)
+    {
+        // Log or handle the error
+        Console.WriteLine($"Failed to Join Network: {ex.Message}");
+    }
+};
+_ = temp();
+
 PushoverHandler.PushNotification($"Agent:{Globals.ETCD_ID}: Running");
 
 await app.RunAsync();
-Globals._NODE = await NodeService.JoinNetwork(Globals._NODE, Globals.bootstrap_node);
 
 // await AgnetaHandler.Close();
 void ConfigureServices(IServiceCollection services)
