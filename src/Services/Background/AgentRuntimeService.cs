@@ -32,8 +32,15 @@ public class AgentRuntimeService : BackgroundService
 
             if (Globals._NODE != null && Globals._NODE.successor != null && Globals.bootstraped)
             {
-                M_Node temp = await NodeService.VerifySuccessor(Globals._NODE);
-                Globals._NODE = temp;
+                try
+                {
+                    M_Node temp = await NodeService.VerifySuccessor(Globals._NODE);
+                    Globals._NODE = temp;
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[RUNTIME ERROR]: VerifySuccessor failed: {ex.Message}");
+                }
             }
             else
             {
