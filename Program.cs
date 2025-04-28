@@ -107,113 +107,6 @@ app.MapGrpcService<StoreVectorService>();
 app.MapGet("/", () =>{ return "Hello world"; });
 app.MapGet("/health", () =>{ return "true"; });
 
-app.MapGet("/finger_table", () =>
-{
-    // Build rows using LINQ for readability
-     var rows = string.Join("", Globals._NODE.fingerTable.Select(
-        item => $"<tr><td>{item.Key.ToString()}</td><td>{item.Value.id} : {item.Value.ip}</td></tr>"
-     ));
-
-    // Use a string literal for the HTML structure
-    var html = $@"
-        <!doctype html>
-        <html>
-        <head>
-            <title>Finger Table</title>
-            <style>
-                table {{
-                    border-collapse: collapse;
-                    width: 50%;
-                }}
-                th, td {{
-                    border: 1px solid black;
-                    text-align: left;
-                    padding: 8px;
-                }}
-                th {{
-                    background-color: #f2f2f2;
-                }}
-            </style>
-        </head>
-        <body>
-            <h1>Finger Table</h1>
-            <h3>{Misc.GetLocalIPAddress()}</h3>
-            <table>
-                <tr>
-                    <th>Key</th>
-                    <th>Value</th>
-                </tr>
-                {rows}
-            </table>
-        </body>
-        </html>";
-
-    return Results.Content(html, "text/html");
-});
-
-app.MapGet("/network", async () => 
-{
-    var rows = "";
-
-    List<string> _successors = new List<string>();
-    _successors.Add(Globals._NODE.ip);
-    if(Globals._NODE.successor.ip != Globals._NODE.ip)
-    {
-        _successors.Add(Globals._NODE.successor.ip);
-
-        GetSuccessorService gss = new GetSuccessorService();
-        while(true)
-        {
-            if(Globals._NODE.successor.ip == Globals._NODE.ip) { break; }
-
-            M_Node res = await gss.ClientGet(_successors[^1]);
-            string _ip = res.ip;
-            if(_ip == Globals._NODE.ip) { break; }
-            if(_successors.Contains(_ip)) { break; }
-
-            _successors.Add(_ip);
-        }
-    }
-
-    foreach (string _ip in _successors)
-    {
-        rows += $@"<tr><td>{_ip}</td></tr>";
-    }
-
-    var html = $@"
-    <!doctype html>
-    <html>
-    <head>
-        <title>Network</title>
-        <style>
-            body{{ background-color: #141414; }}
-            table {{
-                border-collapse: collapse;
-                width: 50%;
-            }}
-            th, td {{
-                border: 1px solid black;
-                text-align: left;
-                padding: 8px;
-                background-color: #f2f2f2;
-            }}
-        </style>
-    </head>
-    <body>
-        <h1 style='color:white;'>Finger Table</h1>
-        <h3 style='color:white;'>{Misc.GetLocalIPAddress()}</h3>
-        <h3 style='color:white;'>{Globals._NODE.id}</h3>
-        <table>
-            <tr>
-                <th>Network successors list</th>
-            </tr>
-            {rows}
-        </table>
-    </body>
-    </html>";
-    return Results.Content(html, "text/html");
-});
-
 AppDomain.CurrentDomain.UnhandledException += (sender, eventArgs) =>
 {
     Console.WriteLine($"[UNHANDLED EXCEPTION]: {eventArgs.ExceptionObject}");
@@ -225,23 +118,26 @@ TaskScheduler.UnobservedTaskException += (sender, e) =>
     e.SetObserved();
 };
 
-var temp = async () => {
-    try
+try
+{
+    // Wait for bootstrap
+    while (!Globals.bootstraped)
     {
-        while(!Globals.bootstraped)
-        {
-            Console.WriteLine($"Awaiting bootstrap completion: {Globals.bootstrap_node}");
-            await Task.Delay(1000);
-        }
-        Globals._NODE = await NodeService.JoinNetwork(Globals._NODE, Globals.bootstrap_node);
+        Console.WriteLine($"Awaiting bootstrap completion: {Globals.bootstrap_node}");
+        await Task.Delay(1000);
     }
-    catch (Exception ex)
-    {
-        // Log or handle the error
-        Console.WriteLine($"Failed to Join Network: {ex.Message}");
-    }
-};
-_ = temp();
+
+    // Then properly await JoinNetwork
+    Globals._NODE = await NodeService.JoinNetwork(Globals._NODE, Globals.bootstrap_node);
+
+    Console.WriteLine($"Successfully joined network. My ID = {Globals._NODE.id}, IP = {Globals._NODE.ip}");
+}
+catch (Exception ex)
+{
+    Console.WriteLine($"Fatal error during startup: {ex.Message}");
+    throw; // Let program crash if it cannot join
+}
+
 
 PushoverHandler.PushNotification($"Agent:{Globals.ETCD_ID}: Running");
 
