@@ -105,14 +105,57 @@ public static class NodeService
         GetPredecessorService _getPredecessorService = new GetPredecessorService();
         UpdatePredecessorService _updatePredecessorService = new UpdatePredecessorService();
 
-        GetPredecessor_Result getPredecessor_result = await _getPredecessorService.ClientGet(node.successor.ip, CancellationToken.None);
-        if(getPredecessor_result.Id != node.id && getPredecessor_result.Ip != node.ip)
+        try
         {
-            node.successor = new M_Node() { id = getPredecessor_result.Id, ip = getPredecessor_result.Ip };
+            if (string.IsNullOrWhiteSpace(node.successor?.ip))
+            {
+                Console.WriteLine("[VerifySuccessor] Warning: successor IP is null or empty.");
+                return node;
+            }
 
-            UpdatePredecessor_Req updatePredecessor_req = new UpdatePredecessor_Req() { Id = node.id, Ip = node.ip };
-            await _updatePredecessorService.ClientUpdate(updatePredecessor_req, node.successor.ip);
+            GetPredecessor_Result getPredecessor_result = await _getPredecessorService.ClientGet(node.successor.ip, CancellationToken.None);
+
+            if (getPredecessor_result == null)
+            {
+                Console.WriteLine($"[VerifySuccessor] Warning: No predecessor info received from {node.successor.ip}.");
+                return node;
+            }
+
+            if (getPredecessor_result.Id != node.id && getPredecessor_result.Ip != node.ip)
+            {
+                Console.WriteLine($"[VerifySuccessor] Updating successor to {getPredecessor_result.Ip}.");
+
+                node.successor = new M_Node()
+                {
+                    id = getPredecessor_result.Id,
+                    ip = getPredecessor_result.Ip
+                };
+
+                try
+                {
+                    UpdatePredecessor_Req updatePredecessor_req = new UpdatePredecessor_Req()
+                    {
+                        Id = node.id,
+                        Ip = node.ip
+                    };
+                    await _updatePredecessorService.ClientUpdate(updatePredecessor_req, node.successor.ip);
+                }
+                catch (Exception updateEx)
+                {
+                    Console.WriteLine($"[VerifySuccessor] Warning: Failed to update new successor's predecessor: {updateEx.Message}");
+                }
+            }
         }
+        catch (Grpc.Core.RpcException rpcEx)
+        {
+            Console.WriteLine($"[VerifySuccessor] RpcException while verifying successor {node.successor.ip}: {rpcEx.Status}");
+            // Optionally mark successor as dead here, or set node.successor = node (self-loop) temporarily.
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[VerifySuccessor] Exception while verifying successor: {ex.Message}");
+        }
+
         return node;
     }
 

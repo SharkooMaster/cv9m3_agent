@@ -24,32 +24,40 @@ public class AgentRuntimeService : BackgroundService
     {
         while (!stoppingToken.IsCancellationRequested)
         {
-            Console.WriteLine("runtime tick");
-            if(!AgnetaHandler.disabled)
+            try
             {
-                await AgnetaHandler.SendUsageStats();
+                Console.WriteLine("runtime tick");
+
+                if (!AgnetaHandler.disabled)
+                {
+                    await AgnetaHandler.SendUsageStats();
+                }
+
+                if (Globals._NODE != null && Globals._NODE.successor != null && Globals.bootstraped)
+                {
+                    try
+                    {
+                        M_Node temp = await NodeService.VerifySuccessor(Globals._NODE);
+                        Globals._NODE = temp;
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"[RUNTIME ERROR]: VerifySuccessor failed: {ex.Message}");
+                    }
+                }
+                else
+                {
+                    Console.WriteLine("Waiting for node to join network...");
+                }
+
+                await BackgrounfServiceManager.RunRoutineMethods();
+                await BackgrounfServiceManager.RunFireMethods();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[AgentRuntimeService TICK ERROR]: {ex}");
             }
 
-            if (Globals._NODE != null && Globals._NODE.successor != null && Globals.bootstraped)
-            {
-                try
-                {
-                    M_Node temp = await NodeService.VerifySuccessor(Globals._NODE);
-                    Globals._NODE = (temp != null) ? temp : Globals._NODE;
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"[RUNTIME ERROR]: VerifySuccessor failed: {ex.Message}");
-                }
-            }
-            else
-            {
-                Console.WriteLine("Waiting for node to join network...");
-            }
-
-            await BackgrounfServiceManager.RunRoutineMethods();
-            await BackgrounfServiceManager.RunFireMethods();
-    
             await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken);
         }
     }
