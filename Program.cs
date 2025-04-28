@@ -214,6 +214,11 @@ app.MapGet("/network", async () =>
     return Results.Content(html, "text/html");
 });
 
+AppDomain.CurrentDomain.UnhandledException += (sender, eventArgs) =>
+{
+    Console.WriteLine($"[UNHANDLED EXCEPTION]: {eventArgs.ExceptionObject}");
+};
+
 var temp = async () => {
     try
     {
