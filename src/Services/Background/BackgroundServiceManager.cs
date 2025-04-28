@@ -12,7 +12,7 @@ public static class BackgrounfServiceManager
     {
         if(!RoutineMethods.TryAdd(_name, _func))
         {
-            await AgnetaHandler.Log(2, $"Failed to register routine: {_name}");
+            // await AgnetaHandler.Log(2, $"Failed to register routine: {_name}");
         }
     }
 
@@ -36,7 +36,7 @@ public static class BackgrounfServiceManager
             }
             catch (System.Exception)
             {
-                await AgnetaHandler.Log(2, $"Failed to run routine {RoutineMethodsKeys[i]}");
+                // await AgnetaHandler.Log(2, $"Failed to run routine {RoutineMethodsKeys[i]}");
             }
         }
     }

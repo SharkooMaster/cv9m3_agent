@@ -219,6 +219,12 @@ AppDomain.CurrentDomain.UnhandledException += (sender, eventArgs) =>
     Console.WriteLine($"[UNHANDLED EXCEPTION]: {eventArgs.ExceptionObject}");
 };
 
+TaskScheduler.UnobservedTaskException += (sender, e) =>
+{
+    Console.WriteLine($"[UNOBSERVED TASK EXCEPTION]: {e.Exception}");
+    e.SetObserved();
+};
+
 var temp = async () => {
     try
     {
