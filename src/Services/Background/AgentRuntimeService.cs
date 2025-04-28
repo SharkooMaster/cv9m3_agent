@@ -35,7 +35,7 @@ public class AgentRuntimeService : BackgroundService
                 try
                 {
                     M_Node temp = await NodeService.VerifySuccessor(Globals._NODE);
-                    Globals._NODE = temp;
+                    Globals._NODE = (temp != null) ? temp : Globals._NODE;
                 }
                 catch (Exception ex)
                 {

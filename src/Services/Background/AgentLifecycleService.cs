@@ -53,7 +53,7 @@ public class AgentLifeCycleService : IHostedService
         Globals.ETCD_ID = _id;
         Globals.ETCD_VALUE = _data;
 
-        Globals._NODE.ip = Misc.GetLocalIPAddress();
+        Globals._NODE.ip = Environment.GetEnvironmentVariable("MY_POD_IP");
         Globals._NODE.id = await NodeUtils.generateNodeID();
 
         // Getting target neighbor
