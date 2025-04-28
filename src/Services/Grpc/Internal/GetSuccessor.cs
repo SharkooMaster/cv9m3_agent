@@ -23,7 +23,7 @@ public class GetSuccessorService : GetSuccessor.GetSuccessorBase
 
         var _client = GrpcChannelFactory.GetClient(target: _ip, ctor: chan => new GetSuccessor.GetSuccessorClient(chan), roundRobin: false);
 
-        var deadline = DateTime.UtcNow.AddSeconds(5);
+        var deadline = DateTime.UtcNow.AddSeconds(Globals.GRPC_TIMEOUT);
         var response = await _client.GetAsync(new Empty(), deadline: deadline, cancellationToken: ct);
 
         to_ret.id = response.Id;

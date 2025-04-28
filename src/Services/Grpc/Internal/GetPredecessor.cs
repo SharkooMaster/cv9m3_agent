@@ -23,7 +23,7 @@ public class GetPredecessorService : GetPredecessor.GetPredecessorBase
         {
             var _client = GrpcChannelFactory.GetClient(target: _ip, ctor: chan => new GetPredecessor.GetPredecessorClient(chan), roundRobin: false);
 
-            var deadline = DateTime.UtcNow.AddSeconds(5);
+            var deadline = DateTime.UtcNow.AddSeconds(Globals.GRPC_TIMEOUT);
             return await _client.GetAsync(new Empty(), deadline: deadline, cancellationToken: ct);
         }
         catch (RpcException ex)

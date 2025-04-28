@@ -19,7 +19,7 @@ public class UpdatePredecessorService : UpdatePredecessor.UpdatePredecessorBase
         {
             var _client = GrpcChannelFactory.GetClient(target: _ip, ctor: chan => new UpdatePredecessor.UpdatePredecessorClient(chan), roundRobin: false);
 
-            var deadline = DateTime.UtcNow.AddSeconds(5);
+            var deadline = DateTime.UtcNow.AddSeconds(Globals.GRPC_TIMEOUT);
             await _client.UpdateAsync(req, deadline: deadline, cancellationToken: ct);
         }
         catch (RpcException ex)

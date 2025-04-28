@@ -22,7 +22,7 @@ public class GetNodeInfoService : GetNodeInfo.GetNodeInfoBase
         {
             var _client = GrpcChannelFactory.GetClient(target: _ip, ctor: chan => new GetNodeInfo.GetNodeInfoClient(chan), roundRobin: false);
 
-            var deadline = DateTime.UtcNow.AddSeconds(5);
+            var deadline = DateTime.UtcNow.AddSeconds(Globals.GRPC_TIMEOUT);
             var response = await _client.GetAsync(new Empty(), deadline: deadline, cancellationToken: ct);
             return response;
         }

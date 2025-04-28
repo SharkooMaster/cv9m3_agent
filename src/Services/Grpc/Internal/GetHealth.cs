@@ -15,7 +15,7 @@ public class GetHealthService : GetHealth.GetHealthBase
     {
         var _client = GrpcChannelFactory.GetClient(target: _ip, chan => new GetHealth.GetHealthClient(chan), roundRobin: false);
 
-        var deadline = DateTime.UtcNow.AddSeconds(5);
+        var deadline = DateTime.UtcNow.AddSeconds(Globals.GRPC_TIMEOUT);
         var result = await _client.GetAsync(new Empty(), deadline: deadline, cancellationToken: ct);
         return result;
     }

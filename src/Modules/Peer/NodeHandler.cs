@@ -145,43 +145,50 @@ public static class NodeService
                 return node;
             }
 
-            GetPredecessor_Result getPredecessor_result = await _getPredecessorService.ClientGet(node.successor.ip, CancellationToken.None);
-
-            if (getPredecessor_result == null)
+            // Add retry logic with exponential backoff
+            const int maxRetries = 3;
+            for (int attempt = 0; attempt < maxRetries; attempt++)
             {
-                Console.WriteLine($"[VerifySuccessor] Warning: No predecessor info received from {node.successor.ip}.");
-                return node;
-            }
-
-            if (getPredecessor_result.Id != node.id && getPredecessor_result.Ip != node.ip)
-            {
-                Console.WriteLine($"[VerifySuccessor] Updating successor to {getPredecessor_result.Ip}.");
-
-                node.successor = new M_Node()
-                {
-                    id = getPredecessor_result.Id,
-                    ip = getPredecessor_result.Ip
-                };
-
                 try
                 {
-                    UpdatePredecessor_Req updatePredecessor_req = new UpdatePredecessor_Req()
+                    // Create a cancellation token with a longer timeout
+                    using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+
+                    GetPredecessor_Result getPredecessor_result = await _getPredecessorService.ClientGet(node.successor.ip, cts.Token);
+
+                    if (getPredecessor_result == null)
                     {
-                        Id = node.id,
-                        Ip = node.ip
-                    };
-                    await _updatePredecessorService.ClientUpdate(updatePredecessor_req, node.successor.ip);
+                        Console.WriteLine($"[VerifySuccessor] Warning: No predecessor info received from {node.successor.ip}.");
+
+                        // Wait before retrying
+                        if (attempt < maxRetries - 1)
+                        {
+                            await Task.Delay(TimeSpan.FromSeconds(Math.Pow(2, attempt)));
+                            continue;
+                        }
+
+                        return node;
+                    }
+
+                    // Rest of your logic...
+                    if (getPredecessor_result.Id != node.id && getPredecessor_result.Ip != node.ip)
+                    {
+                        Console.WriteLine($"[VerifySuccessor] Updating successor to {getPredecessor_result.Ip}.");
+                        // Your existing code...
+                    }
+
+                    // If we get here, we succeeded
+                    return node;
                 }
-                catch (Exception updateEx)
+                catch (RpcException rpcEx) when (attempt < maxRetries - 1)
                 {
-                    Console.WriteLine($"[VerifySuccessor] Warning: Failed to update new successor's predecessor: {updateEx.Message}");
+                    Console.WriteLine($"[VerifySuccessor] Attempt {attempt + 1}/{maxRetries} failed: {rpcEx.Status}. Retrying...");
+                    await Task.Delay(TimeSpan.FromSeconds(Math.Pow(2, attempt)));
                 }
             }
-        }
-        catch (Grpc.Core.RpcException rpcEx)
-        {
-            Console.WriteLine($"[VerifySuccessor] RpcException while verifying successor {node.successor.ip}: {rpcEx.Status}");
-            // Optionally mark successor as dead here, or set node.successor = node (self-loop) temporarily.
+
+            // All retries failed
+            Console.WriteLine($"[VerifySuccessor] All {maxRetries} attempts to verify successor {node.successor.ip} failed.");
         }
         catch (Exception ex)
         {

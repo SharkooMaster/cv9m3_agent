@@ -21,7 +21,7 @@ public class FindPeerResponsibleService : FindPeerResponsible.FindPeerResponsibl
         {
             var _client = GrpcChannelFactory.GetClient(target: _ip, ctor: chan => new FindPeerResponsible.FindPeerResponsibleClient(chan), roundRobin: false);
 
-            var deadline = DateTime.UtcNow.AddSeconds(5);
+            var deadline = DateTime.UtcNow.AddSeconds(Globals.GRPC_TIMEOUT);
             var response = await _client.FindAsync(request, deadline: deadline, cancellationToken: ct);
 
             return response;

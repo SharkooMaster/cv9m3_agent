@@ -50,7 +50,7 @@ public class SearchVectorService : SearchVector.SearchVectorBase
         {
             var _client = GrpcChannelFactory.GetClient(target: _ip, ctor: chan => new SearchVector.SearchVectorClient(chan), roundRobin: false);
 
-            var deadline = DateTime.UtcNow.AddSeconds(5);
+            var deadline = DateTime.UtcNow.AddSeconds(Globals.GRPC_TIMEOUT);
             return await _client.GetAsync(req, deadline: deadline, cancellationToken: ct);
         }
         catch(RpcException ex)
