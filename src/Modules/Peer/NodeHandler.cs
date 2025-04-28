@@ -44,6 +44,37 @@ public static class NodeService
 
         node.successor = successor;
 
+        // 🔥 ADD THIS CHECK IMMEDIATELY AFTER SETTING SUCCESSOR
+        try
+        {
+            Console.WriteLine($"[JoinNetwork] Verifying chosen successor {node.successor.ip}...");
+
+            GetPredecessorService _getPredecessorServiceTemp = new GetPredecessorService();
+            var testResult = await _getPredecessorServiceTemp.ClientGet(node.successor.ip);
+
+            if (testResult == null || string.IsNullOrWhiteSpace(testResult.Ip))
+            {
+                Console.WriteLine($"[JoinNetwork] Warning: Successor {node.successor.ip} verification failed (null). Retrying FindPeerResponsible...");
+
+                // Try to find a better successor
+                successor_ip = await S_FindPeerResponsible(node.id, bootstrap_node);
+                getSuccessor_res = await _getNodeInfoService.ClientGet(successor_ip);
+                node.successor = new M_Node() { id = getSuccessor_res.Id, ip = getSuccessor_res.Ip };
+
+                Console.WriteLine($"[JoinNetwork] New successor selected: {node.successor.ip}");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[JoinNetwork] Error verifying successor {node.successor.ip}: {ex.Message}");
+            // If successor dead, try finding a new one
+            successor_ip = await S_FindPeerResponsible(node.id, bootstrap_node);
+            getSuccessor_res = await _getNodeInfoService.ClientGet(successor_ip);
+            node.successor = new M_Node() { id = getSuccessor_res.Id, ip = getSuccessor_res.Ip };
+
+            Console.WriteLine($"[JoinNetwork] New successor selected after verification failure: {node.successor.ip}");
+        }
+
         // Get my successors predecessor
         GetPredecessor_Result getPredecessor_res = await _getPredecessorService.ClientGet(node.successor.ip);
         M_Node predecessor = new M_Node() { id = getPredecessor_res.Id, ip = getPredecessor_res.Ip };
