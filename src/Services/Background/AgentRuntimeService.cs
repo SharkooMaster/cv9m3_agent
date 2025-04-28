@@ -12,12 +12,10 @@ namespace Agent.Services;
 public class AgentRuntimeService : BackgroundService
 {
     private readonly IEtcdClientService? _etcdClientService;
-    private readonly IHostApplicationLifetime _appLifetime;
 
-    public AgentRuntimeService(IHostApplicationLifetime appLifetime)
+    public AgentRuntimeService()
     {
         Console.WriteLine("INFO::AgentRuntimeService: Initiating AgentRuntimeService");
-        _appLifetime = appLifetime;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -50,8 +48,8 @@ public class AgentRuntimeService : BackgroundService
                     Console.WriteLine("Waiting for node to join network...");
                 }
 
-                await BackgrounfServiceManager.RunRoutineMethods();
-                await BackgrounfServiceManager.RunFireMethods();
+                // await BackgrounfServiceManager.RunRoutineMethods();
+                // await BackgrounfServiceManager.RunFireMethods();
             }
             catch (Exception ex)
             {

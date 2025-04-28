@@ -18,11 +18,9 @@ public class AgentLifeCycleService : IHostedService
 {
     private static readonly Random _random = new Random();
     //private readonly IEtcdClientService _etcdClientService;
-    private readonly IHostApplicationLifetime _appLifetime;
 
-    public AgentLifeCycleService(IHostApplicationLifetime appLifetime)
+    public AgentLifeCycleService()
     {
-        _appLifetime = appLifetime;
         //Console.WriteLine("INFO::AgentLifecycleService: Initiating AgentLifeCycleService");
         //_etcdClientService = etcdClientService;
     }
