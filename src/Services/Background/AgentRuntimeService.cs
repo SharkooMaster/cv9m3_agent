@@ -20,37 +20,49 @@ public class AgentRuntimeService : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        // !stoppingToken.IsCancellationRequested
-        while (true)
+        int consecutiveFailures = 0;
+
+        while (!stoppingToken.IsCancellationRequested)
         {
             try
             {
                 Console.WriteLine("runtime tick");
 
-                if (!AgnetaHandler.disabled)
-                {
-                    await AgnetaHandler.SendUsageStats();
-                }
-
                 if (Globals._NODE != null && Globals._NODE.successor != null && Globals.bootstraped)
                 {
                     try
                     {
+                        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
                         M_Node temp = await NodeService.VerifySuccessor(Globals._NODE);
                         Globals._NODE = temp;
+                        consecutiveFailures = 0;
                     }
                     catch (Exception ex)
                     {
                         Console.WriteLine($"[RUNTIME ERROR]: VerifySuccessor failed: {ex.Message}");
+                        consecutiveFailures++;
+
+                        // After multiple consecutive failures, try to reconnect
+                        if (consecutiveFailures > 5)
+                        {
+                            Console.WriteLine($"[RUNTIME WARNING]: Too many consecutive failures ({consecutiveFailures}). Attempting to rejoin network...");
+                            try
+                            {
+                                // Attempt to find a new successor
+                                Globals._NODE = await NodeService.JoinNetwork(Globals._NODE, Globals.bootstrap_node);
+                                consecutiveFailures = 0;
+                            }
+                            catch (Exception rejoinEx)
+                            {
+                                Console.WriteLine($"[RUNTIME ERROR]: Failed to rejoin network: {rejoinEx.Message}");
+                            }
+                        }
                     }
                 }
                 else
                 {
                     Console.WriteLine("Waiting for node to join network...");
                 }
-
-                // await BackgrounfServiceManager.RunRoutineMethods();
-                // await BackgrounfServiceManager.RunFireMethods();
             }
             catch (Exception ex)
             {
@@ -59,6 +71,7 @@ public class AgentRuntimeService : BackgroundService
 
             await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken);
         }
+
     }
 
     public override async Task StopAsync(CancellationToken stoppingToken)
