@@ -216,13 +216,7 @@ app.MapGet("/network", async () =>
 
 PushoverHandler.PushNotification($"Agent:{Globals.ETCD_ID}: Running");
 
-app.Run();
-
-while(!Globals.bootstraped)
-{
-    Console.WriteLine($"Awaiting bootstrap node: {Globals.bootstrap_node}");
-    await Task.Delay(1000);
-}
+await app.RunAsync();
 Globals._NODE = await NodeService.JoinNetwork(Globals._NODE, Globals.bootstrap_node);
 
 // await AgnetaHandler.Close();
