@@ -33,7 +33,6 @@ builder.Services.AddLogging( logging =>
     logging.SetMinimumLevel(LogLevel.Debug);
 });
 
-
 builder.Services.AddGrpc(options => {
     options.MaxReceiveMessageSize = 1000 * 1024 * 1024;
     options.MaxSendMessageSize = 1000 * 1024 * 1024;
@@ -118,30 +117,27 @@ TaskScheduler.UnobservedTaskException += (sender, e) =>
     e.SetObserved();
 };
 
-try
-{
-    // Wait for bootstrap
-    while (!Globals.bootstraped)
+var temp = async () => {
+    try
     {
-        Console.WriteLine($"Awaiting bootstrap completion: {Globals.bootstrap_node}");
-        await Task.Delay(1000);
+        while(!Globals.bootstraped)
+        {
+            Console.WriteLine($"Awaiting bootstrap completion: {Globals.bootstrap_node}");
+            await Task.Delay(1000);
+        }
+        Globals._NODE = await NodeService.JoinNetwork(Globals._NODE, Globals.bootstrap_node);
     }
-
-    // Then properly await JoinNetwork
-    Globals._NODE = await NodeService.JoinNetwork(Globals._NODE, Globals.bootstrap_node);
-
-    Console.WriteLine($"Successfully joined network. My ID = {Globals._NODE.id}, IP = {Globals._NODE.ip}");
-}
-catch (Exception ex)
-{
-    Console.WriteLine($"Fatal error during startup: {ex.Message}");
-    throw; // Let program crash if it cannot join
-}
-
+    catch (Exception ex)
+    {
+        // Log or handle the error
+        Console.WriteLine($"Failed to Join Network: {ex.Message}");
+    }
+};
+_ = temp();
 
 PushoverHandler.PushNotification($"Agent:{Globals.ETCD_ID}: Running");
 
-await app.RunAsync();
+app.Run();
 
 // await AgnetaHandler.Close();
 void ConfigureServices(IServiceCollection services)
