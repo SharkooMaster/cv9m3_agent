@@ -20,7 +20,8 @@ public class AgentRuntimeService : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        while (!stoppingToken.IsCancellationRequested)
+        // !stoppingToken.IsCancellationRequested
+        while (true)
         {
             try
             {
