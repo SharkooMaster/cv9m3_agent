@@ -59,8 +59,6 @@ public class AgentLifeCycleService : IHostedService
         // Getting target neighbor
         try
         {
-            string bootstrap_node = null;
-
             if(!AgnetaHandler.disabled)
             {
                 var nearestNeighbour = await AgnetaHandler.GetNeighbour();
@@ -70,7 +68,7 @@ public class AgentLifeCycleService : IHostedService
                     if(neighbourData.Host != Globals._NODE.ip)
                     {
                         Console.WriteLine("found peer");
-                        bootstrap_node = neighbourData.Host;
+                        Globals.bootstrap_node = neighbourData.Host;
                     }
                 }
             }
@@ -105,12 +103,12 @@ public class AgentLifeCycleService : IHostedService
                                 if (await IsAgentReachable(ip.ToString()))
                                 {
                                     Console.WriteLine($"Selected reachable peer: {ip}");
-                                    bootstrap_node = ip.ToString();
+                                    Globals.bootstrap_node = ip.ToString();
                                     break;
                                 }
                             }
 
-                            if (bootstrap_node == null)
+                            if (Globals.bootstrap_node == null)
                             {
                                 Console.WriteLine("No reachable agents found. Starting standalone.");
                             }
@@ -126,10 +124,6 @@ public class AgentLifeCycleService : IHostedService
                     Console.WriteLine($"Unexpected error: {ex.GetType().Name}: {ex.Message}");
                 }
             }
-
-            _ = BackgrounfServiceManager.RegisterFireMethod("JoinCluster", async () => {
-                Globals._NODE = await NodeService.JoinNetwork(Globals._NODE, bootstrap_node);
-            });
         }
         catch(Exception ex)
         {

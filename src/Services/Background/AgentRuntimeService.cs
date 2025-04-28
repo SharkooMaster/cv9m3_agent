@@ -22,14 +22,6 @@ public class AgentRuntimeService : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        Console.WriteLine("waitin");
-        await Task.Delay(5000);
-        Console.WriteLine("Done waitin");
-
-        await Task.Run(() => _appLifetime.ApplicationStarted.WaitHandle.WaitOne());
-        Console.WriteLine("Running fire method");
-        await BackgrounfServiceManager.RunFireMethods();
-
         while (!stoppingToken.IsCancellationRequested)
         {
             Console.WriteLine("runtime tick");
