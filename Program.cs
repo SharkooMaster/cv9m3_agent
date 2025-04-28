@@ -214,7 +214,10 @@ app.MapGet("/network", async () =>
     return Results.Content(html, "text/html");
 });
 
-
+while(!Globals.bootstraped)
+{
+    Console.WriteLine($"Waiting for bootstrap");
+}
 Globals._NODE = await NodeService.JoinNetwork(Globals._NODE, Globals.bootstrap_node);
 PushoverHandler.PushNotification($"Agent:{Globals.ETCD_ID}: Running");
 

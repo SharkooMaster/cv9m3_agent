@@ -129,6 +129,7 @@ public class AgentLifeCycleService : IHostedService
         {
             Console.WriteLine($"ERROR::AgentLifeCycleService: {ex.Data} : {ex.Message}");
         }
+        Globals.bootstraped = true;
     }
 
     public Task StopAsync(CancellationToken cancellationToken)

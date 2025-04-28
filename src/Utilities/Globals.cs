@@ -17,6 +17,7 @@ public static class Globals
 
     public static string AgentsLoadbalancer = "agent-headless.default.svc.cluster.local";
     public static string? bootstrap_node = null;
+    public static bool bootstraped = false;
 
     public static GrpcChannelOptions GRPC_OPTIONS = new GrpcChannelOptions
     {
