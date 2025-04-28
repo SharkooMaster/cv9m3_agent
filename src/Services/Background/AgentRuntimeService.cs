@@ -30,7 +30,7 @@ public class AgentRuntimeService : BackgroundService
                 await AgnetaHandler.SendUsageStats();
             }
 
-            if (Globals._NODE != null && Globals._NODE.successor != null)
+            if (Globals._NODE != null && Globals._NODE.successor != null && Globals.bootstraped)
             {
                 M_Node temp = await NodeService.VerifySuccessor(Globals._NODE);
                 Globals._NODE = temp;

@@ -214,15 +214,16 @@ app.MapGet("/network", async () =>
     return Results.Content(html, "text/html");
 });
 
+PushoverHandler.PushNotification($"Agent:{Globals.ETCD_ID}: Running");
+
+app.Run();
+
 while(!Globals.bootstraped)
 {
     Console.WriteLine($"Awaiting bootstrap node: {Globals.bootstrap_node}");
     await Task.Delay(1000);
 }
 Globals._NODE = await NodeService.JoinNetwork(Globals._NODE, Globals.bootstrap_node);
-PushoverHandler.PushNotification($"Agent:{Globals.ETCD_ID}: Running");
-
-app.Run();
 
 // await AgnetaHandler.Close();
 void ConfigureServices(IServiceCollection services)
