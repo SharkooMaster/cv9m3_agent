@@ -217,6 +217,11 @@ app.MapGet("/network", async () =>
 var temp = async () => {
     try
     {
+        while(!Globals.bootstraped)
+        {
+            Console.WriteLine($"Awaiting bootstrap completion: {Globals.bootstrap_node}");
+            await Task.Delay(1000);
+        }
         Globals._NODE = await NodeService.JoinNetwork(Globals._NODE, Globals.bootstrap_node);
     }
     catch (Exception ex)
