@@ -44,7 +44,6 @@ public static class NodeService
 
         node.successor = successor;
 
-        // 🔥 ADD THIS CHECK IMMEDIATELY AFTER SETTING SUCCESSOR
         try
         {
             Console.WriteLine($"[JoinNetwork] Verifying chosen successor {node.successor.ip}...");
@@ -95,6 +94,7 @@ public static class NodeService
     
     private static async Task<string> S_FindPeerResponsible(ulong target, string _ip)
     {
+        Console.WriteLine("$$$ FindPeerResponsible $$$");
         FindPeerResponsibleService _findPeerResponsible = new FindPeerResponsibleService();
 
         QueryReq req = new QueryReq() { Val = target };
@@ -104,6 +104,7 @@ public static class NodeService
 
     public static async Task<string> FindSuccessor(M_Node node, ulong target)
     {
+        Console.WriteLine("$$$ FindSuccessor $$$");
         if(node.predecessor != null && NodeUtils.inBetween(target, node.predecessor.id, node.id))
         {
             return node.ip;
@@ -121,6 +122,7 @@ public static class NodeService
     
     private static M_Node ClosestPreceedingNode(M_Node node, ulong target)
     {
+        Console.WriteLine("$$$ ClosestPreceedingNode $$$");
         ulong[] fingerTableKeys = node.fingerTable.Keys.ToArray();
         for (int i = Globals.FINGER_TABLE_SIZE - 1; i >= 0; i--)
         {
@@ -134,6 +136,7 @@ public static class NodeService
 
     public static async Task<M_Node> VerifySuccessor(M_Node node)
     {
+        Console.WriteLine("$$$ VERIFY SUCCESSOR $$$");
         GetPredecessorService _getPredecessorService = new GetPredecessorService();
         UpdatePredecessorService _updatePredecessorService = new UpdatePredecessorService();
 

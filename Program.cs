@@ -65,11 +65,14 @@ builder.Services.AddHostedService<AgentRuntimeService>();
 var app = builder.Build();
 
 var lifetime = app.Services.GetRequiredService<IHostApplicationLifetime>();
-lifetime.ApplicationStarted.Register(async () => 
+lifetime.ApplicationStarted.Register(() => 
 {
-    Globals.bootstraped = true;
-    Console.WriteLine("$$$ BOOTSTRAPED $$$");
-    _ = await NodeService.JoinNetwork(Globals._NODE, Globals.bootstrap_node);
+    Task.Run(async () =>
+    {
+        Globals.bootstraped = true;
+        Console.WriteLine("$$$ BOOTSTRAPED $$$");
+        _ = await NodeService.JoinNetwork(Globals._NODE, Globals.bootstrap_node);
+    });
 });
 
 var clmsClientService = app.Services.GetRequiredService<ClmsClientService>();
@@ -113,42 +116,7 @@ app.MapGrpcService<SearchVectorService>();
 app.MapGrpcService<StoreVectorService>();
 
 app.MapGet("/", () =>{ return "Hello world"; });
-app.MapGet("/health", () => 
-{
-    // Only consider healthy when fully joined and connected
-    if (Globals.bootstraped && Globals._NODE != null)
-    {
-        if (Globals._NODE.successor != null)
-        {
-            // Only check the successor connection if we have one different from self
-            if (Globals._NODE.successor.ip != Globals._NODE.ip)
-            {
-                // Don't return unhealthy during verification periods
-                try
-                {
-                    // Check if we can resolve the successor
-                    if (!string.IsNullOrWhiteSpace(Globals._NODE.successor.ip))
-                    {
-                        return Results.Ok("Healthy");
-                    }
-                }
-                catch
-                {
-                    // Don't fail the health check if we can't connect temporarily
-                    return Results.Ok("Joining");
-                }
-            }
-            else
-            {
-                // Self-loop is healthy for first node
-                return Results.Ok("Healthy");
-            }
-        }
-    }
-    
-    // We're still starting up
-    return Results.Ok("Initializing");
-});
+app.MapGet("/health", () => "true");
 
 app.MapGet("/finger_table", () =>
 {
