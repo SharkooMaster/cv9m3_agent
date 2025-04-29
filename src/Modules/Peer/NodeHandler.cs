@@ -115,12 +115,12 @@ public static class NodeService
         }
         else
         {
-            M_Node peer = ClosestPreceedingNode(node, target);
+            M_Node peer = await ClosestPreceedingNode(node, target);
             return await S_FindPeerResponsible(target, peer.ip);
         }
     }
     
-    private static M_Node ClosestPreceedingNode(M_Node node, ulong target)
+    private static async Task<M_Node> ClosestPreceedingNode(M_Node node, ulong target)
     {
         Console.WriteLine("$$$ ClosestPreceedingNode $$$");
         ulong[] fingerTableKeys = node.fingerTable.Keys.ToArray();
