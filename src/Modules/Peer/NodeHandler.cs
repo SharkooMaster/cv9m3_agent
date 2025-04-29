@@ -107,14 +107,25 @@ public static class NodeService
         Console.WriteLine("$$$ FindSuccessor $$$");
         if(node.predecessor != null && NodeUtils.inBetween(target, node.predecessor.id, node.id))
         {
+            Console.WriteLine("$$$ FindSuccessor : first $$$");
             return node.ip;
         }
         else if(node.successor != null && NodeUtils.inBetween(target, node.id, node.successor.id))
         {
+            Console.WriteLine("$$$ FindSuccessor : second $$$");
             return node.successor.ip;
         }
         else
         {
+            Console.WriteLine("$$$ FindSuccessor : third $$$");
+            if(target < node.id)
+            {
+                return await S_FindPeerResponsible(target, node.predecessor.ip);
+            }
+            else
+            {
+                return await S_FindPeerResponsible(target, node.successor.ip);
+            }
             M_Node peer = await ClosestPreceedingNode(node, target);
             return await S_FindPeerResponsible(target, peer.ip);
         }
