@@ -29,11 +29,11 @@ public static class NodeService
 
         if(bootstrap_node == null)
         {
-            await AgnetaHandler.Log(1, "Only node in the network");
             Console.WriteLine("Only node in the network");
             node.successor   = new M_Node() { id = node.id, ip = node.ip };
             node.predecessor = new M_Node() { id = node.id, ip = node.ip };
 
+            Globals._NODE = node;
             return node;
         }
 
