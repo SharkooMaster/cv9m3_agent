@@ -67,9 +67,9 @@ var app = builder.Build();
 var lifetime = app.Services.GetRequiredService<IHostApplicationLifetime>();
 lifetime.ApplicationStarted.Register(async () => 
 {
-    _ = await NodeService.JoinNetwork(Globals._NODE, Globals.bootstrap_node);
     Globals.bootstraped = true;
     Console.WriteLine("$$$ BOOTSTRAPED $$$");
+    _ = await NodeService.JoinNetwork(Globals._NODE, Globals.bootstrap_node);
 });
 
 var clmsClientService = app.Services.GetRequiredService<ClmsClientService>();
