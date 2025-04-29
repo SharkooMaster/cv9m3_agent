@@ -64,6 +64,14 @@ builder.Services.AddHostedService<AgentRuntimeService>();
 
 var app = builder.Build();
 
+var lifetime = app.Services.GetRequiredService<IHostApplicationLifetime>();
+lifetime.ApplicationStarted.Register(async () => 
+{
+    _ = await NodeService.JoinNetwork(Globals._NODE, Globals.bootstrap_node);
+    Globals.bootstraped = true;
+    Console.WriteLine("$$$ BOOTSTRAPED $$$");
+});
+
 var clmsClientService = app.Services.GetRequiredService<ClmsClientService>();
 ClmsHandler.SetClmsInstance(clmsClientService);
 

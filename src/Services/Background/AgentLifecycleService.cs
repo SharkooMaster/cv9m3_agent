@@ -121,14 +121,12 @@ public class AgentLifeCycleService : IHostedService
                 {
                     Console.WriteLine($"Unexpected error: {ex.GetType().Name}: {ex.Message}");
                 }
-                _ = await NodeService.JoinNetwork(Globals._NODE, Globals.bootstrap_node);
             }
         }
         catch(Exception ex)
         {
             Console.WriteLine($"ERROR::AgentLifeCycleService: {ex.Data} : {ex.Message}");
         }
-        Globals.bootstraped = true;
     }
 
     public Task StopAsync(CancellationToken cancellationToken)
