@@ -69,6 +69,9 @@ public class AgentRuntimeService : BackgroundService
                 Console.WriteLine($"[AgentRuntimeService TICK ERROR]: {ex}");
             }
 
+            await BackgrounfServiceManager.RunRoutineMethods();
+            await BackgrounfServiceManager.RunFireMethods();
+
             await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken);
         }
 

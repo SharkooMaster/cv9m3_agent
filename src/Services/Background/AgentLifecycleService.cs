@@ -57,70 +57,54 @@ public class AgentLifeCycleService : IHostedService
         // Getting target neighbor
         try
         {
-            if(!AgnetaHandler.disabled)
+            try
             {
-                var nearestNeighbour = await AgnetaHandler.GetNeighbour();
-                if(nearestNeighbour.NodeID != "none")
-                {
-                    ServiceData neighbourData = JsonConvert.DeserializeObject<ServiceData>(nearestNeighbour.Data);
-                    if(neighbourData.Host != Globals._NODE.ip)
-                    {
-                        Console.WriteLine("found peer");
-                        Globals.bootstrap_node = neighbourData.Host;
-                    }
-                }
-            }
-            else
-            {
-                try
-                {
-                    var addresses = await Dns.GetHostAddressesAsync("agent-headless.cross-test.svc.cluster.local");
-                    Console.WriteLine($"Resolved {addresses.Length} addresses: {string.Join<IPAddress>(", ", addresses)}");
+                var addresses = await Dns.GetHostAddressesAsync("agent-headless.cross-test.svc.cluster.local");
+                Console.WriteLine($"Resolved {addresses.Length} addresses: {string.Join<IPAddress>(", ", addresses)}");
 
-                    if (addresses == null || addresses.Length == 0)
+                if (addresses == null || addresses.Length == 0)
+                {
+                    Console.WriteLine("DNS lookup succeeded, but no agents found.");
+                    // No peers at all, continue standalone
+                }
+                else
+                {
+                    var myIp = Environment.GetEnvironmentVariable("MY_POD_IP");
+                    Console.WriteLine($"pod ip: {myIp}");
+
+                    var peerAddresses = addresses.Where(ip => ip.ToString() != myIp).ToList();
+
+                    if (peerAddresses.Count == 0)
                     {
-                        Console.WriteLine("DNS lookup succeeded, but no agents found.");
-                        // No peers at all, continue standalone
+                        Console.WriteLine("No other agents available (excluding self). Starting standalone.");
                     }
                     else
                     {
-                        var myIp = Environment.GetEnvironmentVariable("MY_POD_IP");
-                        Console.WriteLine($"pod ip: {myIp}");
-
-                        var peerAddresses = addresses.Where(ip => ip.ToString() != myIp).ToList();
-
-                        if (peerAddresses.Count == 0)
+                        Console.WriteLine($"Found {peerAddresses.Count} other agents. Checking reachability...");
+                        foreach (var ip in peerAddresses.OrderBy(_ => Guid.NewGuid())) // randomize order
                         {
-                            Console.WriteLine("No other agents available (excluding self). Starting standalone.");
+                            if (await IsAgentReachable(ip.ToString()))
+                            {
+                                Console.WriteLine($"Selected reachable peer: {ip}");
+                                Globals.bootstrap_node = ip.ToString();
+                                break;
+                            }
                         }
-                        else
-                        {
-                            Console.WriteLine($"Found {peerAddresses.Count} other agents. Checking reachability...");
-                            foreach (var ip in peerAddresses.OrderBy(_ => Guid.NewGuid())) // randomize order
-                            {
-                                if (await IsAgentReachable(ip.ToString()))
-                                {
-                                    Console.WriteLine($"Selected reachable peer: {ip}");
-                                    Globals.bootstrap_node = ip.ToString();
-                                    break;
-                                }
-                            }
 
-                            if (Globals.bootstrap_node == null)
-                            {
-                                Console.WriteLine("No reachable agents found. Starting standalone.");
-                            }
+                        if (Globals.bootstrap_node == null)
+                        {
+                            Console.WriteLine("No reachable agents found. Starting standalone.");
                         }
                     }
                 }
-                catch (SocketException se)
-                {
-                    Console.WriteLine($"DNS lookup failed ({se.SocketErrorCode}): {se.Message}");
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"Unexpected error: {ex.GetType().Name}: {ex.Message}");
-                }
+            }
+            catch (SocketException se)
+            {
+                Console.WriteLine($"DNS lookup failed ({se.SocketErrorCode}): {se.Message}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Unexpected error: {ex.GetType().Name}: {ex.Message}");
             }
         }
         catch(Exception ex)
