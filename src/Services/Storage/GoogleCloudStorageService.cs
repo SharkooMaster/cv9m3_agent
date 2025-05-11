@@ -6,6 +6,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Threading.Tasks;
 using Agent.Interfaces.Infs;
+using Agent.Utils.Globals;
 using Google.Cloud.Storage.V1;
 using Npgsql;
 
@@ -48,7 +49,7 @@ public class GcsSqlStorageService : INetworkFileStorageService
 
     public async Task StoreVector(string bucket_Id, M_Data data)
     {
-        await StoreChunkAsync(data.vector, data.chunk, bucket_Id);
+        await StoreChunkAsync(data.vector, bucket_Id);
     }
 
     public static string GenerateChunkKey(float[] vector)
@@ -70,14 +71,14 @@ public class GcsSqlStorageService : INetworkFileStorageService
     }
 
 
-    public async Task<bool> StoreChunkAsync(float[] hash, byte[] data, string bucketID)
+    public async Task<bool> StoreChunkAsync(float[] hash, string bucketID)
     {
         try
         {
-            string objectName = $"chunks/{GenerateChunkKey(hash)}";
+             string objectName = $"chunks/{GenerateChunkKey(hash)}";
 
             // Check if chunk already exists in GCS
-            var existingObjects = _storageClient.ListObjects(_bucketName, objectName);
+            /* var existingObjects = _storageClient.ListObjects(_bucketName, objectName);
             foreach (var obj in existingObjects)
             {
                 if (obj.Name == objectName)
@@ -89,11 +90,11 @@ public class GcsSqlStorageService : INetworkFileStorageService
 
             // Upload chunk
             using var memoryStream = new MemoryStream(data);
-            await _storageClient.UploadObjectAsync(_bucketName, objectName, null, memoryStream);
+            await _storageClient.UploadObjectAsync(_bucketName, objectName, null, memoryStream); */
             // Console.WriteLine($"Uploaded chunk {hash} to GCS.");
 
             // Insert metadata into PostgreSQL
-            await InsertChunkMetadataAsync(hash, objectName, data.Length, bucketID);
+            await InsertChunkMetadataAsync(hash, objectName, Globals.chunkSize, bucketID);
 
             return true;
         }

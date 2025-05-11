@@ -15,6 +15,8 @@ public static class Globals
     public static string ETCD_VALUE = "";
     public static long ETCD_LEASE_ID = -1;
 
+    public static int chunkSize = 5120;
+
     public static string AgentsLoadbalancer = "agent-headless.default.svc.cluster.local";
     public static string? bootstrap_node = null;
     public static bool bootstraped = false;

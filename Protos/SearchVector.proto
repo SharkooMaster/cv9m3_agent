@@ -19,6 +19,7 @@ message SearchVector_Req
     float minimum_similarity = 4;
     int32 k = 5;
     string headRouteID = 6;
+    int32 index = 7;
 }
 
 message SearchVectorObject
@@ -26,6 +27,7 @@ message SearchVectorObject
     float similarity_rate = 1;
     bytes chunk = 2;
     uint64 id = 3;
+    int32 index = 4;
 }
 
 message SearchVector_Results
@@ -37,4 +39,5 @@ message SearchVector_Result
 {
     repeated SearchVectorObject results = 1;
     string targetIp = 2;
+    bool save = 3;
 }

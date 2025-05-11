@@ -212,7 +212,7 @@ public static class NodeService
         return node;
     }
 
-    public static async Task<(List<M_SearchResult>, bool)> SearchAll(M_Node node, string _bitstring, float[] _vector, float _minimum_similarity, int _k, SearchVector_Req _req, ServerCallContext context)
+    public static async Task<(List<M_SearchResult>, bool, bool)> SearchAll(M_Node node, string _bitstring, float[] _vector, float _minimum_similarity, int _k, SearchVector_Req _req, ServerCallContext context)
     {
         //Console.Writeline("Searching");
         bool is_inRange = Agent.Utils.Misc.Misc.IsKeyInRange(node.id, Globals._NODE.successor.id, _bitstring);
@@ -221,7 +221,7 @@ public static class NodeService
         {
             if(node.Buckets.ContainsKey(_bitstring))
             {
-                return (await node.Buckets[_bitstring].SearchData(_vector, _minimum_similarity, _k), false);
+                return (await node.Buckets[_bitstring].SearchData(_vector, _minimum_similarity, _k), false, false);
             }
             else
             {
@@ -234,18 +234,35 @@ public static class NodeService
                     }
                     else
                     {
-                        return (await node.Buckets[_bitstring].SearchData(_vector, _minimum_similarity, _k), false);
+                        return (await node.Buckets[_bitstring].SearchData(_vector, _minimum_similarity, _k), false, false);
                     }
                 }
+                else
+                {
+                    // Store and return mock result
+                    ulong _id = await StoreInBucket(Globals._NODE, _bitstring, new M_Data(){
+                        vector = _vector,
+                    }, "");
+                    M_SearchResult res = new M_SearchResult()
+                    {
+                        chunk = null,
+                        similarity = 1,
+                        id = _id
+                    };
+
+                    var _ret = new List<M_SearchResult>();
+                    _ret.Add(res);
+                    return (_ret, false, true);
+                }
             }
-            return (new List<M_SearchResult>(), false);
+            return (new List<M_SearchResult>(), false, false);
         }
         else
         {
             Console.WriteLine("Out of range");
             try
             {
-                return (new List<M_SearchResult>(), true);
+                return (new List<M_SearchResult>(), true, false);
             }
             catch (System.Exception)
             {

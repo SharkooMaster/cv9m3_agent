@@ -24,7 +24,7 @@ public class SearchVectorService : SearchVector.SearchVectorBase
         ParallelOptions options = new ();
         await Parallel.ForAsync(0, request.Reqs.Count, options, async (i, ct) => 
         {
-            (List<M_SearchResult>, bool) query_res = await NodeService.SearchAll(
+            (List<M_SearchResult>, bool, bool) query_res = await NodeService.SearchAll(
                 Globals._NODE,
                 request.Reqs[i].Bitstring,
                 request.Reqs[i].Vector.ToArray(),
@@ -38,20 +38,22 @@ public class SearchVectorService : SearchVector.SearchVectorBase
             {
                 // Route to proper agent
                 outgoingBatch.Reqs.Add(request.Reqs[i]);
-                continue;
             }
-
-            SearchVector_Result res = new SearchVector_Result();
-            foreach (var item in query_res.Item1)
+            else
             {
-                res.Results.Add(new SearchVectorObject() {
-                    SimilarityRate = item.similarity,
-                    Chunk = ByteString.CopyFrom(item.chunk),
-                    Id = Convert.ToUInt64(request.Reqs[i].Bitstring, 2)
-                });
+                SearchVector_Result res = new SearchVector_Result();
+                foreach (var item in query_res.Item1)
+                {
+                    res.Results.Add(new SearchVectorObject() {
+                        SimilarityRate = item.similarity,
+                        Chunk = ByteString.CopyFrom(item.chunk),
+                        Id = Convert.ToUInt64(request.Reqs[i].Bitstring, 2),
+                        Index = request.Reqs[i].Index
+                    });
+                }
+                res.TargetIp = Misc.GetLocalIPAddress();
+                ret.Results.Add(res);
             }
-            res.TargetIp = Misc.GetLocalIPAddress();
-            ret.Results.Add(res);
         });
         sw.Stop();
         Console.WriteLine($"time to search: {sw.ElapsedMilliseconds}ms");
