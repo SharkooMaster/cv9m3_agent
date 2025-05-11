@@ -21,7 +21,8 @@ public class SearchVectorService : SearchVector.SearchVectorBase
 
         Stopwatch sw = new Stopwatch();
         sw.Start();
-        for (int i = 0; i < request.Reqs.Count; i++)
+        ParallelOptions options = new ();
+        await Parallel.ForAsync(0, request.Reqs.Count, options, async (i, ct) => 
         {
             (List<M_SearchResult>, bool) query_res = await NodeService.SearchAll(
                 Globals._NODE,
@@ -51,7 +52,7 @@ public class SearchVectorService : SearchVector.SearchVectorBase
             }
             res.TargetIp = Misc.GetLocalIPAddress();
             ret.Results.Add(res);
-        }
+        });
         sw.Stop();
         Console.WriteLine($"time to search: {sw.ElapsedMilliseconds}ms");
 
