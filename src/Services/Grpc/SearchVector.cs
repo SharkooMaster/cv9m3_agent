@@ -1,4 +1,6 @@
 
+using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Text.Json;
 using Agent.Modules.Agneta;
 using Agent.Modules.Peer;
@@ -10,41 +12,59 @@ using Grpc.Net.Client;
 
 public class SearchVectorService : SearchVector.SearchVectorBase
 {
-    public override async Task<SearchVector_Result> Get(SearchVector_Req request, ServerCallContext context)
+    public override async Task<SearchVector_Results> Get(SearchVector_Reqs request, ServerCallContext context)
     {
         //Console.WriteLine("Request recieved");
-        (List<M_SearchResult>, bool) query_res = await NodeService.SearchAll(
-            Globals._NODE,
-            request.Bitstring,
-            request.Vector.ToArray(),
-            request.MinimumSimilarity,
-            request.K,
-            request,
-            context
-        );
-        SearchVector_Result res = new SearchVector_Result();
-        if(query_res.Item2)
-        {
-            res.Forward = true;
-            res.TargetIp = Globals._NODE.successor.ip;
-        }
-        //Console.WriteLine($"query_res length: {query_res.Count}");
+        SearchVector_Results ret = new SearchVector_Results();
 
-        foreach (var item in query_res.Item1)
-        {
-            res.Results.Add(new SearchVectorObject() {
-                SimilarityRate = item.similarity,
-                Chunk = ByteString.CopyFrom(item.chunk),
-                Id = Convert.ToUInt64(request.Bitstring, 2)
-            });
-        }
-        res.TargetIp = Misc.GetLocalIPAddress();
-        //Console.WriteLine($"res length: {res.Results.Count}");
+        SearchVector_Reqs outgoingBatch = new SearchVector_Reqs();
 
-        return res;
+        Stopwatch sw = new Stopwatch();
+        sw.Start();
+        for (int i = 0; i < request.Reqs.Count; i++)
+        {
+            (List<M_SearchResult>, bool) query_res = await NodeService.SearchAll(
+                Globals._NODE,
+                request.Reqs[i].Bitstring,
+                request.Reqs[i].Vector.ToArray(),
+                request.Reqs[i].MinimumSimilarity,
+                request.Reqs[i].K,
+                request.Reqs[i],
+                context
+            );
+
+            if(query_res.Item2 == true)
+            {
+                // Route to proper agent
+                outgoingBatch.Reqs.Add(request.Reqs[i]);
+                continue;
+            }
+
+            SearchVector_Result res = new SearchVector_Result();
+            foreach (var item in query_res.Item1)
+            {
+                res.Results.Add(new SearchVectorObject() {
+                    SimilarityRate = item.similarity,
+                    Chunk = ByteString.CopyFrom(item.chunk),
+                    Id = Convert.ToUInt64(request.Reqs[i].Bitstring, 2)
+                });
+            }
+            res.TargetIp = Misc.GetLocalIPAddress();
+            ret.Results.Add(res);
+        }
+        sw.Stop();
+        Console.WriteLine($"time to search: {sw.ElapsedMilliseconds}ms");
+
+        if(outgoingBatch.Reqs.Count > 0)
+        {
+            SearchVector_Results outgoingRes = await ClientGet(outgoingBatch, Globals._NODE.successor.ip);
+            ret.Results.AddRange(outgoingRes.Results);
+        }
+
+        return ret;
     }
 
-    public async Task<SearchVector_Result> ClientGet(SearchVector_Req req, string _ip, CancellationToken ct = default)
+    public async Task<SearchVector_Results> ClientGet(SearchVector_Reqs req, string _ip, CancellationToken ct = default)
     {
         try
         {

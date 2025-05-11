@@ -2,7 +2,12 @@ syntax = "proto3";
 
 service SearchVector
 {
-    rpc Get (SearchVector_Req) returns (SearchVector_Result);
+    rpc Get (SearchVector_Reqs) returns (SearchVector_Results);
+}
+
+message SearchVector_Reqs
+{
+    repeated SearchVector_Req reqs = 1;
 }
 
 message SearchVector_Req
@@ -23,9 +28,13 @@ message SearchVectorObject
     uint64 id = 3;
 }
 
+message SearchVector_Results
+{
+    repeated SearchVector_Result results = 1;
+}
+
 message SearchVector_Result
 {
     repeated SearchVectorObject results = 1;
     string targetIp = 2;
-    bool forward = 3;
 }
