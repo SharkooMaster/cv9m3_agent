@@ -242,6 +242,7 @@ public static class NodeService
                     // Store and return mock result
                     ulong _id = await StoreInBucket(Globals._NODE, _bitstring, new M_Data(){
                         vector = _vector,
+                        chunk = new byte[]{ 0x00, 0x0A}
                     }, "");
                     M_SearchResult res = new M_SearchResult()
                     {
