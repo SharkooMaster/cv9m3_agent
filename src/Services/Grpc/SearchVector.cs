@@ -44,25 +44,15 @@ public class SearchVectorService : SearchVector.SearchVectorBase
                 SearchVector_Result res = new SearchVector_Result();
                 foreach (var item in query_res.Item1)
                 {
-                    if(!query_res.Item3)
-                    {
-                        res.Results.Add(new SearchVectorObject() {
-                            SimilarityRate = item.similarity,
-                            Chunk = ByteString.CopyFrom(item.chunk),
-                            Id = Convert.ToUInt64(request.Reqs[i].Bitstring, 2),
-                            Index = request.Reqs[i].Index
-                        });
-                    }
-                    else
-                    {
-                        res.Results.Add(new SearchVectorObject() {
-                            SimilarityRate = item.similarity,
-                            Id = Convert.ToUInt64(request.Reqs[i].Bitstring, 2),
-                            Index = request.Reqs[i].Index
-                        });
-                    }
+                    res.Results.Add(new SearchVectorObject() {
+                        SimilarityRate = item.similarity,
+                        Chunk = ByteString.CopyFrom(item.chunk),
+                        Id = Convert.ToUInt64(request.Reqs[i].Bitstring, 2),
+                        Index = request.Reqs[i].Index
+                    });
                 }
                 res.TargetIp = Misc.GetLocalIPAddress();
+                res.Save = query_res.Item3;
                 ret.Results.Add(res);
             }
         });
