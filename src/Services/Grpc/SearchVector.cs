@@ -62,7 +62,7 @@ public class SearchVectorService : SearchVector.SearchVectorBase
             }
             catch (System.Exception ex)
             {
-                Console.WriteLine($"ERROR: {ex}");
+            Console.WriteLine($"ERROR:SearchVector(Get):: {ex.Message} ; {ex.Data}");
                 throw;
             }
         });

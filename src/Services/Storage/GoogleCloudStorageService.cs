@@ -35,6 +35,14 @@ public class GcsSqlStorageService : INetworkFileStorageService
 
     public async Task<M_Bucket> ReadBucket(string bucket_Id)
     {
+        try
+        {
+        }
+        catch (System.Exception ex)
+        {
+            Console.WriteLine($"ERROR:ReadBucket:: {ex.Message} ; {ex.Data}");
+            throw;
+        }
         M_Bucket toReturn = new M_Bucket(bucket_Id);
         List<(float[] vector, string storageGuid, int _id)> vectors = await GetVectorsByBucketAsync(bucket_Id);
 
