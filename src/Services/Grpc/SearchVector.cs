@@ -16,8 +16,10 @@ public class SearchVectorService : SearchVector.SearchVectorBase
     {
         //Console.WriteLine("Request recieved");
         SearchVector_Results ret = new SearchVector_Results();
-
         SearchVector_Reqs outgoingBatch = new SearchVector_Reqs();
+
+        ConcurrentBag<SearchVector_Result> resultBag = new();
+        ConcurrentBag<SearchVector_Req> outgoingReqs = new();
 
         Stopwatch sw = new Stopwatch();
         sw.Start();
@@ -37,7 +39,7 @@ public class SearchVectorService : SearchVector.SearchVectorBase
             if(query_res.Item2 == true)
             {
                 // Route to proper agent
-                outgoingBatch.Reqs.Add(request.Reqs[i]);
+                outgoingReqs.Add(request.Reqs[i]);
             }
             else
             {
@@ -53,9 +55,11 @@ public class SearchVectorService : SearchVector.SearchVectorBase
                 }
                 res.TargetIp = Misc.GetLocalIPAddress();
                 res.Save = query_res.Item3;
-                ret.Results.Add(res);
+                resultBag.Add(res);
             }
         });
+        ret.Results.AddRange(resultBag);
+        outgoingBatch.Reqs.AddRange(outgoingReqs);
         sw.Stop();
         Console.WriteLine($"time to search: {sw.ElapsedMilliseconds}ms");
 
