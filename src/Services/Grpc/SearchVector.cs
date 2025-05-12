@@ -24,24 +24,24 @@ public class SearchVectorService : SearchVector.SearchVectorBase
         Stopwatch sw = new Stopwatch();
         sw.Start();
         ParallelOptions options = new ();
-        await Parallel.ForAsync(0, request.Reqs.Count, options, async (i, ct) => 
+        var searchTasks = request.Reqs.Select(async req =>
         {
             try
             {
                 (List<M_SearchResult>, bool, bool) query_res = await NodeService.SearchAll(
                     Globals._NODE,
-                    request.Reqs[i].Bitstring,
-                    request.Reqs[i].Vector.ToArray(),
-                    request.Reqs[i].MinimumSimilarity,
-                    request.Reqs[i].K,
-                    request.Reqs[i],
+                    req.Bitstring,
+                    req.Vector.ToArray(),
+                    req.MinimumSimilarity,
+                    req.K,
+                    req,
                     context
                 );
 
                 if(query_res.Item2 == true)
                 {
                     // Route to proper agent
-                    outgoingReqs.Add(request.Reqs[i]);
+                    outgoingReqs.Add(req);
                 }
                 else
                 {
@@ -51,8 +51,8 @@ public class SearchVectorService : SearchVector.SearchVectorBase
                         res.Results.Add(new SearchVectorObject() {
                             SimilarityRate = item.similarity,
                             Chunk = ByteString.CopyFrom(item.chunk),
-                            Id = Convert.ToUInt64(request.Reqs[i].Bitstring, 2),
-                            Index = request.Reqs[i].Index
+                            Id = Convert.ToUInt64(req.Bitstring, 2),
+                            Index = req.Index
                         });
                     }
                     res.TargetIp = Misc.GetLocalIPAddress();
@@ -62,10 +62,11 @@ public class SearchVectorService : SearchVector.SearchVectorBase
             }
             catch (System.Exception ex)
             {
-            Console.WriteLine($"ERROR:SearchVector(Get):: {ex.Message} ; {ex.Data}");
+                Console.WriteLine($"ERROR:SearchVector(Get):: {ex.Message} ; {ex.Data}");
                 throw;
             }
         });
+        await Task.WhenAll(searchTasks);
         ret.Results.AddRange(resultBag);
         outgoingBatch.Reqs.AddRange(outgoingReqs);
         sw.Stop();
