@@ -24,7 +24,7 @@ public class M_Bucket
 
     public async Task InsertData(M_Data _data, ulong _id){
         _data.id = _id;
-        // data.Add(_data);
+        data.Add(_data);
         // Console.Writeline("Storing on NFS");
         _ = NetworkFileStorageHandler.StoreVector(ID, _data);
         // Console.Writeline("Done");
