@@ -26,36 +26,44 @@ public class SearchVectorService : SearchVector.SearchVectorBase
         ParallelOptions options = new ();
         await Parallel.ForAsync(0, request.Reqs.Count, options, async (i, ct) => 
         {
-            (List<M_SearchResult>, bool, bool) query_res = await NodeService.SearchAll(
-                Globals._NODE,
-                request.Reqs[i].Bitstring,
-                request.Reqs[i].Vector.ToArray(),
-                request.Reqs[i].MinimumSimilarity,
-                request.Reqs[i].K,
-                request.Reqs[i],
-                context
-            );
+            try
+            {
+                (List<M_SearchResult>, bool, bool) query_res = await NodeService.SearchAll(
+                    Globals._NODE,
+                    request.Reqs[i].Bitstring,
+                    request.Reqs[i].Vector.ToArray(),
+                    request.Reqs[i].MinimumSimilarity,
+                    request.Reqs[i].K,
+                    request.Reqs[i],
+                    context
+                );
 
-            if(query_res.Item2 == true)
-            {
-                // Route to proper agent
-                outgoingReqs.Add(request.Reqs[i]);
-            }
-            else
-            {
-                SearchVector_Result res = new SearchVector_Result();
-                foreach (var item in query_res.Item1)
+                if(query_res.Item2 == true)
                 {
-                    res.Results.Add(new SearchVectorObject() {
-                        SimilarityRate = item.similarity,
-                        Chunk = ByteString.CopyFrom(item.chunk),
-                        Id = Convert.ToUInt64(request.Reqs[i].Bitstring, 2),
-                        Index = request.Reqs[i].Index
-                    });
+                    // Route to proper agent
+                    outgoingReqs.Add(request.Reqs[i]);
                 }
-                res.TargetIp = Misc.GetLocalIPAddress();
-                res.Save = query_res.Item3;
-                resultBag.Add(res);
+                else
+                {
+                    SearchVector_Result res = new SearchVector_Result();
+                    foreach (var item in query_res.Item1)
+                    {
+                        res.Results.Add(new SearchVectorObject() {
+                            SimilarityRate = item.similarity,
+                            Chunk = ByteString.CopyFrom(item.chunk),
+                            Id = Convert.ToUInt64(request.Reqs[i].Bitstring, 2),
+                            Index = request.Reqs[i].Index
+                        });
+                    }
+                    res.TargetIp = Misc.GetLocalIPAddress();
+                    res.Save = query_res.Item3;
+                    resultBag.Add(res);
+                }
+            }
+            catch (System.Exception ex)
+            {
+                Console.WriteLine($"ERROR: {ex}");
+                throw;
             }
         });
         ret.Results.AddRange(resultBag);
