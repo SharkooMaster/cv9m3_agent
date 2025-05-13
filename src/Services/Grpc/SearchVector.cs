@@ -48,6 +48,10 @@ public class SearchVectorService : SearchVector.SearchVectorBase
                     SearchVector_Result res = new SearchVector_Result();
                     foreach (var item in query_res.Item1)
                     {
+                        if(item == null){ Console.WriteLine("Item is null"); }
+                        if(req == null){ Console.WriteLine("req is null"); }
+                        if(res == null){ Console.WriteLine("req is null"); }
+
                         res.Results.Add(new SearchVectorObject() {
                             SimilarityRate = item.similarity,
                             Chunk = ByteString.CopyFrom(item.chunk),
