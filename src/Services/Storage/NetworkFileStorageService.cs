@@ -12,12 +12,13 @@ namespace Agent.Services.Storage
             _nfs_path = nfs_path;
         }
 
-        public async Task StoreVector(string bucket_Id, M_Data data)
+        public async Task<(int,int)> StoreVector(string bucket_Id, M_Data data)
         {
             if(string.IsNullOrEmpty(bucket_Id)){ throw new ArgumentNullException(nameof(bucket_Id)); }
 
             string filePath = Path.Combine(_nfs_path, $"{bucket_Id}.tpdf");
             await File.AppendAllTextAsync(filePath, $"{data.ToJson()}\n");
+            return (0,0);
         }
 
         public async Task<M_Bucket> ReadBucket(string bucket_Id)

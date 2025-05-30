@@ -22,11 +22,11 @@ public class M_Bucket
         return to_return;
     }
 
-    public async Task InsertData(M_Data _data, ulong _id){
+    public async Task<(ulong, ulong)> InsertData(M_Data _data, ulong _id){
         _data.id = _id;
         data.Add(_data);
         // Console.Writeline("Storing on NFS");
-        _ = NetworkFileStorageHandler.StoreVector(ID, _data);
+        return ((ulong,ulong))(await NetworkFileStorageHandler.StoreVector(ID, _data));
         // Console.Writeline("Done");
     }
     

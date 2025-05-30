@@ -14,7 +14,8 @@ public class StoreVectorService : StoreVector.StoreVectorBase
         M_Data _data = new M_Data();
         _data.vector = request.Vector.ToArray();
         _data.chunk = request.Chunk.ToArray();
-        ulong _id = await NodeService.StoreInBucket(Globals._NODE, request.Bitstring, _data, request.HeadRouteID);
+        // ulong _id = await NodeService.StoreInBucket(Globals._NODE, request.Bitstring, _data, request.HeadRouteID);
+        (ulong _id, ulong _index) = await NodeService.StoreInBucket(Globals._NODE, request.Bitstring, _data, request.HeadRouteID);
         return new StoreVector_Res() { Id = _id };
     }
 }

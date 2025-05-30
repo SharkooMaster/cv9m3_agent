@@ -37,27 +37,28 @@ public class GcsSqlStorageService : INetworkFileStorageService
     {
         try
         {
+            M_Bucket toReturn = new M_Bucket(bucket_Id);
+            List<(float[] vector, string storageGuid, long _id)> vectors = await GetVectorsByBucketAsync(bucket_Id);
+
+            foreach ((float[], string, int) vec in vectors)
+            {
+                byte[] _chunk = await GetChunkAsync(vec.Item2);
+                toReturn.data.Add(new M_Data(){ vector = vec.Item1, chunk = _chunk, id = (ulong)vec.Item3});
+            }
+
+            return toReturn;
         }
         catch (System.Exception ex)
         {
             Console.WriteLine($"ERROR:ReadBucket:: {ex.Message} ; {ex.Data}");
             throw;
         }
-        M_Bucket toReturn = new M_Bucket(bucket_Id);
-        List<(float[] vector, string storageGuid, int _id)> vectors = await GetVectorsByBucketAsync(bucket_Id);
-
-        foreach ((float[], string, int) vec in vectors)
-        {
-            byte[] _chunk = await GetChunkAsync(vec.Item2);
-            toReturn.data.Add(new M_Data(){ vector = vec.Item1, chunk = _chunk, id = (ulong)vec.Item3});
-        }
-
-        return toReturn;
     }
 
-    public async Task StoreVector(string bucket_Id, M_Data data)
+    public async Task<(int,int)> StoreVector(string bucket_Id, M_Data data)
     {
-        await StoreChunkAsync(data.vector, bucket_Id);
+        (bool a, int b, int c) = await StoreChunkAsync(data.vector, bucket_Id);
+        return (b,c);
     }
 
     public static string GenerateChunkKey(float[] vector)
@@ -79,7 +80,7 @@ public class GcsSqlStorageService : INetworkFileStorageService
     }
 
 
-    public async Task<bool> StoreChunkAsync(float[] hash, string bucketID)
+    public async Task<(bool, int, int)> StoreChunkAsync(float[] hash, string bucketID)
     {
         try
         {
@@ -102,18 +103,18 @@ public class GcsSqlStorageService : INetworkFileStorageService
             // Console.WriteLine($"Uploaded chunk {hash} to GCS.");
 
             // Insert metadata into PostgreSQL
-            await InsertChunkMetadataAsync(hash, objectName, Globals.chunkSize, bucketID);
+            (int bucket_id, int bucket_index) = await InsertChunkMetadataAsync(hash, objectName, Globals.chunkSize, bucketID);
 
-            return true;
+            return (true, bucket_id, bucket_index);
         }
         catch (Exception ex)
         {
             Console.WriteLine($"[Error] StoreChunkAsync failed: {ex.Message}");
-            return false;
+            return (false, -1, -1);
         }
     }
 
-    private async Task InsertChunkMetadataAsync(float[] vector, string storagePath, int size, string bucketName)
+    private async Task<(int,int)> InsertChunkMetadataAsync(float[] vector, string storagePath, int size, string bucketName)
     {
         await using var conn = new NpgsqlConnection(_postgresConnectionString);
         await conn.OpenAsync();
@@ -122,8 +123,8 @@ public class GcsSqlStorageService : INetworkFileStorageService
 
         // Step 1: Check if bucket exists
         var checkBucketCmd = new NpgsqlCommand(@"
-        SELECT id FROM bucket_keys WHERE bucket_name = @bucketName LIMIT 1
-    ", conn);
+            SELECT id FROM bucket_keys WHERE bucket_name = @bucketName LIMIT 1
+        ", conn);
 
         checkBucketCmd.Parameters.AddWithValue("@bucketName", bucketName);
         var result = await checkBucketCmd.ExecuteScalarAsync();
@@ -136,38 +137,52 @@ public class GcsSqlStorageService : INetworkFileStorageService
         {
             // Step 2: Insert bucket if it doesn't exist
             var insertBucketCmd = new NpgsqlCommand(@"
-            INSERT INTO bucket_keys (bucket_name, usage_count)
-            VALUES (@bucketName, 0)
-            RETURNING id
-        ", conn);
+              INSERT INTO bucket_keys (bucket_name, usage_count, next_index)
+              VALUES (@bucketName, 0, 1)
+              RETURNING id
+            ", conn);
 
             insertBucketCmd.Parameters.AddWithValue("@bucketName", bucketName);
             bucketId = (int)(await insertBucketCmd.ExecuteScalarAsync());
         }
 
         // Step 3: Insert into vectors table
+        var getNextIndexCmd = new NpgsqlCommand(@"
+              UPDATE bucket_keys
+              SET next_index = next_index + 1
+              WHERE id = @bucketId
+              RETURNING next_index - 1 AS bucket_index
+        ", conn);
+        getNextIndexCmd.Parameters.AddWithValue("@bucketId", bucketId);
+
+        int bucketIndex = (int)(await getNextIndexCmd.ExecuteScalarAsync());
+
+        // Step 4: Insert into vectors table
         var cmd = new NpgsqlCommand(@"
-        INSERT INTO vectors (vector, storage_guid, size, created_at, bucket_id)
-        VALUES (@vector, @storagePath, @size, NOW(), @bucketId)
-    ", conn);
+          INSERT INTO vectors (vector, storage_guid, size, created_at, bucket_id, bucket_index)
+          VALUES (@vector, @storagePath, @size, NOW(), @bucketId, @bucketIndex)
+        ", conn);
 
         cmd.Parameters.AddWithValue("@vector", vector);
         cmd.Parameters.AddWithValue("@storagePath", storagePath);
         cmd.Parameters.AddWithValue("@size", size);
         cmd.Parameters.AddWithValue("@bucketId", bucketId);
+        cmd.Parameters.AddWithValue("@bucketIndex", bucketIndex);
 
         await cmd.ExecuteNonQueryAsync();
+
+        return (bucketId, bucketIndex);
     }
 
-    public async Task<List<(float[] vector, string storageGuid, int _id)>> GetVectorsByBucketAsync(string bucketName)
+    public async Task<List<(float[] vector, string storageGuid, long _id)>> GetVectorsByBucketAsync(string bucketName)
     {
-        var results = new List<(float[], string, int)>();
+        var results = new List<(float[], string, long)>();
 
         await using var conn = new NpgsqlConnection(_postgresConnectionString);
         await conn.OpenAsync();
 
         var cmd = new NpgsqlCommand(@"
-            SELECT v.vector, v.storage_guid, v.id
+            SELECT v.vector, v.storage_guid, v.bucket_index
             FROM vectors v
             INNER JOIN bucket_keys b ON v.bucket_id = b.id
             WHERE b.bucket_name = @bucketName;
@@ -180,9 +195,9 @@ public class GcsSqlStorageService : INetworkFileStorageService
         {
             var vector = reader.GetFieldValue<float[]>(0);
             var storageGuid = reader.GetString(1);
-            var id = reader.GetInt32(2);
+            var bucketIndex = reader.GetInt32(2);
 
-            results.Add((vector, storageGuid, id));
+            results.Add((vector, storageGuid, bucketIndex));
         }
 
         Console.WriteLine($"Retrieved {results.Count} vectors for bucket '{bucketName}'.");

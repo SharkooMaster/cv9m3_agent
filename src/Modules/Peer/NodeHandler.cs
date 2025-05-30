@@ -240,12 +240,12 @@ public static class NodeService
                 else
                 {
                     // Store and return mock result
-                    ulong _id = await StoreInBucket(Globals._NODE, _bitstring, new M_Data(){
+                    (ulong _id, ulong _index) = await StoreInBucket(Globals._NODE, _bitstring, new M_Data(){
                         vector = _vector,
                     }, "");
                     M_SearchResult res = new M_SearchResult()
                     {
-                        chunk = new byte[]{ 0x00, 0x0A},
+                        chunk = new byte[]{ 0x00, 0x0A },
                         similarity = 1,
                         id = _id
                     };
@@ -272,18 +272,17 @@ public static class NodeService
         }
     }
 
-    public static async Task<ulong> StoreInBucket(M_Node node, string bucket_string, M_Data _data, string HeadRouteID)
+    public static async Task<(ulong, ulong)> StoreInBucket(M_Node node, string bucket_string, M_Data _data, string HeadRouteID)
     {
         var bucket = node.Buckets.GetOrAdd(bucket_string, _ => new M_Bucket(bucket_string));
-        ulong _id = await bucket.BookId();
+        // ulong _id = await bucket.BookId();
 
-        string methodName = $"StoreInBucket::{DateTime.Now:HH:mm:ss.fff}_{Guid.NewGuid()}";
-        await BackgrounfServiceManager.RegisterFireMethod(methodName, async () =>
-        {
-            await bucket.InsertData(_data, _id);
-        });
-
-        return _id;
+        // string methodName = $"StoreInBucket::{DateTime.Now:HH:mm:ss.fff}_{Guid.NewGuid()}";
+        // await BackgrounfServiceManager.RegisterFireMethod(methodName, async () =>
+        // {
+        //     await bucket.InsertData(_data, _id);
+        // });
+        return await bucket.InsertData(_data, 0);
     }
 
 }
