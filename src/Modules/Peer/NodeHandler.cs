@@ -212,7 +212,8 @@ public static class NodeService
         return node;
     }
 
-    public static async Task<(List<M_SearchResult>, bool, bool)> SearchAll(M_Node node, string _bitstring, float[] _vector, float _minimum_similarity, int _k, SearchVector_Req _req, ServerCallContext context)
+    public static async Task<(List<M_SearchResult>, bool, bool)> 
+      SearchAll(M_Node node, string _bitstring, float[] _vector, float _minimum_similarity, int _k, SearchVector_Req _req, ServerCallContext context)
     {
         //Console.Writeline("Searching");
         bool is_inRange = Agent.Utils.Misc.Misc.IsKeyInRange(node.id, Globals._NODE.successor.id, _bitstring);
@@ -243,6 +244,7 @@ public static class NodeService
                     (ulong _id, ulong _index) = await StoreInBucket(Globals._NODE, _bitstring, new M_Data(){
                         vector = _vector,
                     }, "");
+
                     M_SearchResult res = new M_SearchResult()
                     {
                         chunk = new byte[]{ 0x00, 0x0A },

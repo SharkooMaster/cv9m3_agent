@@ -55,8 +55,8 @@ public class SearchVectorService : SearchVector.SearchVectorBase
                         res.Results.Add(new SearchVectorObject() {
                             SimilarityRate = item.similarity,
                             Chunk = ByteString.CopyFrom(item.chunk),
-                            Id = Convert.ToUInt64(req.Bitstring, 2),
-                            Index = req.Index
+                            Id = item.id,
+                            Index = item.Index
                         });
                     }
                     res.TargetIp = Misc.GetLocalIPAddress();

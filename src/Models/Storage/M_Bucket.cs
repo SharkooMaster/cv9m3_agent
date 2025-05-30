@@ -40,6 +40,7 @@ public class M_Bucket
             {
                 to_return.Add(new M_SearchResult() {
                     id = row.id,
+                    index = row.index,
                     similarity = _similarity,
                     chunk = row.chunk,
                 });

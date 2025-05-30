@@ -19,4 +19,5 @@ message StoreVector_Req
 message StoreVector_Res
 {
     uint64 id = 1;
+    uint64 index = 2;
 }
