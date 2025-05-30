@@ -247,7 +247,8 @@ public static class NodeService
                     {
                         chunk = new byte[]{ 0x00, 0x0A },
                         similarity = 1,
-                        id = _id
+                        id = _id,
+                        index = _index
                     };
 
                     var _ret = new List<M_SearchResult>();

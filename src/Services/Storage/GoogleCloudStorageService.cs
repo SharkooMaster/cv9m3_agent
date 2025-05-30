@@ -38,12 +38,12 @@ public class GcsSqlStorageService : INetworkFileStorageService
         try
         {
             M_Bucket toReturn = new M_Bucket(bucket_Id);
-            List<(float[] vector, string storageGuid, long _id)> vectors = await GetVectorsByBucketAsync(bucket_Id);
+            List<(float[] vector, string storageGuid, long _id, long _index)> vectors = await GetVectorsByBucketAsync(bucket_Id);
 
-            foreach ((float[], string, int) vec in vectors)
+            foreach ((float[], string, long, long) vec in vectors)
             {
                 byte[] _chunk = await GetChunkAsync(vec.Item2);
-                toReturn.data.Add(new M_Data(){ vector = vec.Item1, chunk = _chunk, id = (ulong)vec.Item3});
+                toReturn.data.Add(new M_Data(){ vector = vec.Item1, chunk = _chunk, id = (ulong)vec.Item3, index = (ulong)vec.Item4});
             }
 
             return toReturn;
@@ -174,15 +174,15 @@ public class GcsSqlStorageService : INetworkFileStorageService
         return (bucketId, bucketIndex);
     }
 
-    public async Task<List<(float[] vector, string storageGuid, long _id)>> GetVectorsByBucketAsync(string bucketName)
+    public async Task<List<(float[] vector, string storageGuid, long _id, long _index)>> GetVectorsByBucketAsync(string bucketName)
     {
-        var results = new List<(float[], string, long)>();
+        var results = new List<(float[], string, long, long)>();
 
         await using var conn = new NpgsqlConnection(_postgresConnectionString);
         await conn.OpenAsync();
 
         var cmd = new NpgsqlCommand(@"
-            SELECT v.vector, v.storage_guid, v.bucket_index
+            SELECT v.vector, v.storage_guid, v.bucket_id, v.bucket_index
             FROM vectors v
             INNER JOIN bucket_keys b ON v.bucket_id = b.id
             WHERE b.bucket_name = @bucketName;
@@ -195,9 +195,10 @@ public class GcsSqlStorageService : INetworkFileStorageService
         {
             var vector = reader.GetFieldValue<float[]>(0);
             var storageGuid = reader.GetString(1);
-            var bucketIndex = reader.GetInt32(2);
+            var bucketID = reader.GetInt32(2);
+            var bucketIndex = reader.GetInt32(3);
 
-            results.Add((vector, storageGuid, bucketIndex));
+            results.Add((vector, storageGuid, bucketID, bucketIndex));
         }
 
         Console.WriteLine($"Retrieved {results.Count} vectors for bucket '{bucketName}'.");

@@ -6,6 +6,7 @@ using Agent.Utils.Globals;
 public class M_Data
 {
     public ulong id { get; set; }
+    public ulong index { get; set; }
     public float[] vector { get; set; }
     public byte[] chunk { get; set; }
     [JsonIgnore] public List<int> rpu = new List<int>(); // Requests per unit
