@@ -50,9 +50,10 @@ public class SearchVectorService : SearchVector.SearchVectorBase
 
                     foreach (var item in query_res.Item1)
                     {
-                        if(item == null){ Console.WriteLine("Item is null"); }
-                        if(req == null){ Console.WriteLine("req is null"); }
-                        if(res == null){ Console.WriteLine("req is null"); }
+                        if(item == null){ Console.WriteLine("######### Item is null"); }
+                        if(item.chunk == null){ Console.WriteLine("######### Item chunk is null"); }
+                        if(req == null){ Console.WriteLine("######### req is null"); }
+                        if(res == null){ Console.WriteLine("######### req is null"); }
 
                         res.Results.Add(new SearchVectorObject() {
                             SimilarityRate = item.similarity,

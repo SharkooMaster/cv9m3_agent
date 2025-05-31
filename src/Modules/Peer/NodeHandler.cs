@@ -220,17 +220,22 @@ public static class NodeService
 
         if (is_inRange)
         {
+            Console.WriteLine("Is in range");
             if(node.Buckets.ContainsKey(_bitstring))
             {
+                Console.WriteLine("ContainsKey");
                 return (await node.Buckets[_bitstring].SearchData(_vector, _minimum_similarity, _k), false, false);
             }
             else
             {
+                Console.WriteLine("Importing from cold storage");
                 M_Bucket read_bucket = await NetworkFileStorageHandler.ReadBucket(_bitstring);
                 if(read_bucket.data.Count > 0)
                 {
+                    Console.WriteLine(" - Bucket not empty");
                     if(node.Buckets.TryAdd(_bitstring, read_bucket))
                     {
+                        Console.WriteLine(" - Bucket added to memory");
                         return (await node.Buckets[_bitstring].SearchData(_vector, _minimum_similarity, _k), false, false);
                     }
                     else
@@ -240,6 +245,7 @@ public static class NodeService
                 }
                 else
                 {
+                    Console.WriteLine(" - Bucket not found in cold storage");
                     // Store and return mock result
                     (ulong _id, ulong _index) = await StoreInBucket(Globals._NODE, _bitstring, new M_Data(){
                         vector = _vector,
@@ -278,13 +284,6 @@ public static class NodeService
     public static async Task<(ulong, ulong)> StoreInBucket(M_Node node, string bucket_string, M_Data _data, string HeadRouteID)
     {
         var bucket = node.Buckets.GetOrAdd(bucket_string, _ => new M_Bucket(bucket_string));
-        // ulong _id = await bucket.BookId();
-
-        // string methodName = $"StoreInBucket::{DateTime.Now:HH:mm:ss.fff}_{Guid.NewGuid()}";
-        // await BackgrounfServiceManager.RegisterFireMethod(methodName, async () =>
-        // {
-        //     await bucket.InsertData(_data, _id);
-        // });
         return await bucket.InsertData(_data, 0);
     }
 

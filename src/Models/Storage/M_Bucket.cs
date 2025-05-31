@@ -23,11 +23,12 @@ public class M_Bucket
     }
 
     public async Task<(ulong, ulong)> InsertData(M_Data _data, ulong _id){
-        _data.id = _id;
-        data.Add(_data);
         // Console.Writeline("Storing on NFS");
-        return ((ulong,ulong))(await NetworkFileStorageHandler.StoreVector(ID, _data));
+        var toRet = ((ulong,ulong))(await NetworkFileStorageHandler.StoreVector(ID, _data));
+        _data.id = toRet.Item1;
+        _data.index = toRet.Item2;
         // Console.Writeline("Done");
+        return toRet;
     }
     
     public async Task<List<M_SearchResult>> SearchData(float[] _vector, float _minimum_similarity, int _k)
