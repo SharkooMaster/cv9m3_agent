@@ -43,6 +43,10 @@ public class GcsSqlStorageService : INetworkFileStorageService
             foreach ((float[], string, long, long) vec in vectors)
             {
                 byte[] _chunk = await GetChunkAsync(vec.Item2);
+                if(_chunk == null)
+                {
+                    Console.WriteLine("Couldnt read chunk while getting bucket");
+                }
                 toReturn.data.Add(new M_Data(){ vector = vec.Item1, chunk = _chunk, id = (ulong)vec.Item3, index = (ulong)vec.Item4});
             }
 
