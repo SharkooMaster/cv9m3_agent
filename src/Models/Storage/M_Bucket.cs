@@ -38,7 +38,7 @@ public class M_Bucket
         Parallel.ForEach(data, row => {
             float _similarity = Misc.CalculateDistance(_vector, row.vector);
             
-            if(row.chunk != null || row.chunk.Length != 0)
+            if(row.chunk == null || row.chunk.Length == 0)
             {
               Console.WriteLine("### ERROR ###} Chunk has no value");
             }
