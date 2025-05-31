@@ -7,6 +7,7 @@ using Agent.Modules.Peer;
 using Agent.Utils.Globals;
 using Agent.Utils.Misc;
 using Google.Protobuf;
+using Google.Protobuf.Collections;
 using Grpc.Core;
 using Grpc.Net.Client;
 
@@ -46,6 +47,7 @@ public class SearchVectorService : SearchVector.SearchVectorBase
                 else
                 {
                     SearchVector_Result res = new SearchVector_Result();
+
                     foreach (var item in query_res.Item1)
                     {
                         if(item == null){ Console.WriteLine("Item is null"); }
@@ -56,7 +58,7 @@ public class SearchVectorService : SearchVector.SearchVectorBase
                             SimilarityRate = item.similarity,
                             Chunk = ByteString.CopyFrom(item.chunk),
                             Id = item.id,
-                            Index = item.Index
+                            Index = (int)item.index
                         });
                     }
                     res.TargetIp = Misc.GetLocalIPAddress();
