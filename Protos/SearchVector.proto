@@ -28,6 +28,7 @@ message SearchVectorObject
     bytes chunk = 2;
     uint64 id = 3;
     int32 index = 4;
+    int32 i = 5;
 }
 
 message SearchVector_Results

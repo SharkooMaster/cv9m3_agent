@@ -31,7 +31,7 @@ public class M_Bucket
         return toRet;
     }
     
-    public async Task<List<M_SearchResult>> SearchData(float[] _vector, float _minimum_similarity, int _k)
+    public async Task<List<M_SearchResult>> SearchData(float[] _vector, float _minimum_similarity, int _k, int _i)
     {
         ConcurrentBag<M_SearchResult> to_return = new ConcurrentBag<M_SearchResult>();
 
@@ -50,6 +50,7 @@ public class M_Bucket
                     index = row.index,
                     similarity = _similarity,
                     chunk = row.chunk,
+                    i = _i
                 });
             }
         });

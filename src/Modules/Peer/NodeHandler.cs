@@ -224,7 +224,7 @@ public static class NodeService
             if(node.Buckets.ContainsKey(_bitstring))
             {
                 Console.WriteLine("ContainsKey");
-                return (await node.Buckets[_bitstring].SearchData(_vector, _minimum_similarity, _k), false, false);
+                return (await node.Buckets[_bitstring].SearchData(_vector, _minimum_similarity, _k, _req.Index), false, false);
             }
             else
             {
@@ -236,7 +236,7 @@ public static class NodeService
                     if(node.Buckets.TryAdd(_bitstring, read_bucket))
                     {
                         Console.WriteLine(" - Bucket added to memory");
-                        return (await node.Buckets[_bitstring].SearchData(_vector, _minimum_similarity, _k), false, false);
+                        return (await node.Buckets[_bitstring].SearchData(_vector, _minimum_similarity, _k, _req.Index), false, false);
                     }
                     else
                     {
@@ -256,7 +256,8 @@ public static class NodeService
                         chunk = new byte[]{ 0x00, 0x0A },
                         similarity = 1,
                         id = _id,
-                        index = _index
+                        index = _index,
+                        i = _req.Index
                     };
 
                     var _ret = new List<M_SearchResult>();
