@@ -10,86 +10,82 @@ using Google.Protobuf;
 using Google.Protobuf.Collections;
 using Grpc.Core;
 using Grpc.Net.Client;
+using Xunit.Sdk;
 
 public class SearchVectorService : SearchVector.SearchVectorBase
 {
-    public override async Task<SearchVector_Results> Get(SearchVector_Reqs request, ServerCallContext context)
+    public override async Task<SearchVector_Result> Get(SearchVector_Req request, ServerCallContext context)
     {
-        //Console.WriteLine("Request recieved");
-        SearchVector_Results ret = new SearchVector_Results();
-        SearchVector_Reqs outgoingBatch = new SearchVector_Reqs();
+        // SearchAll(M_Node node, string _bitstring, float[] _vector, float _minimum_similarity, int _k, SearchVector_Req _req, ServerCallContext context)
+        SearchVector_Result res = new SearchVector_Result();
+        SearchVectorObject? SavedObject = null;
 
-        ConcurrentBag<SearchVector_Result> resultBag = new();
-        ConcurrentBag<SearchVector_Req> outgoingReqs = new();
-
-        Stopwatch sw = new Stopwatch();
-        sw.Start();
-        ParallelOptions options = new ();
-        var searchTasks = request.Reqs.Select(async req =>
+        bool forward = false;
+        bool save = true;
+        for (int i = 0; i < request.Bitstrings.Count; i++)
         {
-            try
+            (List<M_SearchResult>, bool, bool) result = await NodeService.SearchAll
+            (
+                Globals._NODE, (i == 0), request.Bitstrings[i], request.Vector.ToArray(), request.MinimumSimilarity, request.K, request, context
+            );
+
+            if (result.Item2)
             {
-                (List<M_SearchResult>, bool, bool) query_res = await NodeService.SearchAll(
-                    Globals._NODE,
-                    req.Bitstring,
-                    req.Vector.ToArray(),
-                    req.MinimumSimilarity,
-                    req.K,
-                    req,
-                    context
-                );
+                // forward
+                forward = true;
+                break;
+            }
 
-                if(query_res.Item2 == true)
-                {
-                    // Route to proper agent
-                    outgoingReqs.Add(req);
-                }
-                else
-                {
-                    SearchVector_Result res = new SearchVector_Result();
+            // If a similare vector was found
+            if (!result.Item3 && result.Item1.Count > 0)
+            {
+                save = false;
 
-                    foreach (var item in query_res.Item1)
+                // Insert
+                for (int j = 0; j < result.Item1.Count; j++)
+                {
+                    M_SearchResult currentSearchResult = result.Item1[j];
+                    res.Results.Add(new SearchVectorObject()
                     {
-                        if(item == null){ Console.WriteLine("######### Item is null"); }
-                        if(item.chunk == null){ Console.WriteLine("######### Item chunk is null"); }
-                        if(req == null){ Console.WriteLine("######### req is null"); }
-                        if(res == null){ Console.WriteLine("######### req is null"); }
-
-                        res.Results.Add(new SearchVectorObject() {
-                            SimilarityRate = item.similarity,
-                            Chunk = ByteString.CopyFrom(item.chunk),
-                            Id = item.id,
-                            Index = (int)item.index,
-                            I = item.i
-                        });
-                    }
-                    res.TargetIp = Misc.GetLocalIPAddress();
-                    res.Save = query_res.Item3;
-                    resultBag.Add(res);
+                        BucketId = currentSearchResult.id,
+                        BucketKey = (long)currentSearchResult.index,
+                        Similarity = currentSearchResult.similarity,
+                        Chunk = ByteString.CopyFrom(currentSearchResult.chunk),
+                        Index = request.Index
+                    });
                 }
             }
-            catch (System.Exception ex)
-            {
-                Console.WriteLine($"ERROR:SearchVector(Get):: {ex.Message} ; {ex.Data}");
-                throw;
-            }
-        });
-        await Task.WhenAll(searchTasks);
-        ret.Results.AddRange(resultBag);
-        outgoingBatch.Reqs.AddRange(outgoingReqs);
-        sw.Stop();
-        Console.WriteLine($"time to search: {sw.ElapsedMilliseconds}ms");
 
-        if(outgoingBatch.Reqs.Count > 0)
-        {
-            SearchVector_Results outgoingRes = await ClientGet(outgoingBatch, Globals._NODE.successor.ip);
-            ret.Results.AddRange(outgoingRes.Results);
+            if (result.Item3 && (i == 0)) // Original bucket, save
+            {
+                M_SearchResult currentSearchResult = result.Item1[0];
+                SavedObject = new SearchVectorObject()
+                {
+                    BucketId = currentSearchResult.id,
+                    BucketKey = (long)currentSearchResult.index,
+                    Similarity = currentSearchResult.similarity,
+                    Chunk = ByteString.CopyFrom(currentSearchResult.chunk),
+                    Index = request.Index
+                };
+            }
         }
 
-        return ret;
+        if (forward)
+        {
+            return await ClientGet(request, Globals._NODE.successor.ip);
+        }
+
+        // If no results and save
+        if (save)
+        {
+            res.Save = true;
+            res.Results.Add(SavedObject);
+        }
+
+        return res;
     }
 
-    public async Task<SearchVector_Results> ClientGet(SearchVector_Reqs req, string _ip, CancellationToken ct = default)
+    public async Task<SearchVector_Result> ClientGet(SearchVector_Req req, string _ip, CancellationToken ct = default)
     {
         try
         {

@@ -212,8 +212,9 @@ public static class NodeService
         return node;
     }
 
+    // (res, forward, save)
     public static async Task<(List<M_SearchResult>, bool, bool)> 
-      SearchAll(M_Node node, string _bitstring, float[] _vector, float _minimum_similarity, int _k, SearchVector_Req _req, ServerCallContext context)
+      SearchAll(M_Node node, bool canSave, string _bitstring, float[] _vector, float _minimum_similarity, int _k, SearchVector_Req _req, ServerCallContext context)
     {
         //Console.Writeline("Searching");
         bool is_inRange = Agent.Utils.Misc.Misc.IsKeyInRange(node.id, Globals._NODE.successor.id, _bitstring);
@@ -246,23 +247,26 @@ public static class NodeService
                 else
                 {
                     Console.WriteLine(" - Bucket not found in cold storage");
-                    // Store and return mock result
-                    (ulong _id, ulong _index) = await StoreInBucket(Globals._NODE, _bitstring, new M_Data(){
-                        vector = _vector,
-                    }, "");
-
-                    M_SearchResult res = new M_SearchResult()
+                    if (canSave)
                     {
-                        chunk = new byte[]{ 0x00, 0x0A },
-                        similarity = 1,
-                        id = _id,
-                        index = _index,
-                        i = _req.Index
-                    };
+                        // Store and return mock result
+                        (ulong _id, ulong _index) = await StoreInBucket(Globals._NODE, _bitstring, new M_Data(){
+                            vector = _vector,
+                        }, "");
 
-                    var _ret = new List<M_SearchResult>();
-                    _ret.Add(res);
-                    return (_ret, false, true);
+                        M_SearchResult res = new M_SearchResult()
+                        {
+                            chunk = new byte[]{ 0x00, 0x0A },
+                            similarity = 1,
+                            id = _id,
+                            index = _index,
+                            i = _req.Index
+                        };
+
+                        var _ret = new List<M_SearchResult>();
+                        _ret.Add(res);
+                        return (_ret, false, true);
+                    }
                 }
             }
             return (new List<M_SearchResult>(), false, false);
