@@ -29,7 +29,7 @@ message SearchVectorObject
 
 message SearchVector_Result
 {
-    SearchVectorObject results = 1;
+    repeated SearchVectorObject results = 1;
     bool save = 2;
 }
 
