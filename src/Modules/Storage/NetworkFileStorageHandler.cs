@@ -1,5 +1,6 @@
 
 using Agent.Services.Storage;
+using Agent.Interfaces.Infs;
 
 // public static class NetworkFileStorageHandler
 // {
@@ -24,10 +25,10 @@ using Agent.Services.Storage;
 
 public static class NetworkFileStorageHandler
 {
-    private static GcsSqlStorageService _instance;
-    public static GcsSqlStorageService instance => _instance ?? throw new InvalidOperationException("Failed to initialize NFS_Handler");
+    private static INetworkFileStorageService _instance;
+    public static INetworkFileStorageService instance => _instance ?? throw new InvalidOperationException("Failed to initialize NFS_Handler");
 
-    public static void SetInstance(GcsSqlStorageService instance)
+    public static void SetInstance(INetworkFileStorageService instance)
     {
         _instance = instance ?? throw new ArgumentNullException(nameof(instance));
     }

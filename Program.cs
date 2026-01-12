@@ -89,7 +89,8 @@ if(!AgnetaHandler.disabled)
 }
 
 //var networkFileSystemService = app.Services.GetRequiredService<NetworkFileStorageService>();
-var networkFileSystemService = app.Services.GetRequiredService<GcsSqlStorageService>(); // Drop in replacement for nfs with gcp
+//var networkFileSystemService = app.Services.GetRequiredService<GcsSqlStorageService>(); // Drop in replacement for nfs with gcp
+var networkFileSystemService = app.Services.GetRequiredService<LocalFileStorageService>(); // Local filesystem storage for testing
 NetworkFileStorageHandler.SetInstance(networkFileSystemService);
 
 if (app.Environment.IsDevelopment())
@@ -262,9 +263,19 @@ void ConfigureServices(IServiceCollection services)
         CommandTimeout = 30
     };
 
-    services.AddSingleton<GcsSqlStorageService>(
-        new GcsSqlStorageService(
-            "cross-global-chunks", 
+    // Option 1: GCS storage (for production)
+    // services.AddSingleton<GcsSqlStorageService>(
+    //     new GcsSqlStorageService(
+    //         "cross-global-chunks", 
+    //         pgbuilder.ConnectionString
+    //     )
+    // );
+    
+    // Option 2: Local file storage (for testing/development)
+    var storageDir = Environment.GetEnvironmentVariable("CHUNK_STORAGE_DIR") ?? "/tmp/crossv9_chunks";
+    services.AddSingleton<LocalFileStorageService>(
+        new LocalFileStorageService(
+            storageDir,
             pgbuilder.ConnectionString
         )
     );

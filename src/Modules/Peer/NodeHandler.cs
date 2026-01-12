@@ -249,23 +249,10 @@ public static class NodeService
                     Console.WriteLine(" - Bucket not found in cold storage");
                     if (canSave)
                     {
-                        // Store and return mock result
-                        (ulong _id, ulong _index) = await StoreInBucket(Globals._NODE, _bitstring, new M_Data(){
-                            vector = _vector,
-                        }, "");
-
-                        M_SearchResult res = new M_SearchResult()
-                        {
-                            chunk = new byte[]{ 0x00, 0x0A },
-                            similarity = 1,
-                            id = _id,
-                            index = _index,
-                            i = _req.Index
-                        };
-
-                        var _ret = new List<M_SearchResult>();
-                        _ret.Add(res);
-                        return (_ret, false, true);
+                        // Don't store here - just return that a save is needed
+                        // The Gateway will call StoreVector with the actual chunk data
+                        // Return empty result with save flag = true
+                        return (new List<M_SearchResult>(), false, true);
                     }
                 }
             }

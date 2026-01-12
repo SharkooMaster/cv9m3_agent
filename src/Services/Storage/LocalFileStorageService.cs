@@ -1,60 +1,32 @@
-
 using System;
+using System.Collections.Generic;
 using System.IO;
-using System.Numerics;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading.Tasks;
 using Agent.Interfaces.Infs;
 using Agent.Utils.Globals;
-using Google.Cloud.Storage.V1;
 using Npgsql;
 
 namespace Agent.Services.Storage;
 
-public class VectorInfo
+public class LocalFileStorageService : INetworkFileStorageService
 {
-    public string Hash { get; set; }
-    public string StorageGuid { get; set; }
-    public int Size { get; set; }
-    public DateTime CreatedAt { get; set; }
-}
-
-public class GcsSqlStorageService : INetworkFileStorageService
-{
-    private StorageClient? _storageClient;
-    private readonly string _bucketName;
+    private readonly string _storageDirectory;
     private readonly string _postgresConnectionString;
-    private readonly object _storageClientLock = new object();
 
-    public GcsSqlStorageService(string bucketName, string postgresConnectionString)
+    public LocalFileStorageService(string storageDirectory, string postgresConnectionString)
     {
-        _bucketName = bucketName;
+        _storageDirectory = storageDirectory;
         _postgresConnectionString = postgresConnectionString;
-        // Don't initialize StorageClient here - initialize lazily when needed
-    }
-
-    private StorageClient? GetStorageClient()
-    {
-        if (_storageClient != null)
-            return _storageClient;
-
-        lock (_storageClientLock)
-        {
-            if (_storageClient != null)
-                return _storageClient;
-
-            try
-            {
-                _storageClient = StorageClient.Create();
-                return _storageClient;
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[Warning] Failed to initialize GCS client: {ex.Message}. GCS operations will be disabled.");
-                return null;
-            }
-        }
+        
+        Console.WriteLine($"[LocalFileStorageService] Initializing with storage directory: {_storageDirectory}");
+        
+        // Ensure storage directory exists
+        Directory.CreateDirectory(_storageDirectory);
+        Directory.CreateDirectory(Path.Combine(_storageDirectory, "chunks"));
+        
+        Console.WriteLine($"[LocalFileStorageService] ✅ Storage directories created/verified at {_storageDirectory}");
     }
 
     public async Task<M_Bucket> ReadBucket(string bucket_Id)
@@ -67,11 +39,11 @@ public class GcsSqlStorageService : INetworkFileStorageService
             foreach ((float[], string, long, long) vec in vectors)
             {
                 byte[] _chunk = await GetChunkAsync(vec.Item2);
-                if(_chunk == null)
+                if (_chunk == null)
                 {
                     Console.WriteLine("Couldnt read chunk while getting bucket");
                 }
-                toReturn.data.Add(new M_Data(){ vector = vec.Item1, chunk = _chunk, id = (ulong)vec.Item3, index = (ulong)vec.Item4});
+                toReturn.data.Add(new M_Data() { vector = vec.Item1, chunk = _chunk, id = (ulong)vec.Item3, index = (ulong)vec.Item4 });
             }
 
             return toReturn;
@@ -83,55 +55,78 @@ public class GcsSqlStorageService : INetworkFileStorageService
         }
     }
 
-    public async Task<(int,int)> StoreVector(string bucket_Id, M_Data data)
+    public async Task<(int, int)> StoreVector(string bucket_Id, M_Data data)
     {
-        (bool a, int b, int c) = await StoreChunkAsync(data.vector, bucket_Id);
-        return (b,c);
+        if (data.chunk == null || data.chunk.Length == 0)
+        {
+            Console.WriteLine($"[Warning] StoreVector: chunk data is null or empty for bucket {bucket_Id}");
+            throw new ArgumentException("Chunk data cannot be null or empty", nameof(data));
+        }
+        if (data.vector == null || data.vector.Length == 0)
+        {
+            Console.WriteLine($"[Warning] StoreVector: vector data is null or empty for bucket {bucket_Id}");
+            throw new ArgumentException("Vector data cannot be null or empty", nameof(data));
+        }
+        (bool a, int b, int c) = await StoreChunkAsync(data.vector, data.chunk, bucket_Id);
+        if (!a)
+        {
+            throw new Exception("Failed to store chunk");
+        }
+        return (b, c);
     }
 
     public static string GenerateChunkKey(float[] vector)
     {
         using var sha256 = SHA256.Create();
-        // Convert the float array into bytes
         var byteArray = new byte[vector.Length * sizeof(float)];
         Buffer.BlockCopy(vector, 0, byteArray, 0, byteArray.Length);
-
         var hashBytes = sha256.ComputeHash(byteArray);
 
-        // Convert to a readable hex string
         var sb = new StringBuilder();
         foreach (var b in hashBytes)
         {
-            sb.Append(b.ToString("x2")); // two-digit hex
+            sb.Append(b.ToString("x2"));
         }
         return sb.ToString();
     }
 
-
-    public async Task<(bool, int, int)> StoreChunkAsync(float[] hash, string bucketID)
+    public async Task<(bool, int, int)> StoreChunkAsync(float[] hash, byte[] chunkData, string bucketID)
     {
         try
         {
-             string objectName = $"chunks/{GenerateChunkKey(hash)}";
+            string chunkKey = GenerateChunkKey(hash);
+            string objectName = $"chunks/{chunkKey}";
+            string filePath = Path.Combine(_storageDirectory, objectName);
 
-            // Check if chunk already exists in GCS
-            /* var existingObjects = _storageClient.ListObjects(_bucketName, objectName);
-            foreach (var obj in existingObjects)
+            // Create directory if it doesn't exist
+            Directory.CreateDirectory(Path.GetDirectoryName(filePath)!);
+
+            // Check if chunk already exists
+            if (File.Exists(filePath))
             {
-                if (obj.Name == objectName)
+                Console.WriteLine($"Chunk {chunkKey} already exists locally.");
+                // Still insert metadata if needed
+            }
+            else
+            {
+                // Write chunk to disk using optimized async I/O
+                // Use FileStream with large buffer and async writes for maximum performance
+                using (var fileStream = new FileStream(filePath, FileMode.Create, FileAccess.Write, FileShare.None, bufferSize: 131072, useAsync: true))
                 {
-                    Console.WriteLine($"Chunk {hash} already exists in GCS.");
-                    return false; // No need to store again
+                    await fileStream.WriteAsync(chunkData, 0, chunkData.Length);
+                    // Don't await FlushAsync to avoid blocking - OS will flush when ready
+                    fileStream.Flush(true); // Use synchronous flush with no fsync for speed
+                }
+                
+                // Log only occasionally to reduce I/O overhead (every 10th chunk or on errors)
+                if (chunkData.Length < 1000 || chunkKey.GetHashCode() % 10 == 0)
+                {
+                    Console.WriteLine($"[StoreChunkAsync] ✅ Stored chunk {chunkKey} ({chunkData.Length} bytes)");
                 }
             }
 
-            // Upload chunk
-            using var memoryStream = new MemoryStream(data);
-            await _storageClient.UploadObjectAsync(_bucketName, objectName, null, memoryStream); */
-            // Console.WriteLine($"Uploaded chunk {hash} to GCS.");
-
             // Insert metadata into PostgreSQL
-            (int bucket_id, int bucket_index) = await InsertChunkMetadataAsync(hash, objectName, Globals.chunkSize, bucketID);
+            (int bucket_id, int bucket_index) = await InsertChunkMetadataAsync(hash, objectName, chunkData.Length, bucketID);
 
             return (true, bucket_id, bucket_index);
         }
@@ -142,14 +137,13 @@ public class GcsSqlStorageService : INetworkFileStorageService
         }
     }
 
-    private async Task<(int,int)> InsertChunkMetadataAsync(float[] vector, string storagePath, int size, string bucketName)
+    private async Task<(int, int)> InsertChunkMetadataAsync(float[] vector, string storagePath, int size, string bucketName)
     {
         await using var conn = new NpgsqlConnection(_postgresConnectionString);
         await conn.OpenAsync();
 
         int bucketId;
 
-        // Step 1: Check if bucket exists
         var checkBucketCmd = new NpgsqlCommand(@"
             SELECT id FROM bucket_keys WHERE bucket_name = @bucketName LIMIT 1
         ", conn);
@@ -163,7 +157,6 @@ public class GcsSqlStorageService : INetworkFileStorageService
         }
         else
         {
-            // Step 2: Insert bucket if it doesn't exist
             var insertBucketCmd = new NpgsqlCommand(@"
               INSERT INTO bucket_keys (bucket_name, usage_count, next_index)
               VALUES (@bucketName, 0, 1)
@@ -174,7 +167,6 @@ public class GcsSqlStorageService : INetworkFileStorageService
             bucketId = (int)(await insertBucketCmd.ExecuteScalarAsync());
         }
 
-        // Step 3: Insert into vectors table
         var getNextIndexCmd = new NpgsqlCommand(@"
               UPDATE bucket_keys
               SET next_index = next_index + 1
@@ -185,7 +177,6 @@ public class GcsSqlStorageService : INetworkFileStorageService
 
         int bucketIndex = (int)(await getNextIndexCmd.ExecuteScalarAsync());
 
-        // Step 4: Insert into vectors table
         var cmd = new NpgsqlCommand(@"
           INSERT INTO vectors (vector, storage_guid, size, created_at, bucket_id, bucket_index)
           VALUES (@vector, @storagePath, @size, NOW(), @bucketId, @bucketIndex)
@@ -235,30 +226,26 @@ public class GcsSqlStorageService : INetworkFileStorageService
 
     public async Task<byte[]> GetChunkAsync(string storageGuid)
     {
-        var client = GetStorageClient();
-        if (client == null)
-        {
-            Console.WriteLine($"[Warning] GCS client not available, cannot download chunk {storageGuid}");
-            return null;
-        }
-
         try
         {
-            using var memoryStream = new MemoryStream();
+            // storageGuid is already in format "chunks/{hash}" from InsertChunkMetadataAsync
+            string filePath = Path.Combine(_storageDirectory, storageGuid);
+            
+            if (!File.Exists(filePath))
+            {
+                Console.WriteLine($"[Warning] Chunk file not found: {filePath} (storageGuid: {storageGuid})");
+                return null;
+            }
 
-            await client.DownloadObjectAsync(
-                bucket: _bucketName,
-                objectName: storageGuid,
-                destination: memoryStream
-            );
-
-            Console.WriteLine($"Downloaded chunk {storageGuid} from GCS.");
-            return memoryStream.ToArray();
+            byte[] data = await File.ReadAllBytesAsync(filePath);
+            Console.WriteLine($"[GetChunkAsync] Read chunk {storageGuid} from local storage ({data.Length} bytes).");
+            return data;
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[Error] Failed to download chunk {storageGuid}: {ex.Message}");
+            Console.WriteLine($"[Error] Failed to read chunk {storageGuid}: {ex.Message}");
             return null;
         }
     }
 }
+

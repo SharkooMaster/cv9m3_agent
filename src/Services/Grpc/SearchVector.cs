@@ -58,15 +58,25 @@ public class SearchVectorService : SearchVector.SearchVectorBase
 
             if (result.Item3 && (i == 0)) // Original bucket, save
             {
-                M_SearchResult currentSearchResult = result.Item1[0];
-                SavedObject = new SearchVectorObject()
+                // If result.Item1 has items, use the first one (from previous storage)
+                // Otherwise, SavedObject remains null - Gateway will store new chunk
+                if (result.Item1.Count > 0)
                 {
-                    BucketId = currentSearchResult.id,
-                    BucketKey = (long)currentSearchResult.index,
-                    Similarity = currentSearchResult.similarity,
-                    Chunk = ByteString.CopyFrom(currentSearchResult.chunk),
-                    Index = request.Index
-                };
+                    M_SearchResult currentSearchResult = result.Item1[0];
+                    SavedObject = new SearchVectorObject()
+                    {
+                        BucketId = currentSearchResult.id,
+                        BucketKey = (long)currentSearchResult.index,
+                        Similarity = currentSearchResult.similarity,
+                        Chunk = ByteString.CopyFrom(currentSearchResult.chunk),
+                        Index = request.Index
+                    };
+                    Console.WriteLine($"[SearchVector] Found existing chunk for index {request.Index}");
+                }
+                else
+                {
+                    Console.WriteLine($"[SearchVector] New chunk needs to be saved for index {request.Index} - Gateway will provide chunk");
+                }
             }
         }
 
@@ -79,7 +89,24 @@ public class SearchVectorService : SearchVector.SearchVectorBase
         if (save)
         {
             res.Save = true;
-            res.Results.Add(SavedObject);
+            // Create a placeholder result - Gateway will store the actual chunk
+            // The chunk will be provided by Gateway when it calls StoreVector
+            if (SavedObject != null)
+            {
+                res.Results.Add(SavedObject);
+            }
+            else
+            {
+                // Create a minimal placeholder result
+                res.Results.Add(new SearchVectorObject()
+                {
+                    BucketId = 0, // Will be set when stored
+                    BucketKey = 0,
+                    Similarity = 0,
+                    Chunk = ByteString.Empty, // Empty - Gateway will provide actual chunk
+                    Index = request.Index
+                });
+            }
         }
 
         return res;
