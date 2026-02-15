@@ -9,6 +9,7 @@ public class M_Data
     public ulong index { get; set; }
     public float[] vector { get; set; }
     public byte[] chunk { get; set; }
+    public string? storageGuid { get; set; } // Storage path for lazy loading (e.g., "chunks/{hash}")
     [JsonIgnore] public List<int> rpu = new List<int>(); // Requests per unit
     
     public void IncrementRPU() => rpu[Globals.RPU_SECTION] += 1;

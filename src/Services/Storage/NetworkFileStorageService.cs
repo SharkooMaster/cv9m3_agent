@@ -42,5 +42,29 @@ namespace Agent.Services.Storage
 
             return new_bucket;
         }
+
+        public async Task<byte[]?> GetChunkAsync(string storageGuid)
+        {
+            if (string.IsNullOrEmpty(storageGuid))
+            {
+                return null;
+            }
+
+            string chunkPath = Path.Combine(_nfs_path, "chunks", storageGuid);
+            if (!File.Exists(chunkPath))
+            {
+                return null;
+            }
+
+            return await File.ReadAllBytesAsync(chunkPath);
+        }
+
+        public async Task<byte[]?> GetChunkByReferenceAsync(ulong bucketId, ulong bucketIndex)
+        {
+            // Legacy file backend does not keep a bucket_id/bucket_index -> storage guid index.
+            // Return null so caller can handle "not found" gracefully.
+            await Task.CompletedTask;
+            return null;
+        }
     }
 }

@@ -9,5 +9,7 @@ namespace Agent.Interfaces.Infs
         public Task<(int,int)> StoreVector(string bucket_Id, M_Data data);
         // Store bucket data in files where the name of the file is the 128bit ID.
         public Task<M_Bucket> ReadBucket(string bucket_Id);
+        public Task<byte[]?> GetChunkAsync(string storageGuid);
+        public Task<byte[]?> GetChunkByReferenceAsync(ulong bucketId, ulong bucketIndex);
     }
 }

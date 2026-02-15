@@ -36,16 +36,21 @@ public class LocalFileStorageService : INetworkFileStorageService
             M_Bucket toReturn = new M_Bucket(bucket_Id);
             List<(float[] vector, string storageGuid, long _id, long _index)> vectors = await GetVectorsByBucketAsync(bucket_Id);
 
+            // Lazy loading: Store only metadata (vector, storageGuid, IDs) without loading chunks into memory
+            // Chunks will be loaded from cache/disk on-demand when needed
             foreach ((float[], string, long, long) vec in vectors)
             {
-                byte[] _chunk = await GetChunkAsync(vec.Item2);
-                if (_chunk == null)
-                {
-                    Console.WriteLine("Couldnt read chunk while getting bucket");
-                }
-                toReturn.data.Add(new M_Data() { vector = vec.Item1, chunk = _chunk, id = (ulong)vec.Item3, index = (ulong)vec.Item4 });
+                toReturn.data.Add(new M_Data() 
+                { 
+                    vector = vec.Item1, 
+                    chunk = null, // Chunk not loaded - will be loaded lazily from cache/disk
+                    storageGuid = vec.Item2, // Store path for lazy loading
+                    id = (ulong)vec.Item3, 
+                    index = (ulong)vec.Item4 
+                });
             }
 
+            Console.WriteLine($"ReadBucket: Loaded {vectors.Count} metadata entries for bucket '{bucket_Id}' (chunks will be loaded on-demand)");
             return toReturn;
         }
         catch (System.Exception ex)
@@ -127,6 +132,17 @@ public class LocalFileStorageService : INetworkFileStorageService
 
             // Insert metadata into PostgreSQL
             (int bucket_id, int bucket_index) = await InsertChunkMetadataAsync(hash, objectName, chunkData.Length, bucketID);
+
+            // Cache the chunk after storing (if cache is available)
+            try
+            {
+                Agent.Modules.Storage.ChunkCacheHandler.CacheChunk(objectName, chunkData);
+            }
+            catch (Exception cacheEx)
+            {
+                // Cache failure is not critical - chunk is already on disk
+                Console.WriteLine($"[StoreChunkAsync] Warning: Failed to cache chunk {chunkKey}: {cacheEx.Message}");
+            }
 
             return (true, bucket_id, bucket_index);
         }
@@ -224,7 +240,7 @@ public class LocalFileStorageService : INetworkFileStorageService
         return results;
     }
 
-    public async Task<byte[]> GetChunkAsync(string storageGuid)
+    public async Task<byte[]?> GetChunkAsync(string storageGuid)
     {
         try
         {
@@ -244,6 +260,43 @@ public class LocalFileStorageService : INetworkFileStorageService
         catch (Exception ex)
         {
             Console.WriteLine($"[Error] Failed to read chunk {storageGuid}: {ex.Message}");
+            return null;
+        }
+    }
+
+    public async Task<byte[]?> GetChunkByReferenceAsync(ulong bucketId, ulong bucketIndex)
+    {
+        try
+        {
+            await using var conn = new NpgsqlConnection(_postgresConnectionString);
+            await conn.OpenAsync();
+
+            var cmd = new NpgsqlCommand(@"
+                SELECT storage_guid
+                FROM vectors
+                WHERE bucket_id = @bucketId AND bucket_index = @bucketIndex
+                LIMIT 1;
+            ", conn);
+            cmd.Parameters.AddWithValue("@bucketId", (long)bucketId);
+            cmd.Parameters.AddWithValue("@bucketIndex", (long)bucketIndex);
+
+            var storageGuidObj = await cmd.ExecuteScalarAsync();
+            if (storageGuidObj == null || storageGuidObj == DBNull.Value)
+            {
+                return null;
+            }
+
+            var storageGuid = Convert.ToString(storageGuidObj);
+            if (string.IsNullOrWhiteSpace(storageGuid))
+            {
+                return null;
+            }
+
+            return await GetChunkAsync(storageGuid);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[Error] Failed to resolve chunk by reference ({bucketId},{bucketIndex}): {ex.Message}");
             return null;
         }
     }

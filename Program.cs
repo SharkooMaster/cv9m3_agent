@@ -3,10 +3,10 @@ using System.Net.Security;
 using Agent.Services;
 using Agent.Services.Agneta;
 using Agent.Utils.Misc;
-using Agent.Services.Etcd;
+// using Agent.Services.Etcd; // REMOVED: No longer using etcd, using Kubernetes service discovery instead
 // using Agent.Services.Grpc;
 using Agent.Interfaces.Agneta;
-using dotnet_etcd;
+// using dotnet_etcd; // REMOVED: No longer using etcd
 using Grpc.Core;
 using Grpc.Net.Client;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
@@ -21,6 +21,9 @@ using Agent.Services.Clms;
 using Agent.Modules;
 using Npgsql;
 using Agent.Modules.Peer;
+using Agent.Services.Cache;
+using Agent.Utils;
+using Agent.Interfaces.Infs;
 
 // IMPORTANT
 AgnetaHandler.disabled = true;
@@ -71,7 +74,26 @@ lifetime.ApplicationStarted.Register(() =>
     {
         Globals.bootstraped = true;
         Console.WriteLine("$$$ BOOTSTRAPED $$$");
-        _ = await NodeService.JoinNetwork(Globals._NODE, Globals.bootstrap_node);
+        
+        // LOCAL MODE: Skip DHT initialization, set up standalone node
+        // Also skip if bootstrap_node is null (standalone mode)
+        bool isLocalMode = LocalModeDetector.IsLocalMode();
+        Console.WriteLine($"[Agent] ApplicationStarted: Local mode={isLocalMode}, bootstrap_node={Globals.bootstrap_node ?? "null"}");
+        
+        if (isLocalMode || Globals.bootstrap_node == null)
+        {
+            Console.WriteLine("[Agent] Local/standalone mode - skipping DHT initialization");
+            // Clear bootstrap_node to prevent any DHT operations
+            Globals.bootstrap_node = null;
+            Globals._NODE.successor = new Agent.Models.M_Node() { id = Globals._NODE.id, ip = Globals._NODE.ip };
+            Globals._NODE.predecessor = new Agent.Models.M_Node() { id = Globals._NODE.id, ip = Globals._NODE.ip };
+            Console.WriteLine("[Agent] ✅ Standalone node configured - ready to accept requests");
+        }
+        else
+        {
+            Console.WriteLine($"[Agent] Distributed mode - joining network with bootstrap_node={Globals.bootstrap_node}");
+            _ = await NodeService.JoinNetwork(Globals._NODE, Globals.bootstrap_node);
+        }
     });
 });
 
@@ -90,8 +112,19 @@ if(!AgnetaHandler.disabled)
 
 //var networkFileSystemService = app.Services.GetRequiredService<NetworkFileStorageService>();
 //var networkFileSystemService = app.Services.GetRequiredService<GcsSqlStorageService>(); // Drop in replacement for nfs with gcp
-var networkFileSystemService = app.Services.GetRequiredService<LocalFileStorageService>(); // Local filesystem storage for testing
+var networkFileSystemService = app.Services.GetRequiredService<INetworkFileStorageService>();
 NetworkFileStorageHandler.SetInstance(networkFileSystemService);
+
+// Initialize chunk cache service with configurable memory limits
+var maxCacheSizeBytes = long.Parse(Environment.GetEnvironmentVariable("CHUNK_CACHE_SIZE_MB") ?? "512") * 1024 * 1024; // Default 512MB
+var cacheTtlMinutes = int.Parse(Environment.GetEnvironmentVariable("CHUNK_CACHE_TTL_MINUTES") ?? "30"); // Default 30 minutes
+var chunkCacheService = new Agent.Services.Cache.ChunkCacheService(
+    networkFileSystemService,
+    maxCacheSizeBytes: maxCacheSizeBytes,
+    cacheTtl: TimeSpan.FromMinutes(cacheTtlMinutes)
+);
+Agent.Modules.Storage.ChunkCacheHandler.SetInstance(chunkCacheService);
+Console.WriteLine($"[Cache] Initialized chunk cache: maxSize={maxCacheSizeBytes / (1024 * 1024)}MB, TTL={cacheTtlMinutes}min");
 
 if (app.Environment.IsDevelopment())
 {
@@ -115,6 +148,7 @@ app.MapGrpcService<UpdateSuccessorService>();
 app.MapGrpcService<UpdateFingerTableService>();
 app.MapGrpcService<SearchVectorService>();
 app.MapGrpcService<StoreVectorService>();
+app.MapGrpcService<ChunkReferenceServiceImpl>();
 
 app.MapGet("/", () =>{ return "Hello world"; });
 app.MapGet("/health", () => "true");
@@ -263,20 +297,31 @@ void ConfigureServices(IServiceCollection services)
         CommandTimeout = 30
     };
 
-    // Option 1: GCS storage (for production)
-    // services.AddSingleton<GcsSqlStorageService>(
-    //     new GcsSqlStorageService(
-    //         "cross-global-chunks", 
-    //         pgbuilder.ConnectionString
-    //     )
-    // );
-    
-    // Option 2: Local file storage (for testing/development)
-    var storageDir = Environment.GetEnvironmentVariable("CHUNK_STORAGE_DIR") ?? "/tmp/crossv9_chunks";
-    services.AddSingleton<LocalFileStorageService>(
-        new LocalFileStorageService(
-            storageDir,
-            pgbuilder.ConnectionString
-        )
-    );
+    var storageBackend = (Environment.GetEnvironmentVariable("STORAGE_BACKEND") ?? "local").ToLowerInvariant();
+    services.AddSingleton<INetworkFileStorageService>(_ =>
+    {
+        if (storageBackend == "s3")
+        {
+            var endpoint = Environment.GetEnvironmentVariable("S3_ENDPOINT") ?? throw new InvalidOperationException("S3_ENDPOINT is required when STORAGE_BACKEND=s3");
+            var bucket = Environment.GetEnvironmentVariable("S3_BUCKET") ?? throw new InvalidOperationException("S3_BUCKET is required when STORAGE_BACKEND=s3");
+            var accessKey = Environment.GetEnvironmentVariable("S3_ACCESS_KEY") ?? throw new InvalidOperationException("S3_ACCESS_KEY is required when STORAGE_BACKEND=s3");
+            var secretKey = Environment.GetEnvironmentVariable("S3_SECRET_KEY") ?? throw new InvalidOperationException("S3_SECRET_KEY is required when STORAGE_BACKEND=s3");
+            var forcePathStyle = (Environment.GetEnvironmentVariable("S3_FORCE_PATH_STYLE") ?? "true").Equals("true", StringComparison.OrdinalIgnoreCase);
+            var useSsl = (Environment.GetEnvironmentVariable("S3_USE_SSL") ?? "false").Equals("true", StringComparison.OrdinalIgnoreCase);
+
+            Console.WriteLine($"[Storage] Using S3 backend endpoint={endpoint}, bucket={bucket}");
+            return new S3StorageService(bucket, endpoint, accessKey, secretKey, forcePathStyle, useSsl, pgbuilder.ConnectionString);
+        }
+
+        if (storageBackend == "gcs")
+        {
+            var gcsBucket = Environment.GetEnvironmentVariable("GCS_BUCKET") ?? "cross-global-chunks";
+            Console.WriteLine($"[Storage] Using GCS backend bucket={gcsBucket}");
+            return new GcsSqlStorageService(gcsBucket, pgbuilder.ConnectionString);
+        }
+
+        var storageDir = Environment.GetEnvironmentVariable("CHUNK_STORAGE_DIR") ?? "/tmp/crossv9_chunks";
+        Console.WriteLine($"[Storage] Using local backend dir={storageDir}");
+        return new LocalFileStorageService(storageDir, pgbuilder.ConnectionString);
+    });
 }

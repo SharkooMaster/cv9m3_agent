@@ -6,6 +6,7 @@ using Agent.Modules.Agneta;
 using Agent.Modules.Peer;
 using Agent.Utils.Globals;
 using Agent.Utils.Misc;
+using Agent.Utils;
 using Google.Protobuf;
 using Google.Protobuf.Collections;
 using Grpc.Core;
@@ -22,29 +23,100 @@ public class SearchVectorService : SearchVector.SearchVectorBase
 
         bool forward = false;
         bool save = true;
-        for (int i = 0; i < request.Bitstrings.Count; i++)
+        
+        // OPTIMIZED: Search buckets in parallel instead of sequentially for better performance
+        // Use dynamic resource management to prevent CPU overload
+        int baseParallelism = Math.Min(request.Bitstrings.Count, Environment.ProcessorCount);
+        int optimalParallelism = DynamicResourceManager.GetOptimalParallelism(baseParallelism);
+        var parallelOptions = new ParallelOptions
         {
-            (List<M_SearchResult>, bool, bool) result = await NodeService.SearchAll
-            (
-                Globals._NODE, (i == 0), request.Bitstrings[i], request.Vector.ToArray(), request.MinimumSimilarity, request.K, request, context
-            );
+            MaxDegreeOfParallelism = Math.Max(1, optimalParallelism)
+        };
+        
+        var searchResults = new ConcurrentBag<(int index, List<M_SearchResult> results, bool forward, bool isDuplicate, bool isOriginal)>();
+        bool foundForward = false;
+        var forwardLock = new object();
+        
+        // OPTIMIZATION: More aggressive early termination for faster compression
+        // If we find a very good match (similarity >= 0.92) in original bucket, we can skip remaining buckets
+        // Lower threshold from 0.98 to 0.92 for better performance while still maintaining quality
+        const float EARLY_TERMINATION_THRESHOLD = 0.92f;
+        bool foundExcellentMatch = false;
+        var excellentMatchLock = new object();
 
-            if (result.Item2)
+        await Parallel.ForEachAsync(
+            Enumerable.Range(0, request.Bitstrings.Count),
+            parallelOptions,
+            async (i, ct) =>
             {
-                // forward
+                lock (forwardLock)
+                {
+                    if (foundForward) return; // Early exit if forwarding needed
+                }
+
+                // EARLY TERMINATION: If we found an excellent match in original bucket, skip remaining buckets
+                if (i > 0) // Not the original bucket
+                {
+                    lock (excellentMatchLock)
+                    {
+                        if (foundExcellentMatch) return; // Skip if we already found excellent match
+                    }
+                }
+                
+                (List<M_SearchResult>, bool, bool) result = await NodeService.SearchAll
+                (
+                    Globals._NODE, (i == 0), request.Bitstrings[i], request.Vector.ToArray(), request.MinimumSimilarity, request.K, request, context
+                );
+
+                if (result.Item2)
+                {
+                    // forward - set flag and stop processing
+                    lock (forwardLock)
+                    {
+                        foundForward = true;
+                    }
+                    searchResults.Add((i, result.Item1, true, result.Item3, i == 0));
+                    return;
+                }
+
+                // OPTIMIZATION: Early termination - if original bucket has excellent match, skip remaining buckets
+                // Threshold 0.92: Good balance between speed and compression quality
+                if (i == 0 && result.Item1.Count > 0)
+                {
+                    float bestSimilarity = result.Item1.Max(r => r.similarity);
+                    if (bestSimilarity >= EARLY_TERMINATION_THRESHOLD) // 0.92 threshold for faster compression
+                    {
+                        lock (excellentMatchLock)
+                        {
+                            foundExcellentMatch = true;
+                        }
+                        Console.WriteLine($"[SearchVector] Early termination: Found excellent match (similarity={bestSimilarity:F3}) in original bucket - skipping remaining buckets");
+                    }
+                }
+
+                searchResults.Add((i, result.Item1, false, result.Item3, i == 0));
+            }
+        );
+
+        // Process results (original bucket first, then others)
+        var sortedResults = searchResults.OrderBy(r => r.index).ToList();
+        
+        foreach (var (index, resultList, needsForward, isDuplicateFlag, isOriginal) in sortedResults)
+        {
+            if (needsForward)
+            {
                 forward = true;
                 break;
             }
 
-            // If a similare vector was found
-            if (!result.Item3 && result.Item1.Count > 0)
+            // If a similar vector was found (original logic: !result.Item3 && result.Item1.Count > 0)
+            if (!isDuplicateFlag && resultList.Count > 0)
             {
                 save = false;
 
-                // Insert
-                for (int j = 0; j < result.Item1.Count; j++)
+                // Insert all results from this bucket
+                foreach (var currentSearchResult in resultList)
                 {
-                    M_SearchResult currentSearchResult = result.Item1[j];
                     res.Results.Add(new SearchVectorObject()
                     {
                         BucketId = currentSearchResult.id,
@@ -56,13 +128,13 @@ public class SearchVectorService : SearchVector.SearchVectorBase
                 }
             }
 
-            if (result.Item3 && (i == 0)) // Original bucket, save
+            if (isDuplicateFlag && isOriginal) // Original bucket, save (original logic: result.Item3 && (i == 0))
             {
                 // If result.Item1 has items, use the first one (from previous storage)
                 // Otherwise, SavedObject remains null - Gateway will store new chunk
-                if (result.Item1.Count > 0)
+                if (resultList.Count > 0)
                 {
-                    M_SearchResult currentSearchResult = result.Item1[0];
+                    M_SearchResult currentSearchResult = resultList[0];
                     SavedObject = new SearchVectorObject()
                     {
                         BucketId = currentSearchResult.id,

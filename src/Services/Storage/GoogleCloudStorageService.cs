@@ -233,7 +233,7 @@ public class GcsSqlStorageService : INetworkFileStorageService
         return results;
     }
 
-    public async Task<byte[]> GetChunkAsync(string storageGuid)
+    public async Task<byte[]?> GetChunkAsync(string storageGuid)
     {
         var client = GetStorageClient();
         if (client == null)
@@ -258,6 +258,43 @@ public class GcsSqlStorageService : INetworkFileStorageService
         catch (Exception ex)
         {
             Console.WriteLine($"[Error] Failed to download chunk {storageGuid}: {ex.Message}");
+            return null;
+        }
+    }
+
+    public async Task<byte[]?> GetChunkByReferenceAsync(ulong bucketId, ulong bucketIndex)
+    {
+        try
+        {
+            await using var conn = new NpgsqlConnection(_postgresConnectionString);
+            await conn.OpenAsync();
+
+            var cmd = new NpgsqlCommand(@"
+                SELECT storage_guid
+                FROM vectors
+                WHERE bucket_id = @bucketId AND bucket_index = @bucketIndex
+                LIMIT 1;
+            ", conn);
+            cmd.Parameters.AddWithValue("@bucketId", (long)bucketId);
+            cmd.Parameters.AddWithValue("@bucketIndex", (long)bucketIndex);
+
+            var storageGuidObj = await cmd.ExecuteScalarAsync();
+            if (storageGuidObj == null || storageGuidObj == DBNull.Value)
+            {
+                return null;
+            }
+
+            var storageGuid = Convert.ToString(storageGuidObj);
+            if (string.IsNullOrWhiteSpace(storageGuid))
+            {
+                return null;
+            }
+
+            return await GetChunkAsync(storageGuid);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[Error] Failed to resolve GCS chunk by reference ({bucketId},{bucketIndex}): {ex.Message}");
             return null;
         }
     }

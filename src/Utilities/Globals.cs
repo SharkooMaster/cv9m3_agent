@@ -4,6 +4,7 @@ using Agent.Models;
 using Grpc.Net.Client;
 using Grpc.Net.Client.Configuration;
 // using Models;
+using System;
 
 namespace Agent.Utils.Globals;
 
@@ -17,9 +18,21 @@ public static class Globals
 
     public static int chunkSize = 5120;
 
-    public static string AgentsLoadbalancer = "agent-1";
+    // Allow running outside Kubernetes/Docker by overriding via env var.
+    // Examples:
+    // - AGENTS_LOADBALANCER=localhost
+    // - AGENTS_LOADBALANCER=127.0.0.1
+    // - AGENTS_LOADBALANCER=agent-1 (docker-compose / k8s service)
+    public static string AgentsLoadbalancer = Environment.GetEnvironmentVariable("AGENTS_LOADBALANCER") ?? "agent-1";
     public static string? bootstrap_node = null;
     public static bool bootstraped = false;
+
+    // LOCAL MODE: Reduce retries in local mode (local network is reliable)
+    // Note: gRPC requires MaxAttempts > 1, so use 2 for local mode
+    private static int GetMaxRetryAttempts()
+    {
+        return LocalModeDetector.IsLocalMode() ? 2 : 4;
+    }
 
     public static GrpcChannelOptions GRPC_OPTIONS = new GrpcChannelOptions
     {
@@ -44,7 +57,7 @@ public static class Globals
                     Names = { MethodName.Default },
                     RetryPolicy = new RetryPolicy
                     {
-                        MaxAttempts = 4,
+                        MaxAttempts = GetMaxRetryAttempts(),
                         InitialBackoff = TimeSpan.FromMilliseconds(100),
                         MaxBackoff = TimeSpan.FromSeconds(1),
                         BackoffMultiplier = 2,

@@ -1,7 +1,7 @@
 
 using Agent.Services.Agneta;
 using Agent.Interfaces.Agneta;
-using Agent.Services.Etcd;
+// using Agent.Services.Etcd; // REMOVED: No longer using etcd, using Kubernetes service discovery instead
 using Agent.Utils.Misc;
 using Agent.Utils.Globals;
 using Newtonsoft.Json;
@@ -54,6 +54,16 @@ public class AgentLifeCycleService : IHostedService
         Globals._NODE.ip = Environment.GetEnvironmentVariable("MY_POD_IP");
         Globals._NODE.id = await NodeUtils.generateNodeID();
 
+        // LOCAL MODE: Skip bootstrap discovery if in local mode
+        bool isLocalMode = Agent.Utils.LocalModeDetector.IsLocalMode();
+        Console.WriteLine($"[AgentLifecycleService] Local mode check: {isLocalMode}");
+        if (isLocalMode)
+        {
+            Console.WriteLine("[AgentLifecycleService] Local mode detected - skipping all bootstrap discovery");
+            Globals.bootstrap_node = null; // Ensure bootstrap_node is null in local mode
+            return; // Exit early, don't try to discover other agents
+        }
+
         // Getting target neighbor
         try
         {
@@ -101,15 +111,68 @@ public class AgentLifeCycleService : IHostedService
             catch (SocketException se)
             {
                 Console.WriteLine($"DNS lookup failed ({se.SocketErrorCode}): {se.Message}");
+                // Fallback: Try Docker service names for local deployment
+                await TryDockerBootstrapAsync();
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"Unexpected error: {ex.GetType().Name}: {ex.Message}");
+                // Fallback: Try Docker service names for local deployment
+                await TryDockerBootstrapAsync();
+            }
+            
+            // If still no bootstrap node found, try Docker discovery
+            if (Globals.bootstrap_node == null)
+            {
+                await TryDockerBootstrapAsync();
             }
         }
         catch(Exception ex)
         {
             Console.WriteLine($"ERROR::AgentLifeCycleService: {ex.Data} : {ex.Message}");
+        }
+    }
+    
+    /// <summary>
+    /// Docker-specific bootstrap: Try to discover agents using known Docker service names.
+    /// </summary>
+    private static async Task TryDockerBootstrapAsync()
+    {
+        // LOCAL MODE: Skip Docker bootstrap if in local mode
+        if (Agent.Utils.LocalModeDetector.IsLocalMode())
+        {
+            Console.WriteLine("[Docker Bootstrap] Local mode detected - skipping Docker bootstrap");
+            return;
+        }
+        
+        try
+        {
+            var myIp = Environment.GetEnvironmentVariable("MY_POD_IP");
+            Console.WriteLine($"[Docker Bootstrap] MY_POD_IP: {myIp}");
+            
+            // Known Docker service names for agents
+            var knownAgents = new[] { "agent-1", "agent-2", "agent-3" };
+            
+            foreach (var agentName in knownAgents)
+            {
+                // Skip self
+                if (agentName == myIp)
+                    continue;
+                
+                Console.WriteLine($"[Docker Bootstrap] Trying to reach {agentName}...");
+                if (await IsAgentReachable(agentName))
+                {
+                    Console.WriteLine($"[Docker Bootstrap] ✅ Found reachable agent: {agentName}");
+                    Globals.bootstrap_node = agentName;
+                    return;
+                }
+            }
+            
+            Console.WriteLine("[Docker Bootstrap] No reachable agents found via Docker service names.");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[Docker Bootstrap] Error during Docker discovery: {ex.Message}");
         }
     }
 

@@ -1,6 +1,6 @@
 
 using Agent.Services.Agneta;
-using Agent.Services.Etcd;
+// using Agent.Services.Etcd; // REMOVED: No longer using etcd
 using Agent.Utils.Misc;
 using Agent.Utils.Globals;
 using Agent.Interfaces.Agneta;
@@ -11,7 +11,8 @@ namespace Agent.Services;
 
 public class AgentRuntimeService : BackgroundService
 {
-    private readonly IEtcdClientService? _etcdClientService;
+    // REMOVED: No longer using etcd, using Kubernetes service discovery instead
+    // private readonly IEtcdClientService? _etcdClientService;
 
     public AgentRuntimeService()
     {

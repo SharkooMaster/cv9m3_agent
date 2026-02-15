@@ -42,4 +42,9 @@ public static class NetworkFileStorageHandler
     {
         return await _instance.ReadBucket(bucket_Id);
     }
+
+    public static async Task<byte[]?> GetChunkByReferenceAsync(ulong bucketId, ulong bucketIndex)
+    {
+        return await _instance.GetChunkByReferenceAsync(bucketId, bucketIndex);
+    }
 }

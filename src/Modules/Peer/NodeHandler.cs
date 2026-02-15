@@ -120,6 +120,11 @@ public static class NodeService
             Console.WriteLine("$$$ FindSuccessor : third $$$");
             if(target < node.id)
             {
+                if (node.predecessor == null)
+                {
+                    Console.WriteLine($"[FindSuccessor] ERROR: Predecessor not initialized for node {node.id}");
+                    return node.ip; // Fallback to current node
+                }
                 return await S_FindPeerResponsible(target, node.predecessor.ip);
             }
             else
@@ -217,7 +222,24 @@ public static class NodeService
       SearchAll(M_Node node, bool canSave, string _bitstring, float[] _vector, float _minimum_similarity, int _k, SearchVector_Req _req, ServerCallContext context)
     {
         //Console.Writeline("Searching");
-        bool is_inRange = Agent.Utils.Misc.Misc.IsKeyInRange(node.id, Globals._NODE.successor.id, _bitstring);
+        // LOCAL MODE: Skip DHT range checks, assume all buckets are local
+        // DISTRIBUTED MODE: Check if bitstring is in this node's range
+        bool is_inRange;
+        if (LocalModeDetector.IsLocalMode())
+        {
+            // In local mode, assume all buckets are in range (single agent handles everything)
+            is_inRange = true;
+        }
+        else
+        {
+            // Check if successor is initialized before accessing
+            if (Globals._NODE.successor == null)
+            {
+                Console.WriteLine($"[SearchAll] ERROR: Successor not initialized for node {node.id}");
+                return (new List<M_SearchResult>(), false, false);
+            }
+            is_inRange = Agent.Utils.Misc.Misc.IsKeyInRange(node.id, Globals._NODE.successor.id, _bitstring);
+        }
 
         if (is_inRange)
         {

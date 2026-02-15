@@ -30,8 +30,19 @@ public class StoreVectorService : StoreVector.StoreVectorBase
         
         Console.WriteLine($"StoreVector: Prepared M_Data - Chunk size: {_data.chunk?.Length ?? 0}, Vector size: {_data.vector?.Length ?? 0}");
         
-        // ulong _id = await NodeService.StoreInBucket(Globals._NODE, request.Bitstring, _data, request.HeadRouteID);
-        (ulong _id, ulong _index) = await NodeService.StoreInBucket(Globals._NODE, request.Bitstring, _data, request.HeadRouteID);
-        return new StoreVector_Res() { Id = _id, Index = _index };
+        // Store synchronously - wait for storage to complete
+        // This ensures chunks are actually stored before returning
+        try
+        {
+            (ulong _id, ulong _index) = await NodeService.StoreInBucket(Globals._NODE, request.Bitstring, _data, request.HeadRouteID);
+            Console.WriteLine($"[StoreVector] ✅ Storage complete: id={_id}, index={_index}, chunk size={_data.chunk.Length} bytes");
+            return new StoreVector_Res() { Id = _id, Index = _index };
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[StoreVector] ❌ Storage FAILED: {ex.Message}");
+            Console.WriteLine($"[StoreVector] Stack trace: {ex.StackTrace}");
+            throw; // Re-throw to let Gateway know storage failed
+        }
     }
 }

@@ -17,7 +17,7 @@ public static class Globals
 
     public static int chunkSize = 5120;
 
-    public static string AgentsLoadbalancer = "agent-headless.default.svc.cluster.local";
+    public static string AgentsLoadbalancer = "agent-1";
     public static string? bootstrap_node = null;
     public static bool bootstraped = false;
 
