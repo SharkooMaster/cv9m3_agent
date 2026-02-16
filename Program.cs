@@ -288,7 +288,7 @@ void ConfigureServices(IServiceCollection services)
         Port = Convert.ToInt32(Environment.GetEnvironmentVariable("DB_PORT")),
         Username = Environment.GetEnvironmentVariable("DB_USER"),
         Password = Environment.GetEnvironmentVariable("DB_PASSWORD"),
-        Database = "compressiondb",
+        Database = Environment.GetEnvironmentVariable("DB_DATABASE") ?? "compressiondb",
         SslMode = SslMode.Disable,
         Pooling = true,
         MinPoolSize = 1,
