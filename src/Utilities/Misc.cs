@@ -174,9 +174,28 @@ public static class Misc
             normVec2 += vec2[i] * vec2[i];
         }
 
-        // Calculate cosine similarity
+        // Calculate cosine similarity.
+        // Important edge-case handling:
+        // - if both vectors are zero-norm and identical, treat as exact match (1.0)
+        // - if only one side is zero-norm, no directional similarity (0.0)
+        double eps = 1e-12;
+        bool vec1Zero = normVec1 <= eps;
+        bool vec2Zero = normVec2 <= eps;
+        if (vec1Zero && vec2Zero)
+        {
+            // Exact element-wise equality check keeps semantics deterministic.
+            for (int j = 0; j < vec1.Length; j++)
+            {
+                if (vec1[j] != vec2[j])
+                    return 0.0f;
+            }
+            return 1.0f;
+        }
+        if (vec1Zero || vec2Zero)
+            return 0.0f;
+
         double denominator = Math.Sqrt(normVec1) * Math.Sqrt(normVec2);
-        if (denominator == 0.0)
+        if (denominator <= eps)
             return 0.0f;
         
         return (float)(dotProduct / denominator);

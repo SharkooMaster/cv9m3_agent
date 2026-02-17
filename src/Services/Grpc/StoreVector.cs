@@ -39,17 +39,10 @@ public class StoreVectorService : StoreVector.StoreVectorBase
             normSq += (double)x * x;
         }
 
-        if (allZeros)
-        {
-            reason = "all-zero";
-            return true;
-        }
-
-        if (normSq <= 1e-12)
-        {
-            reason = $"near-zero-norm({normSq:E3})";
-            return true;
-        }
+        // All-zero and near-zero vectors can be legitimate for low-entropy chunks.
+        // They should be handled by similarity math (CalculateDistance), not rejected here.
+        if (allZeros || normSq <= 1e-12)
+            return false;
 
         return false;
     }
@@ -68,6 +61,20 @@ public class StoreVectorService : StoreVector.StoreVectorBase
         {
             Console.WriteLine($"[ERROR] StoreVector: Received null or empty vector from Gateway!");
             throw new ArgumentException("Vector data cannot be null or empty", nameof(request));
+        }
+
+        bool isAllZero = true;
+        for (int i = 0; i < request.Vector.Count; i++)
+        {
+            if (request.Vector[i] != 0f)
+            {
+                isAllZero = false;
+                break;
+            }
+        }
+        if (isAllZero)
+        {
+            Console.WriteLine($"[WARN] StoreVector: all-zero vector accepted for bucket {request.Bitstring}; chunk size={request.Chunk.Length}");
         }
 
         if (IsInvalidVector(request.Vector, out string invalidReason))

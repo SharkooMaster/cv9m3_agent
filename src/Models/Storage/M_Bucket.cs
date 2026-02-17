@@ -65,6 +65,26 @@ public class M_Bucket
             () => new List<(M_Data data, float similarity)>(),
             (row, state, local) =>
             {
+                // Guard against bad/corrupt vector rows so one bad entry doesn't break a whole query.
+                if (row?.vector == null || row.vector.Length != _vector.Length)
+                {
+                    return local;
+                }
+                bool invalid = false;
+                for (int vi = 0; vi < row.vector.Length; vi++)
+                {
+                    float x = row.vector[vi];
+                    if (float.IsNaN(x) || float.IsInfinity(x))
+                    {
+                        invalid = true;
+                        break;
+                    }
+                }
+                if (invalid)
+                {
+                    return local;
+                }
+
                 float similarity = Misc.CalculateDistance(_vector, row.vector);
                 if (similarity >= _minimum_similarity)
                 {
