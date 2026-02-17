@@ -8,6 +8,52 @@ using Newtonsoft.Json;
 
 public class StoreVectorService : StoreVector.StoreVectorBase
 {
+    private static bool IsInvalidVector(IList<float> v, out string reason)
+    {
+        reason = string.Empty;
+        if (v == null || v.Count == 0)
+        {
+            reason = "empty";
+            return true;
+        }
+        if (v.Count != 64)
+        {
+            reason = $"dimension={v.Count}";
+            return true;
+        }
+
+        double normSq = 0.0;
+        bool allZeros = true;
+        for (int i = 0; i < v.Count; i++)
+        {
+            float x = v[i];
+            if (float.IsNaN(x) || float.IsInfinity(x))
+            {
+                reason = $"non-finite@{i}";
+                return true;
+            }
+            if (x != 0f)
+            {
+                allZeros = false;
+            }
+            normSq += (double)x * x;
+        }
+
+        if (allZeros)
+        {
+            reason = "all-zero";
+            return true;
+        }
+
+        if (normSq <= 1e-12)
+        {
+            reason = $"near-zero-norm({normSq:E3})";
+            return true;
+        }
+
+        return false;
+    }
+
     public override async Task<StoreVector_Res> Store(StoreVector_Req request, ServerCallContext context)
     {
         Console.WriteLine($"Storing vector - Chunk size: {request.Chunk?.Length ?? 0}, Vector size: {request.Vector?.Count ?? 0}");
@@ -22,6 +68,12 @@ public class StoreVectorService : StoreVector.StoreVectorBase
         {
             Console.WriteLine($"[ERROR] StoreVector: Received null or empty vector from Gateway!");
             throw new ArgumentException("Vector data cannot be null or empty", nameof(request));
+        }
+
+        if (IsInvalidVector(request.Vector, out string invalidReason))
+        {
+            Console.WriteLine($"[ERROR] StoreVector: Invalid vector ({invalidReason}) for bucket {request.Bitstring}; chunk size={request.Chunk.Length}");
+            throw new ArgumentException($"Invalid vector: {invalidReason}", nameof(request));
         }
         
         M_Data _data = new M_Data();

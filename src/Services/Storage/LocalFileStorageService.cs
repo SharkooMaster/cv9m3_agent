@@ -80,12 +80,10 @@ public class LocalFileStorageService : INetworkFileStorageService
         return (b, c);
     }
 
-    public static string GenerateChunkKey(float[] vector)
+    public static string GenerateChunkKey(byte[] chunkData)
     {
         using var sha256 = SHA256.Create();
-        var byteArray = new byte[vector.Length * sizeof(float)];
-        Buffer.BlockCopy(vector, 0, byteArray, 0, byteArray.Length);
-        var hashBytes = sha256.ComputeHash(byteArray);
+        var hashBytes = sha256.ComputeHash(chunkData);
 
         var sb = new StringBuilder();
         foreach (var b in hashBytes)
@@ -99,7 +97,7 @@ public class LocalFileStorageService : INetworkFileStorageService
     {
         try
         {
-            string chunkKey = GenerateChunkKey(hash);
+            string chunkKey = GenerateChunkKey(chunkData);
             string objectName = $"chunks/{chunkKey}";
             string filePath = Path.Combine(_storageDirectory, objectName);
 

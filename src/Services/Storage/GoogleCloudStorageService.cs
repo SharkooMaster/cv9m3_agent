@@ -85,18 +85,14 @@ public class GcsSqlStorageService : INetworkFileStorageService
 
     public async Task<(int,int)> StoreVector(string bucket_Id, M_Data data)
     {
-        (bool a, int b, int c) = await StoreChunkAsync(data.vector, bucket_Id);
+        (bool a, int b, int c) = await StoreChunkAsync(data.vector, data.chunk, bucket_Id);
         return (b,c);
     }
 
-    public static string GenerateChunkKey(float[] vector)
+    public static string GenerateChunkKey(byte[] chunkData)
     {
         using var sha256 = SHA256.Create();
-        // Convert the float array into bytes
-        var byteArray = new byte[vector.Length * sizeof(float)];
-        Buffer.BlockCopy(vector, 0, byteArray, 0, byteArray.Length);
-
-        var hashBytes = sha256.ComputeHash(byteArray);
+        var hashBytes = sha256.ComputeHash(chunkData);
 
         // Convert to a readable hex string
         var sb = new StringBuilder();
@@ -108,11 +104,11 @@ public class GcsSqlStorageService : INetworkFileStorageService
     }
 
 
-    public async Task<(bool, int, int)> StoreChunkAsync(float[] hash, string bucketID)
+    public async Task<(bool, int, int)> StoreChunkAsync(float[] vector, byte[] chunkData, string bucketID)
     {
         try
         {
-             string objectName = $"chunks/{GenerateChunkKey(hash)}";
+             string objectName = $"chunks/{GenerateChunkKey(chunkData)}";
 
             // Check if chunk already exists in GCS
             /* var existingObjects = _storageClient.ListObjects(_bucketName, objectName);
@@ -131,7 +127,7 @@ public class GcsSqlStorageService : INetworkFileStorageService
             // Console.WriteLine($"Uploaded chunk {hash} to GCS.");
 
             // Insert metadata into PostgreSQL
-            (int bucket_id, int bucket_index) = await InsertChunkMetadataAsync(hash, objectName, Globals.chunkSize, bucketID);
+            (int bucket_id, int bucket_index) = await InsertChunkMetadataAsync(vector, objectName, chunkData.Length, bucketID);
 
             return (true, bucket_id, bucket_index);
         }

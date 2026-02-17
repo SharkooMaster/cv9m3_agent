@@ -62,7 +62,7 @@ public class S3StorageService : INetworkFileStorageService
         if (data.vector == null || data.vector.Length == 0)
             throw new ArgumentException("Vector data cannot be null or empty", nameof(data));
 
-        string objectName = $"chunks/{GenerateChunkKey(data.vector)}";
+        string objectName = $"chunks/{GenerateChunkKey(data.chunk)}";
         await PutChunkAsync(objectName, data.chunk);
         return await InsertChunkMetadataAsync(data.vector, objectName, data.chunk.Length, bucket_Id);
     }
@@ -122,12 +122,10 @@ public class S3StorageService : INetworkFileStorageService
         });
     }
 
-    private static string GenerateChunkKey(float[] vector)
+    private static string GenerateChunkKey(byte[] chunkData)
     {
         using var sha256 = SHA256.Create();
-        var byteArray = new byte[vector.Length * sizeof(float)];
-        Buffer.BlockCopy(vector, 0, byteArray, 0, byteArray.Length);
-        var hashBytes = sha256.ComputeHash(byteArray);
+        var hashBytes = sha256.ComputeHash(chunkData);
         var sb = new StringBuilder(hashBytes.Length * 2);
         foreach (var b in hashBytes)
         {
