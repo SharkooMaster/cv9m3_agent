@@ -15,6 +15,14 @@ using Xunit.Sdk;
 
 public class SearchVectorService : SearchVector.SearchVectorBase
 {
+    private static int GetSearchBucketConcurrencyCap()
+    {
+        var raw = Environment.GetEnvironmentVariable("AGENT_SEARCH_BUCKET_CONCURRENCY");
+        if (int.TryParse(raw, out var cap) && cap > 0)
+            return cap;
+        return 8;
+    }
+
     public override async Task<SearchVector_Result> Get(SearchVector_Req request, ServerCallContext context)
     {
         // SearchAll(M_Node node, string _bitstring, float[] _vector, float _minimum_similarity, int _k, SearchVector_Req _req, ServerCallContext context)
@@ -28,6 +36,7 @@ public class SearchVectorService : SearchVector.SearchVectorBase
         // Use dynamic resource management to prevent CPU overload
         int baseParallelism = Math.Min(request.Bitstrings.Count, Environment.ProcessorCount);
         int optimalParallelism = DynamicResourceManager.GetOptimalParallelism(baseParallelism);
+        optimalParallelism = Math.Min(optimalParallelism, GetSearchBucketConcurrencyCap());
         var parallelOptions = new ParallelOptions
         {
             MaxDegreeOfParallelism = Math.Max(1, optimalParallelism)
