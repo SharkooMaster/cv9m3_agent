@@ -221,9 +221,11 @@ public static class NodeService
     public static async Task<(List<M_SearchResult>, bool, bool)> 
       SearchAll(M_Node node, bool canSave, string _bitstring, float[] _vector, float _minimum_similarity, int _k, SearchVector_Req _req, ServerCallContext context)
     {
+        using var rootSpan = Observability.StartStage("Node.SearchAll");
         //Console.Writeline("Searching");
         // LOCAL MODE: Skip DHT range checks, assume all buckets are local
         // DISTRIBUTED MODE: Check if bitstring is in this node's range
+        var routeSw = System.Diagnostics.Stopwatch.StartNew();
         bool is_inRange;
         if (LocalModeDetector.IsLocalMode())
         {
@@ -240,6 +242,8 @@ public static class NodeService
             }
             is_inRange = Agent.Utils.Misc.Misc.IsKeyInRange(node.id, Globals._NODE.successor.id, _bitstring);
         }
+        routeSw.Stop();
+        Observability.RecordStage("Route", routeSw.Elapsed.TotalMilliseconds, ("in_range", is_inRange));
 
         if (is_inRange)
         {
@@ -247,19 +251,30 @@ public static class NodeService
             if(node.Buckets.ContainsKey(_bitstring))
             {
                 Console.WriteLine("ContainsKey");
-                return (await node.Buckets[_bitstring].SearchData(_vector, _minimum_similarity, _k, _req.Index), false, false);
+                var searchSw = System.Diagnostics.Stopwatch.StartNew();
+                var localResults = await node.Buckets[_bitstring].SearchData(_vector, _minimum_similarity, _k, _req.Index);
+                searchSw.Stop();
+                Observability.RecordStage("ComputeSimilarity", searchSw.Elapsed.TotalMilliseconds, ("result_count", localResults.Count));
+                return (localResults, false, false);
             }
             else
             {
                 Console.WriteLine("Importing from cold storage");
+                var fetchSw = System.Diagnostics.Stopwatch.StartNew();
                 M_Bucket read_bucket = await NetworkFileStorageHandler.ReadBucket(_bitstring);
+                fetchSw.Stop();
+                Observability.RecordStage("FetchFromSSDOrNFS", fetchSw.Elapsed.TotalMilliseconds, ("rows_loaded", read_bucket.data.Count));
                 if(read_bucket.data.Count > 0)
                 {
                     Console.WriteLine(" - Bucket not empty");
                     if(node.Buckets.TryAdd(_bitstring, read_bucket))
                     {
                         Console.WriteLine(" - Bucket added to memory");
-                        return (await node.Buckets[_bitstring].SearchData(_vector, _minimum_similarity, _k, _req.Index), false, false);
+                        var searchSw = System.Diagnostics.Stopwatch.StartNew();
+                        var localResults = await node.Buckets[_bitstring].SearchData(_vector, _minimum_similarity, _k, _req.Index);
+                        searchSw.Stop();
+                        Observability.RecordStage("ComputeSimilarity", searchSw.Elapsed.TotalMilliseconds, ("result_count", localResults.Count));
+                        return (localResults, false, false);
                     }
                     else
                     {

@@ -24,6 +24,8 @@ using Agent.Modules.Peer;
 using Agent.Services.Cache;
 using Agent.Utils;
 using Agent.Interfaces.Infs;
+using OpenTelemetry.Metrics;
+using OpenTelemetry.Trace;
 
 // IMPORTANT
 AgnetaHandler.disabled = true;
@@ -41,6 +43,31 @@ builder.Services.AddGrpc(options => {
     options.MaxReceiveMessageSize = 1000 * 1024 * 1024;
     options.MaxSendMessageSize = 1000 * 1024 * 1024;
 });
+
+builder.Services.AddOpenTelemetry()
+    .WithTracing(tracing =>
+    {
+        tracing
+            .SetResourceBuilder(Observability.CreateResourceBuilder())
+            .AddSource("CrossV9.Agent")
+            .AddAspNetCoreInstrumentation()
+            .AddHttpClientInstrumentation()
+            .AddOtlpExporter(otlp =>
+            {
+                otlp.Endpoint = new Uri(Observability.GetOtlpEndpoint());
+                otlp.Protocol = OpenTelemetry.Exporter.OtlpExportProtocol.Grpc;
+            });
+    })
+    .WithMetrics(metrics =>
+    {
+        metrics
+            .SetResourceBuilder(Observability.CreateResourceBuilder())
+            .AddMeter("CrossV9.Agent")
+            .AddAspNetCoreInstrumentation()
+            .AddHttpClientInstrumentation()
+            .AddRuntimeInstrumentation()
+            .AddPrometheusExporter();
+    });
 
 ConfigureServices(builder.Services);
 
@@ -136,6 +163,7 @@ if (app.Environment.IsDevelopment())
 // app.UseHttpsRedirection();
 
 app.UseRouting();
+app.MapPrometheusScrapingEndpoint("/metrics");
 
 app.MapGrpcService<GreeterService>();
 app.MapGrpcService<FindPeerResponsibleService>();

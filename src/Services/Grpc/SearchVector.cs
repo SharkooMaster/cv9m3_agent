@@ -25,6 +25,7 @@ public class SearchVectorService : SearchVector.SearchVectorBase
 
     public override async Task<SearchVector_Result> Get(SearchVector_Req request, ServerCallContext context)
     {
+        using var rootSpan = Observability.StartStage("SearchVector.Get");
         // SearchAll(M_Node node, string _bitstring, float[] _vector, float _minimum_similarity, int _k, SearchVector_Req _req, ServerCallContext context)
         SearchVector_Result res = new SearchVector_Result();
         SearchVectorObject? SavedObject = null;
@@ -53,6 +54,7 @@ public class SearchVectorService : SearchVector.SearchVectorBase
         bool foundExcellentMatch = false;
         var excellentMatchLock = new object();
 
+        var searchSw = Stopwatch.StartNew();
         await Parallel.ForEachAsync(
             Enumerable.Range(0, request.Bitstrings.Count),
             parallelOptions,
@@ -106,8 +108,11 @@ public class SearchVectorService : SearchVector.SearchVectorBase
                 searchResults.Add((i, result.Item1, false, result.Item3, i == 0));
             }
         );
+        searchSw.Stop();
+        Observability.RecordStage("SearchBuckets", searchSw.Elapsed.TotalMilliseconds, ("bucket_count", request.Bitstrings.Count));
 
         // Process results (original bucket first, then others)
+        var serializeSw = Stopwatch.StartNew();
         var sortedResults = searchResults.OrderBy(r => r.index).ToList();
         
         foreach (var (index, resultList, needsForward, isDuplicateFlag, isOriginal) in sortedResults)
@@ -189,6 +194,8 @@ public class SearchVectorService : SearchVector.SearchVectorBase
                 });
             }
         }
+        serializeSw.Stop();
+        Observability.RecordStage("Serialize", serializeSw.Elapsed.TotalMilliseconds, ("result_count", res.Results.Count));
 
         return res;
     }

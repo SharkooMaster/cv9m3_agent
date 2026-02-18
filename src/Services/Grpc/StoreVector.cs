@@ -1,6 +1,7 @@
 
 using System.Text.Json;
 using Agent.Modules.Peer;
+using Agent.Utils;
 using Agent.Utils.Globals;
 using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
@@ -49,6 +50,8 @@ public class StoreVectorService : StoreVector.StoreVectorBase
 
     public override async Task<StoreVector_Res> Store(StoreVector_Req request, ServerCallContext context)
     {
+        using var rootSpan = Observability.StartStage("StoreVector");
+        var ingressSw = System.Diagnostics.Stopwatch.StartNew();
         Console.WriteLine($"Storing vector - Chunk size: {request.Chunk?.Length ?? 0}, Vector size: {request.Vector?.Count ?? 0}");
         
         if (request.Chunk == null || request.Chunk.Length == 0)
@@ -86,6 +89,8 @@ public class StoreVectorService : StoreVector.StoreVectorBase
         M_Data _data = new M_Data();
         _data.vector = request.Vector.ToArray();
         _data.chunk = request.Chunk.ToArray();
+        ingressSw.Stop();
+        Observability.RecordStage("Deserialize", ingressSw.Elapsed.TotalMilliseconds, ("chunk_bytes", _data.chunk.Length));
         
         Console.WriteLine($"StoreVector: Prepared M_Data - Chunk size: {_data.chunk?.Length ?? 0}, Vector size: {_data.vector?.Length ?? 0}");
         
@@ -93,7 +98,10 @@ public class StoreVectorService : StoreVector.StoreVectorBase
         // This ensures chunks are actually stored before returning
         try
         {
+            var storeSw = System.Diagnostics.Stopwatch.StartNew();
             (ulong _id, ulong _index) = await NodeService.StoreInBucket(Globals._NODE, request.Bitstring, _data, request.HeadRouteID);
+            storeSw.Stop();
+            Observability.RecordStage("Serialize", storeSw.Elapsed.TotalMilliseconds, ("stored", true));
             Console.WriteLine($"[StoreVector] ✅ Storage complete: id={_id}, index={_index}, chunk size={_data.chunk.Length} bytes");
             return new StoreVector_Res() { Id = _id, Index = _index };
         }
