@@ -575,10 +575,11 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
         {
             await using var conn = await _dataSource.OpenConnectionAsync();
             var cmd = new NpgsqlCommand(@"
-                SELECT DISTINCT agent_pod_name 
+                SELECT agent_pod_name 
                 FROM chunk_owners 
                 WHERE chunk_key = @chunkKey
-                ORDER BY created_at ASC;
+                GROUP BY agent_pod_name
+                ORDER BY MIN(created_at) ASC;
             ", conn);
             cmd.Parameters.AddWithValue("@chunkKey", chunkKey);
             await using var reader = await cmd.ExecuteReaderAsync();
