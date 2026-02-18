@@ -402,9 +402,11 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
         try
         {
             // Try Kubernetes headless service DNS
-            var headlessService = Globals.AgentsLoadbalancer.Contains("headless") 
-                ? Globals.AgentsLoadbalancer 
-                : "agent-headless.crossv9.svc.cluster.local";
+            var headlessService = Environment.GetEnvironmentVariable("AGENT_HEADLESS_SVC")
+                ?? (Globals.AgentsLoadbalancer.Contains("headless") 
+                    ? Globals.AgentsLoadbalancer 
+                    : "agent-headless.crossv9.svc.cluster.local");
+            Console.WriteLine($"[Storage] Discovering agents via DNS: {headlessService}");
             
             var addresses = await Dns.GetHostAddressesAsync(headlessService);
             var myIp = Environment.GetEnvironmentVariable("MY_POD_IP");
@@ -431,10 +433,11 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
             {
                 await using var conn = await _dataSource.OpenConnectionAsync();
                 var cmd = new NpgsqlCommand(@"
-                    SELECT DISTINCT agent_pod_name 
+                    SELECT agent_pod_name 
                     FROM chunk_owners 
                     WHERE agent_pod_name != @myPodName
-                    ORDER BY created_at DESC
+                    GROUP BY agent_pod_name
+                    ORDER BY MAX(created_at) DESC
                     LIMIT 10;
                 ", conn);
                 cmd.Parameters.AddWithValue("@myPodName", _myPodName);
