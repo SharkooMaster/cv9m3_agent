@@ -12,21 +12,14 @@ RUN dotnet publish agent.csproj -c Release -o out
 FROM mcr.microsoft.com/dotnet/aspnet:8.0
 WORKDIR /app
 
-# Install system RocksDB library (compiled for this exact OS/arch)
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    librocksdb-dev \
-    libsnappy-dev \
-    liblz4-dev \
-    libzstd-dev \
-    && rm -rf /var/lib/apt/lists/* \
-    && ldconfig
+# RocksDbSharp's bundled native lib links against libdl.so (unversioned).
+# In glibc 2.34+ (Debian Bookworm), libdl was merged into libc — the .so.2
+# exists but the unversioned symlink is gone.  libc6-dev only installs a
+# linker SCRIPT which the runtime dynamic loader ignores.
+# Fix: create a real symlink that ld.so can follow.
+RUN ln -sf /lib/x86_64-linux-gnu/libdl.so.2 /lib/x86_64-linux-gnu/libdl.so
 
 COPY --from=build-env /app/out .
-
-# Remove the bundled (incompatible) RocksDB native libs from the NuGet package
-# so .NET falls back to the working system library
-RUN find /app -name "librocksdb*" -type f -delete 2>/dev/null || true \
-    && find /app/runtimes -name "librocksdb*" -type f -delete 2>/dev/null || true
 
 EXPOSE 5000 5001
 ENTRYPOINT [ "dotnet", "agent.dll" ]
