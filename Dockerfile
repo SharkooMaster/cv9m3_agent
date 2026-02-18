@@ -6,18 +6,23 @@ COPY agent.csproj ./
 RUN dotnet restore agent.csproj
 
 COPY . ./
-# Publish with explicit RID so NuGet-bundled native libs (librocksdb)
-# are copied to the output root where RocksDbSharp's loader expects them.
-RUN dotnet publish agent.csproj -c Release -r linux-x64 --self-contained false -o out
+RUN dotnet publish agent.csproj -c Release -o out
 
 # Generate runtime image
 FROM mcr.microsoft.com/dotnet/aspnet:8.0
 WORKDIR /app
 
-# RocksDbSharp's bundled native lib links against libdl.so (unversioned).
-# In glibc 2.34+ (Debian Bookworm), libdl was merged into libc — the .so.2
-# exists but the unversioned symlink is gone. Create a real symlink.
-RUN ln -sf /lib/x86_64-linux-gnu/libdl.so.2 /lib/x86_64-linux-gnu/libdl.so
+# RocksDbSharp 6.2.2 bundles NO native code — it expects the system to
+# provide librocksdb.  Install it plus the libdl symlink it needs.
+#
+# 1. librocksdb-dev  → provides /usr/lib/.../librocksdb.so (symlink)
+#                       which pulls in librocksdb7.8 (the real .so).
+# 2. libdl.so symlink → glibc 2.34+ merged libdl into libc; the
+#    unversioned symlink no longer ships in the base image.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        librocksdb-dev \
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -sf /lib/x86_64-linux-gnu/libdl.so.2 /lib/x86_64-linux-gnu/libdl.so
 
 COPY --from=build-env /app/out .
 
