@@ -34,8 +34,24 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
         _dataSource = NpgsqlDataSource.Create(BuildConnectionString(postgresConnectionString));
         _myPodName = Environment.GetEnvironmentVariable("MY_POD_NAME") ?? Environment.GetEnvironmentVariable("MY_POD_IP") ?? "unknown";
         
-        // Ensure chunk_owners table exists
-        _ = Task.Run(async () => await EnsureChunkOwnersTableAsync());
+        // Ensure chunk_owners table exists (synchronous with timeout)
+        try
+        {
+            var createTableTask = EnsureChunkOwnersTableAsync();
+            if (createTableTask.Wait(TimeSpan.FromSeconds(10)))
+            {
+                Console.WriteLine($"[Storage] chunk_owners table verified/created successfully");
+            }
+            else
+            {
+                Console.WriteLine($"[Storage] WARNING: chunk_owners table creation timed out, will retry on first use");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[Storage] ERROR: Failed to create chunk_owners table: {ex.Message}");
+            Console.WriteLine($"[Storage] Stack trace: {ex.StackTrace}");
+        }
         
         Console.WriteLine($"[Storage] Using RocksDB backend path={rocksDbPath}, pod={_myPodName}");
     }
@@ -306,11 +322,17 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
                 CREATE INDEX IF NOT EXISTS idx_chunk_owners_agent ON chunk_owners(agent_pod_name);
             ", conn);
             await cmd.ExecuteNonQueryAsync();
-            Console.WriteLine("[Storage] chunk_owners table verified/created");
+            Console.WriteLine("[Storage] ✅ chunk_owners table verified/created successfully");
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[Storage] Failed to ensure chunk_owners table: {ex.Message}");
+            Console.WriteLine($"[Storage] ❌ Failed to ensure chunk_owners table: {ex.Message}");
+            Console.WriteLine($"[Storage] Exception type: {ex.GetType().Name}");
+            if (ex.InnerException != null)
+            {
+                Console.WriteLine($"[Storage] Inner exception: {ex.InnerException.Message}");
+            }
+            throw; // Re-throw so caller knows it failed
         }
         finally
         {
@@ -332,6 +354,28 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
             cmd.Parameters.AddWithValue("@chunkKey", chunkKey);
             cmd.Parameters.AddWithValue("@agentPodName", agentPodName);
             await cmd.ExecuteNonQueryAsync();
+        }
+        catch (Npgsql.PostgresException ex) when (ex.SqlState == "42P01") // Table doesn't exist
+        {
+            Console.WriteLine($"[Storage] chunk_owners table doesn't exist, creating it now...");
+            try
+            {
+                await EnsureChunkOwnersTableAsync();
+                // Retry the insert
+                await using var conn2 = await _dataSource.OpenConnectionAsync();
+                var cmd2 = new NpgsqlCommand(@"
+                    INSERT INTO chunk_owners (chunk_key, agent_pod_name, created_at)
+                    VALUES (@chunkKey, @agentPodName, NOW())
+                    ON CONFLICT (chunk_key, agent_pod_name) DO NOTHING;
+                ", conn2);
+                cmd2.Parameters.AddWithValue("@chunkKey", chunkKey);
+                cmd2.Parameters.AddWithValue("@agentPodName", agentPodName);
+                await cmd2.ExecuteNonQueryAsync();
+            }
+            catch (Exception retryEx)
+            {
+                Console.WriteLine($"[Storage] Failed to record chunk ownership after table creation: {retryEx.Message}");
+            }
         }
         catch (Exception ex)
         {
