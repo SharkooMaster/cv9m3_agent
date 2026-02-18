@@ -572,9 +572,10 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
                     deadline: DateTime.UtcNow.AddSeconds(5),
                     cancellationToken: CancellationToken.None);
 
-                if (res.Found && res.Chunk != null && res.Chunk.Length > 0)
+                var responseChunk = res.Chunk;
+                if (res.Found && responseChunk != null && responseChunk.Length > 0)
                 {
-                    var chunkData = res.Chunk.ToByteArray();
+                    var chunkData = responseChunk.ToByteArray();
                     
                     // Cache locally for future access
                     _rocksDb.Put(Encoding.UTF8.GetBytes(chunkKey), chunkData);
