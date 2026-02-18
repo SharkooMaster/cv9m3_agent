@@ -348,6 +348,13 @@ void ConfigureServices(IServiceCollection services)
             return new GcsSqlStorageService(gcsBucket, pgbuilder.ConnectionString);
         }
 
+        if (storageBackend == "rocksdb")
+        {
+            var rocksPath = Environment.GetEnvironmentVariable("ROCKSDB_PATH") ?? "/data/chunks/rocksdb";
+            Console.WriteLine($"[Storage] Using RocksDB backend path={rocksPath}");
+            return new RocksDbStorageService(rocksPath, pgbuilder.ConnectionString);
+        }
+
         var storageDir = Environment.GetEnvironmentVariable("CHUNK_STORAGE_DIR") ?? "/tmp/crossv9_chunks";
         Console.WriteLine($"[Storage] Using local backend dir={storageDir}");
         return new LocalFileStorageService(storageDir, pgbuilder.ConnectionString);

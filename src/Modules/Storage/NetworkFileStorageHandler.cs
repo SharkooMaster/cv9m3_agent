@@ -47,4 +47,31 @@ public static class NetworkFileStorageHandler
     {
         return await _instance.GetChunkByReferenceAsync(bucketId, bucketIndex);
     }
+
+    public static async Task<byte[]?> GetChunkAsync(string storageGuid)
+    {
+        return await _instance.GetChunkAsync(storageGuid);
+    }
+
+    public static async Task StoreChunkByKeyAsync(string chunkKey, byte[] chunkData)
+    {
+        if (_instance is RocksDbStorageService rocksDbService)
+        {
+            await rocksDbService.StoreChunkByKeyInternalAsync(chunkKey, chunkData);
+        }
+        else
+        {
+            throw new NotSupportedException("StoreChunkByKeyAsync is only supported for RocksDbStorageService");
+        }
+    }
+
+    public static string GenerateChunkKey(byte[] chunkData)
+    {
+        using var sha256 = System.Security.Cryptography.SHA256.Create();
+        var hashBytes = sha256.ComputeHash(chunkData);
+        var sb = new System.Text.StringBuilder(hashBytes.Length * 2);
+        foreach (var b in hashBytes)
+            sb.Append(b.ToString("x2"));
+        return sb.ToString();
+    }
 }
