@@ -27,17 +27,37 @@ public class AgentLifeCycleService : IHostedService
 
     public static async Task<bool> IsAgentReachable(string ip, int port = 5000)
     {
+        // Use Task.Run to isolate DNS/connection failures and ensure all exceptions are observed
+        var reachableTask = Task.Run(async () =>
+        {
+            try
+            {
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+                using var client = new TcpClient();
+                await client.ConnectAsync(ip, port, cts.Token).ConfigureAwait(false);
+                return client.Connected;
+            }
+            catch (OperationCanceledException)
+            {
+                return false; // Timeout
+            }
+            catch (SocketException)
+            {
+                return false; // DNS failure, connection refused, etc.
+            }
+            catch
+            {
+                return false; // Any other error
+            }
+        });
+
         try
         {
-            using var client = new TcpClient();
-            var connectTask = client.ConnectAsync(ip, port);
-            var timeoutTask = Task.Delay(2000); // 2 seconds timeout
-
-            var completedTask = await Task.WhenAny(connectTask, timeoutTask);
-            return completedTask == connectTask && client.Connected;
+            return await reachableTask.ConfigureAwait(false);
         }
         catch
         {
+            // Final safety net - ensure any unobserved exceptions are caught
             return false;
         }
     }
