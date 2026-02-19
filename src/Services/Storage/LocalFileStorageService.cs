@@ -298,5 +298,8 @@ public class LocalFileStorageService : INetworkFileStorageService
             return null;
         }
     }
+
+    public Task<List<(float[] vector, string storageGuid, long bucketId, long bucketIndex)>> GetVectorsByBucketsAsync(List<string> bucketNames)
+        => throw new NotSupportedException("GetVectorsByBucketsAsync not supported on LocalFile backend.");
 }
 

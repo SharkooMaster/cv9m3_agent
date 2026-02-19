@@ -107,6 +107,13 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
             throw new ArgumentException("Vector data cannot be null or empty", nameof(data));
 
         var key = GenerateChunkKey(data.chunk);
+
+        // ── Dedup fast-path: if this exact chunk already has a vector entry, return it. ──
+        // Same chunk content → same SHA256 → same key → same vector → same bucket.
+        // No need to store, replicate, or insert metadata again.
+        var existing = await TryGetExistingVectorAsync(key);
+        if (existing.HasValue)
+            return existing.Value;
         
         // Store locally in RocksDB
         _rocksDb.Put(Encoding.UTF8.GetBytes(key), data.chunk);
@@ -118,6 +125,24 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
         _ = Task.Run(async () => await ReplicateChunkAsync(key, data.chunk));
         
         return await InsertChunkMetadataAsync(data.vector, key, data.chunk.Length, bucket_Id);
+    }
+
+    /// <summary>
+    /// Check if this chunk (by storage_guid / SHA256 key) already has a row in the vectors table.
+    /// Returns (bucket_id, bucket_index) if found, null otherwise.
+    /// This prevents duplicate vector rows from concurrent stores of the same chunk content.
+    /// </summary>
+    private async Task<(int, int)?> TryGetExistingVectorAsync(string storageGuid)
+    {
+        await using var conn = await _dataSource.OpenConnectionAsync();
+        var cmd = new NpgsqlCommand(@"
+            SELECT bucket_id, bucket_index FROM vectors WHERE storage_guid = @sg LIMIT 1;
+        ", conn);
+        cmd.Parameters.AddWithValue("@sg", storageGuid);
+        await using var reader = await cmd.ExecuteReaderAsync();
+        if (await reader.ReadAsync())
+            return (reader.GetInt32(0), reader.GetInt32(1));
+        return null;
     }
 
     public async Task<byte[]?> GetChunkAsync(string storageGuid)
@@ -213,43 +238,65 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
     }
 
     /// <summary>
-    /// Single-round-trip upsert: bucket → index → vector insert, all inside one CTE.
-    /// Previous implementation used 3–4 separate queries per chunk.
+    /// Two-step upsert inside one transaction:
+    ///   1. UPSERT bucket_keys — atomically allocates the next index.
+    ///      The DO UPDATE actually modifies usage_count AND next_index so
+    ///      RETURNING always fires (the old no-op SET caused zero-row returns
+    ///      under high concurrency).
+    ///   2. INSERT the vector row with the allocated (bucket_id, bucket_index).
     /// </summary>
     private async Task<(int, int)> InsertChunkMetadataAsync(float[] vector, string storagePath, int size, string bucketName)
     {
         await using var conn = await _dataSource.OpenConnectionAsync();
+        await using var tx = await conn.BeginTransactionAsync();
 
-        var cmd = new NpgsqlCommand(@"
-            WITH bucket AS (
-                INSERT INTO bucket_keys (bucket_name, usage_count, next_index)
-                VALUES (@bucketName, 0, 1)
-                ON CONFLICT (bucket_name) DO UPDATE SET usage_count = bucket_keys.usage_count
-                RETURNING id
-            ),
-            idx AS (
-                UPDATE bucket_keys
-                SET next_index = next_index + 1
-                WHERE id = (SELECT id FROM bucket)
-                RETURNING id AS bucket_id, next_index - 1 AS bucket_index
-            )
-            INSERT INTO vectors (vector, storage_guid, size, created_at, bucket_id, bucket_index)
-            SELECT @vector, @storagePath, @size, NOW(), idx.bucket_id, idx.bucket_index
-            FROM idx
-            RETURNING bucket_id, bucket_index;
-        ", conn);
-        cmd.Parameters.AddWithValue("@bucketName", bucketName);
-        cmd.Parameters.AddWithValue("@vector", vector);
-        cmd.Parameters.AddWithValue("@storagePath", storagePath);
-        cmd.Parameters.AddWithValue("@size", size);
-
-        await using var reader = await cmd.ExecuteReaderAsync();
-        if (await reader.ReadAsync())
+        try
         {
-            return (reader.GetInt32(0), reader.GetInt32(1));
-        }
+            // Step 1: Upsert bucket and atomically allocate an index.
+            // - Fresh insert: usage_count=1, next_index=2  → allocated index = 1  (next_index-1)
+            // - Conflict:     usage_count++, next_index++   → allocated index = old next_index  (next_index-1)
+            // Because the DO UPDATE genuinely changes column values, RETURNING always fires.
+            var bucketCmd = new NpgsqlCommand(@"
+                INSERT INTO bucket_keys (bucket_name, usage_count, next_index)
+                VALUES (@bucketName, 1, 2)
+                ON CONFLICT (bucket_name) DO UPDATE SET
+                    usage_count = bucket_keys.usage_count + 1,
+                    next_index  = bucket_keys.next_index  + 1
+                RETURNING id, next_index - 1 AS bucket_index;
+            ", conn, tx);
+            bucketCmd.Parameters.AddWithValue("@bucketName", bucketName);
 
-        throw new InvalidOperationException($"InsertChunkMetadataAsync: CTE returned no rows for bucket '{bucketName}'");
+            int bucketId;
+            int bucketIndex;
+            await using (var reader = await bucketCmd.ExecuteReaderAsync())
+            {
+                if (!await reader.ReadAsync())
+                    throw new InvalidOperationException($"InsertChunkMetadataAsync: UPSERT returned no rows for bucket '{bucketName}'");
+                bucketId    = reader.GetInt32(0);
+                bucketIndex = reader.GetInt32(1);
+            }
+
+            // Step 2: Insert the vector metadata.
+            var vectorCmd = new NpgsqlCommand(@"
+                INSERT INTO vectors (vector, storage_guid, size, created_at, bucket_id, bucket_index)
+                VALUES (@vector, @storagePath, @size, NOW(), @bucketId, @bucketIndex);
+            ", conn, tx);
+            vectorCmd.Parameters.AddWithValue("@vector", vector);
+            vectorCmd.Parameters.AddWithValue("@storagePath", storagePath);
+            vectorCmd.Parameters.AddWithValue("@size", size);
+            vectorCmd.Parameters.AddWithValue("@bucketId", bucketId);
+            vectorCmd.Parameters.AddWithValue("@bucketIndex", bucketIndex);
+
+            await vectorCmd.ExecuteNonQueryAsync();
+            await tx.CommitAsync();
+
+            return (bucketId, bucketIndex);
+        }
+        catch
+        {
+            await tx.RollbackAsync();
+            throw;
+        }
     }
 
     private async Task<List<(float[] vector, string storageGuid, long id, long index)>> GetVectorsByBucketAsync(string bucketName)
@@ -273,6 +320,64 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
                 reader.GetInt32(2),
                 reader.GetInt32(3)));
         }
+        return results;
+    }
+
+    /// <summary>
+    /// Batch-fetch vectors from multiple buckets in a single Postgres round-trip.
+    /// Filters out known-missing buckets beforehand and marks newly-empty ones.
+    /// Returns all vectors grouped by bucket name.
+    /// </summary>
+    public async Task<List<(float[] vector, string storageGuid, long bucketId, long bucketIndex)>> GetVectorsByBucketsAsync(List<string> bucketNames)
+    {
+        if (bucketNames == null || bucketNames.Count == 0)
+            return new List<(float[], string, long, long)>();
+
+        // Filter out buckets we already know are empty (TTL-based cache)
+        var toQuery = new List<string>();
+        foreach (var name in bucketNames)
+        {
+            if (!IsKnownMissingBucket(name))
+                toQuery.Add(name);
+        }
+
+        if (toQuery.Count == 0)
+            return new List<(float[], string, long, long)>();
+
+        var results = new List<(float[] vector, string storageGuid, long bucketId, long bucketIndex)>();
+        // Track which buckets returned rows so we can mark the rest as missing
+        var foundBuckets = new HashSet<string>();
+
+        await using var conn = await _dataSource.OpenConnectionAsync();
+        var cmd = new NpgsqlCommand(@"
+            SELECT v.vector, v.storage_guid, v.bucket_id, v.bucket_index, b.bucket_name
+            FROM vectors v
+            INNER JOIN bucket_keys b ON v.bucket_id = b.id
+            WHERE b.bucket_name = ANY(@names);
+        ", conn);
+        cmd.Parameters.AddWithValue("@names", toQuery.ToArray());
+
+        await using var reader = await cmd.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            var bucketName = reader.GetString(4);
+            foundBuckets.Add(bucketName);
+            results.Add((
+                reader.GetFieldValue<float[]>(0),
+                reader.GetString(1),
+                reader.GetInt32(2),
+                reader.GetInt32(3)));
+        }
+
+        // Mark buckets that returned zero rows as missing (avoids future Postgres round-trips)
+        foreach (var name in toQuery)
+        {
+            if (!foundBuckets.Contains(name))
+                MarkMissingBucket(name);
+            else
+                ClearMissingBucket(name);
+        }
+
         return results;
     }
 

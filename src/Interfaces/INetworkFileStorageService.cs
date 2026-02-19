@@ -11,5 +11,9 @@ namespace Agent.Interfaces.Infs
         public Task<M_Bucket> ReadBucket(string bucket_Id);
         public Task<byte[]?> GetChunkAsync(string storageGuid);
         public Task<byte[]?> GetChunkByReferenceAsync(ulong bucketId, ulong bucketIndex);
+        /// <summary>
+        /// Batch-fetch vectors from multiple buckets in a single round-trip.
+        /// </summary>
+        public Task<List<(float[] vector, string storageGuid, long bucketId, long bucketIndex)>> GetVectorsByBucketsAsync(List<string> bucketNames);
     }
 }

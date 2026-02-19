@@ -285,5 +285,11 @@ public class S3StorageService : INetworkFileStorageService
             _dbSemaphore.Release();
         }
     }
+
+    public async Task<List<(float[] vector, string storageGuid, long bucketId, long bucketIndex)>> GetVectorsByBucketsAsync(List<string> bucketNames)
+    {
+        // S3 backend not actively used — stub for interface compliance
+        throw new NotSupportedException("GetVectorsByBucketsAsync not supported on S3StorageService. Use RocksDB backend.");
+    }
 }
 

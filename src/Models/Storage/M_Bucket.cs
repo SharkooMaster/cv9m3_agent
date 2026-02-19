@@ -1,5 +1,7 @@
 
 using System.Collections.Concurrent;
+using System.Security.Cryptography;
+using System.Text;
 using Agent.Utils;
 using Agent.Utils.Misc;
 
@@ -8,6 +10,10 @@ public class M_Bucket
     public string ID { get; set; }
     public ulong lastId = 0; // Possibly needs atomic operations to avoid collision
     public ConcurrentBag<M_Data> data = new ConcurrentBag<M_Data>();
+
+    // ── Dedup guard: track which chunks (by SHA256 of content) are already in the bag. ──
+    // Prevents duplicate entries from concurrent stores of the same chunk content.
+    private readonly ConcurrentDictionary<string, (ulong id, ulong index)> _seenChunks = new();
 
     public M_Bucket(string _ID)
     {
@@ -21,31 +27,48 @@ public class M_Bucket
         return to_return;
     }
 
+    private static string HashChunk(byte[] chunk)
+    {
+        using var sha = SHA256.Create();
+        var hash = sha.ComputeHash(chunk);
+        var sb = new StringBuilder(hash.Length * 2);
+        foreach (var b in hash) sb.Append(b.ToString("x2"));
+        return sb.ToString();
+    }
+
     public async Task<(ulong, ulong)> InsertData(M_Data _data, ulong _id){
         // IMPORTANT: For correct compression references, storing must return the real (bucketId, vectorIndex).
         // The Gateway/Cross encoder relies on these values being stable.
         if (_data == null) throw new ArgumentNullException(nameof(_data));
 
-        // Ensure the in-memory bucket has the data for future similarity search.
-        // (Chunk may be lazily loaded later, but we store it now.)
+        // ── Dedup: if identical chunk content is already in this bucket, return its reference. ──
+        if (_data.chunk != null && _data.chunk.Length > 0)
+        {
+            var chunkKey = HashChunk(_data.chunk);
+            if (_seenChunks.TryGetValue(chunkKey, out var existing))
+                return existing;
+
+            // Store to the configured storage backend (LocalFileStorageService / GCS / etc).
+            (int bucketId, int bucketIndex) = await NetworkFileStorageHandler.StoreVector(ID, _data);
+
+            _data.id = (ulong)bucketId;
+            _data.index = (ulong)bucketIndex;
+
+            // Add to in-memory bag for future similarity search.
+            data.Add(_data);
+            _seenChunks.TryAdd(chunkKey, ((ulong)bucketId, (ulong)bucketIndex));
+
+            return ((ulong)bucketId, (ulong)bucketIndex);
+        }
+
+        // Fallback: no chunk data — store anyway (shouldn't happen but safety net).
         data.Add(_data);
-
-        // Store to the configured storage backend (LocalFileStorageService / GCS / etc).
-        (int bucketId, int bucketIndex) = await NetworkFileStorageHandler.StoreVector(ID, _data);
-
-        _data.id = (ulong)bucketId;
-        _data.index = (ulong)bucketIndex;
-
-        return ((ulong)bucketId, (ulong)bucketIndex);
+        (int bid, int bidx) = await NetworkFileStorageHandler.StoreVector(ID, _data);
+        _data.id = (ulong)bid;
+        _data.index = (ulong)bidx;
+        return ((ulong)bid, (ulong)bidx);
     }
     
-    private static int GetMaxScanPerBucket()
-    {
-        var raw = Environment.GetEnvironmentVariable("AGENT_MAX_SCAN_PER_BUCKET");
-        if (int.TryParse(raw, out var v) && v > 0) return v;
-        return 5000; // Default: cap scan at 5 000 vectors per bucket to prevent O(n) blowup
-    }
-
     public async Task<List<M_SearchResult>> SearchData(float[] _vector, float _minimum_similarity, int _k, int _i)
     {
         ConcurrentBag<M_SearchResult> to_return = new ConcurrentBag<M_SearchResult>();
@@ -59,10 +82,8 @@ public class M_Bucket
             MaxDegreeOfParallelism = Math.Max(1, optimalParallelism)
         };
 
-        // Snapshot the concurrent bag. Cap at MAX_SCAN to prevent O(n) degradation on large buckets.
-        int maxScan = GetMaxScanPerBucket();
-        var allRows = data.ToArray();
-        var rows = allRows.Length > maxScan ? allRows.AsSpan(0, maxScan).ToArray() : allRows;
+        // Snapshot the concurrent bag — scan ALL vectors (no cap).
+        var rows = data.ToArray();
 
         // Full cosine similarity against all candidates; keep only top-K >= threshold.
         Parallel.ForEach(
