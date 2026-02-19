@@ -17,11 +17,18 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
     private readonly NpgsqlDataSource _dataSource;
     private readonly RocksDb _rocksDb;
     private readonly string _myPodName;
-    private static readonly SemaphoreSlim _dbSemaphore = new(GetDbConcurrencyLimit(), GetDbConcurrencyLimit());
     private static readonly ConcurrentDictionary<string, long> _missingBucketCache = new();
     private static readonly ConcurrentDictionary<string, DateTime> _agentListCache = new();
     private static DateTime _agentListCacheTime = DateTime.MinValue;
     private static readonly object _agentListLock = new object();
+
+    // ── Ownership write-behind batch ──
+    private static readonly ConcurrentQueue<(string chunkKey, string agent)> _ownershipQueue = new();
+    private static readonly Timer _ownershipFlushTimer = new(_ => FlushOwnershipQueueAsync().ConfigureAwait(false), null, 500, 500);
+    private static NpgsqlDataSource? _sharedDataSource;
+
+    // ── Ownership read cache (chunkKey → list of agent IPs) ──
+    private static readonly ConcurrentDictionary<string, (List<string> agents, DateTime ts)> _ownershipCache = new();
 
     public RocksDbStorageService(string rocksDbPath, string postgresConnectionString)
     {
@@ -32,7 +39,9 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
         var rocksOptions = new DbOptions().SetCreateIfMissing(true);
         _rocksDb = RocksDb.Open(rocksOptions, rocksDbPath);
         _dataSource = NpgsqlDataSource.Create(BuildConnectionString(postgresConnectionString));
-        _myPodName = Environment.GetEnvironmentVariable("MY_POD_NAME") ?? Environment.GetEnvironmentVariable("MY_POD_IP") ?? "unknown";
+        _sharedDataSource = _dataSource;
+        // Use pod IP for chunk_owners so other agents can connect via gRPC (pod names aren't DNS-resolvable in a DaemonSet)
+        _myPodName = Environment.GetEnvironmentVariable("MY_POD_IP") ?? Environment.GetEnvironmentVariable("MY_POD_NAME") ?? "unknown";
         
         // Ensure chunk_owners table exists (synchronous with timeout)
         try
@@ -102,8 +111,8 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
         // Store locally in RocksDB
         _rocksDb.Put(Encoding.UTF8.GetBytes(key), data.chunk);
         
-        // Record ownership in Postgres (this agent has it)
-        await RecordChunkOwnershipAsync(key, _myPodName);
+        // Batch ownership write (non-blocking)
+        _ownershipQueue.Enqueue((key, _myPodName));
         
         // Replicate to N other agents (fire and forget for performance)
         _ = Task.Run(async () => await ReplicateChunkAsync(key, data.chunk));
@@ -118,14 +127,10 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
 
         var key = NormalizeStorageKey(storageGuid);
         
-        // Try local RocksDB first (fast path)
+        // Try local RocksDB first (fast path — no Postgres hit)
         byte[]? bytes = _rocksDb.Get(Encoding.UTF8.GetBytes(key));
         if (bytes != null && bytes.Length > 0)
-        {
-            // Cache ownership if we have it locally
-            _ = Task.Run(async () => await RecordChunkOwnershipAsync(key, _myPodName));
             return bytes;
-        }
         
         // Local miss - try remote fetch
         return await FetchChunkFromRemoteAsync(key);
@@ -133,10 +138,10 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
 
     public async Task<byte[]?> GetChunkByReferenceAsync(ulong bucketId, ulong bucketIndex)
     {
-        await _dbSemaphore.WaitAsync();
-        try
+        // Look up the storage key first, then release the connection before calling GetChunkAsync
+        string? storageGuid;
+        await using (var conn = await _dataSource.OpenConnectionAsync())
         {
-            await using var conn = await _dataSource.OpenConnectionAsync();
             var cmd = new NpgsqlCommand(@"
                 SELECT storage_guid
                 FROM vectors
@@ -147,23 +152,12 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
             cmd.Parameters.AddWithValue("@bucketIndex", (long)bucketIndex);
 
             var storageGuidObj = await cmd.ExecuteScalarAsync();
-            var storageGuid = Convert.ToString(storageGuidObj);
-            if (string.IsNullOrWhiteSpace(storageGuid))
-                return null;
-            return await GetChunkAsync(storageGuid);
+            storageGuid = Convert.ToString(storageGuidObj);
         }
-        finally
-        {
-            _dbSemaphore.Release();
-        }
-    }
-
-    private static int GetDbConcurrencyLimit()
-    {
-        var raw = Environment.GetEnvironmentVariable("AGENT_DB_CONCURRENCY");
-        if (int.TryParse(raw, out var v) && v > 0)
-            return v;
-        return 24;
+        // Connection is released — safe to call GetChunkAsync (which may also use Postgres)
+        if (string.IsNullOrWhiteSpace(storageGuid))
+            return null;
+        return await GetChunkAsync(storageGuid);
     }
 
     private static int GetMissingBucketTtlSeconds()
@@ -220,170 +214,132 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
 
     private async Task<(int, int)> InsertChunkMetadataAsync(float[] vector, string storagePath, int size, string bucketName)
     {
-        await _dbSemaphore.WaitAsync();
-        try
+        await using var conn = await _dataSource.OpenConnectionAsync();
+
+        int bucketId;
+        var checkBucketCmd = new NpgsqlCommand("SELECT id FROM bucket_keys WHERE bucket_name = @bucketName LIMIT 1", conn);
+        checkBucketCmd.Parameters.AddWithValue("@bucketName", bucketName);
+        var existingId = await checkBucketCmd.ExecuteScalarAsync();
+
+        if (existingId != null)
         {
-            await using var conn = await _dataSource.OpenConnectionAsync();
-
-            int bucketId;
-            var checkBucketCmd = new NpgsqlCommand("SELECT id FROM bucket_keys WHERE bucket_name = @bucketName LIMIT 1", conn);
-            checkBucketCmd.Parameters.AddWithValue("@bucketName", bucketName);
-            var existingId = await checkBucketCmd.ExecuteScalarAsync();
-
-            if (existingId != null)
-            {
-                bucketId = (int)existingId;
-            }
-            else
-            {
-                var insertBucketCmd = new NpgsqlCommand(@"
-                    INSERT INTO bucket_keys (bucket_name, usage_count, next_index)
-                    VALUES (@bucketName, 0, 1)
-                    RETURNING id
-                ", conn);
-                insertBucketCmd.Parameters.AddWithValue("@bucketName", bucketName);
-                bucketId = (int)(await insertBucketCmd.ExecuteScalarAsync())!;
-            }
-
-            var getNextIndexCmd = new NpgsqlCommand(@"
-                UPDATE bucket_keys
-                SET next_index = next_index + 1
-                WHERE id = @bucketId
-                RETURNING next_index - 1 AS bucket_index
-            ", conn);
-            getNextIndexCmd.Parameters.AddWithValue("@bucketId", bucketId);
-            int bucketIndex = (int)(await getNextIndexCmd.ExecuteScalarAsync())!;
-
-            var insertVectorCmd = new NpgsqlCommand(@"
-                INSERT INTO vectors (vector, storage_guid, size, created_at, bucket_id, bucket_index)
-                VALUES (@vector, @storagePath, @size, NOW(), @bucketId, @bucketIndex)
-            ", conn);
-            insertVectorCmd.Parameters.AddWithValue("@vector", vector);
-            insertVectorCmd.Parameters.AddWithValue("@storagePath", storagePath);
-            insertVectorCmd.Parameters.AddWithValue("@size", size);
-            insertVectorCmd.Parameters.AddWithValue("@bucketId", bucketId);
-            insertVectorCmd.Parameters.AddWithValue("@bucketIndex", bucketIndex);
-            await insertVectorCmd.ExecuteNonQueryAsync();
-
-            return (bucketId, bucketIndex);
+            bucketId = (int)existingId;
         }
-        finally
+        else
         {
-            _dbSemaphore.Release();
+            var insertBucketCmd = new NpgsqlCommand(@"
+                INSERT INTO bucket_keys (bucket_name, usage_count, next_index)
+                VALUES (@bucketName, 0, 1)
+                ON CONFLICT (bucket_name) DO UPDATE SET usage_count = bucket_keys.usage_count
+                RETURNING id
+            ", conn);
+            insertBucketCmd.Parameters.AddWithValue("@bucketName", bucketName);
+            bucketId = (int)(await insertBucketCmd.ExecuteScalarAsync())!;
         }
+
+        var getNextIndexCmd = new NpgsqlCommand(@"
+            UPDATE bucket_keys
+            SET next_index = next_index + 1
+            WHERE id = @bucketId
+            RETURNING next_index - 1 AS bucket_index
+        ", conn);
+        getNextIndexCmd.Parameters.AddWithValue("@bucketId", bucketId);
+        int bucketIndex = (int)(await getNextIndexCmd.ExecuteScalarAsync())!;
+
+        var insertVectorCmd = new NpgsqlCommand(@"
+            INSERT INTO vectors (vector, storage_guid, size, created_at, bucket_id, bucket_index)
+            VALUES (@vector, @storagePath, @size, NOW(), @bucketId, @bucketIndex)
+        ", conn);
+        insertVectorCmd.Parameters.AddWithValue("@vector", vector);
+        insertVectorCmd.Parameters.AddWithValue("@storagePath", storagePath);
+        insertVectorCmd.Parameters.AddWithValue("@size", size);
+        insertVectorCmd.Parameters.AddWithValue("@bucketId", bucketId);
+        insertVectorCmd.Parameters.AddWithValue("@bucketIndex", bucketIndex);
+        await insertVectorCmd.ExecuteNonQueryAsync();
+
+        return (bucketId, bucketIndex);
     }
 
     private async Task<List<(float[] vector, string storageGuid, long id, long index)>> GetVectorsByBucketAsync(string bucketName)
     {
         var results = new List<(float[] vector, string storageGuid, long id, long index)>();
-        await _dbSemaphore.WaitAsync();
-        try
-        {
-            await using var conn = await _dataSource.OpenConnectionAsync();
-            var cmd = new NpgsqlCommand(@"
-                SELECT v.vector, v.storage_guid, v.bucket_id, v.bucket_index
-                FROM vectors v
-                INNER JOIN bucket_keys b ON v.bucket_id = b.id
-                WHERE b.bucket_name = @bucketName;
-            ", conn);
-            cmd.Parameters.AddWithValue("@bucketName", bucketName);
+        await using var conn = await _dataSource.OpenConnectionAsync();
+        var cmd = new NpgsqlCommand(@"
+            SELECT v.vector, v.storage_guid, v.bucket_id, v.bucket_index
+            FROM vectors v
+            INNER JOIN bucket_keys b ON v.bucket_id = b.id
+            WHERE b.bucket_name = @bucketName;
+        ", conn);
+        cmd.Parameters.AddWithValue("@bucketName", bucketName);
 
-            await using var reader = await cmd.ExecuteReaderAsync();
-            while (await reader.ReadAsync())
-            {
-                results.Add((
-                    reader.GetFieldValue<float[]>(0),
-                    reader.GetString(1),
-                    reader.GetInt32(2),
-                    reader.GetInt32(3)));
-            }
-            return results;
-        }
-        finally
+        await using var reader = await cmd.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
         {
-            _dbSemaphore.Release();
+            results.Add((
+                reader.GetFieldValue<float[]>(0),
+                reader.GetString(1),
+                reader.GetInt32(2),
+                reader.GetInt32(3)));
         }
+        return results;
     }
 
     private async Task EnsureChunkOwnersTableAsync()
     {
-        await _dbSemaphore.WaitAsync();
-        try
-        {
-            await using var conn = await _dataSource.OpenConnectionAsync();
-            var cmd = new NpgsqlCommand(@"
-                CREATE TABLE IF NOT EXISTS chunk_owners (
-                    chunk_key VARCHAR(64) NOT NULL,
-                    agent_pod_name VARCHAR(255) NOT NULL,
-                    created_at TIMESTAMP DEFAULT NOW(),
-                    PRIMARY KEY (chunk_key, agent_pod_name)
-                );
-                CREATE INDEX IF NOT EXISTS idx_chunk_owners_chunk_key ON chunk_owners(chunk_key);
-                CREATE INDEX IF NOT EXISTS idx_chunk_owners_agent ON chunk_owners(agent_pod_name);
-            ", conn);
-            await cmd.ExecuteNonQueryAsync();
-            Console.WriteLine("[Storage] ✅ chunk_owners table verified/created successfully");
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"[Storage] ❌ Failed to ensure chunk_owners table: {ex.Message}");
-            Console.WriteLine($"[Storage] Exception type: {ex.GetType().Name}");
-            if (ex.InnerException != null)
-            {
-                Console.WriteLine($"[Storage] Inner exception: {ex.InnerException.Message}");
-            }
-            throw; // Re-throw so caller knows it failed
-        }
-        finally
-        {
-            _dbSemaphore.Release();
-        }
+        await using var conn = await _dataSource.OpenConnectionAsync();
+        var cmd = new NpgsqlCommand(@"
+            CREATE TABLE IF NOT EXISTS chunk_owners (
+                chunk_key VARCHAR(64) NOT NULL,
+                agent_pod_name VARCHAR(255) NOT NULL,
+                created_at TIMESTAMP DEFAULT NOW(),
+                PRIMARY KEY (chunk_key, agent_pod_name)
+            );
+            CREATE INDEX IF NOT EXISTS idx_chunk_owners_chunk_key ON chunk_owners(chunk_key);
+            CREATE INDEX IF NOT EXISTS idx_chunk_owners_agent ON chunk_owners(agent_pod_name);
+        ", conn);
+        await cmd.ExecuteNonQueryAsync();
+        Console.WriteLine("[Storage] ✅ chunk_owners table verified/created successfully");
     }
 
-    private async Task RecordChunkOwnershipAsync(string chunkKey, string agentPodName)
+    /// <summary>Batched flush — runs every 500 ms via timer, inserts all queued ownership rows in one round-trip.</summary>
+    private static async Task FlushOwnershipQueueAsync()
     {
-        await _dbSemaphore.WaitAsync();
+        if (_ownershipQueue.IsEmpty || _sharedDataSource == null)
+            return;
+
+        var batch = new List<(string key, string agent)>();
+        while (batch.Count < 500 && _ownershipQueue.TryDequeue(out var item))
+            batch.Add(item);
+
+        if (batch.Count == 0)
+            return;
+
         try
         {
-            await using var conn = await _dataSource.OpenConnectionAsync();
-            var cmd = new NpgsqlCommand(@"
-                INSERT INTO chunk_owners (chunk_key, agent_pod_name, created_at)
-                VALUES (@chunkKey, @agentPodName, NOW())
-                ON CONFLICT (chunk_key, agent_pod_name) DO NOTHING;
-            ", conn);
-            cmd.Parameters.AddWithValue("@chunkKey", chunkKey);
-            cmd.Parameters.AddWithValue("@agentPodName", agentPodName);
+            await using var conn = await _sharedDataSource.OpenConnectionAsync();
+            // Build a single multi-row INSERT
+            var sb = new StringBuilder("INSERT INTO chunk_owners (chunk_key, agent_pod_name, created_at) VALUES ");
+            var cmd = new NpgsqlCommand();
+            cmd.Connection = conn;
+
+            for (int i = 0; i < batch.Count; i++)
+            {
+                if (i > 0) sb.Append(',');
+                sb.Append($"(@k{i}, @a{i}, NOW())");
+                cmd.Parameters.AddWithValue($"k{i}", batch[i].key);
+                cmd.Parameters.AddWithValue($"a{i}", batch[i].agent);
+            }
+
+            sb.Append(" ON CONFLICT (chunk_key, agent_pod_name) DO NOTHING;");
+            cmd.CommandText = sb.ToString();
             await cmd.ExecuteNonQueryAsync();
-        }
-        catch (Npgsql.PostgresException ex) when (ex.SqlState == "42P01") // Table doesn't exist
-        {
-            Console.WriteLine($"[Storage] chunk_owners table doesn't exist, creating it now...");
-            try
-            {
-                await EnsureChunkOwnersTableAsync();
-                // Retry the insert
-                await using var conn2 = await _dataSource.OpenConnectionAsync();
-                var cmd2 = new NpgsqlCommand(@"
-                    INSERT INTO chunk_owners (chunk_key, agent_pod_name, created_at)
-                    VALUES (@chunkKey, @agentPodName, NOW())
-                    ON CONFLICT (chunk_key, agent_pod_name) DO NOTHING;
-                ", conn2);
-                cmd2.Parameters.AddWithValue("@chunkKey", chunkKey);
-                cmd2.Parameters.AddWithValue("@agentPodName", agentPodName);
-                await cmd2.ExecuteNonQueryAsync();
-            }
-            catch (Exception retryEx)
-            {
-                Console.WriteLine($"[Storage] Failed to record chunk ownership after table creation: {retryEx.Message}");
-            }
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[Storage] Failed to record chunk ownership for {chunkKey} on {agentPodName}: {ex.Message}");
-        }
-        finally
-        {
-            _dbSemaphore.Release();
+            Console.WriteLine($"[Storage] Ownership batch flush failed ({batch.Count} rows): {ex.Message}");
+            // Re-enqueue so we don't lose data
+            foreach (var item in batch)
+                _ownershipQueue.Enqueue(item);
         }
     }
 
@@ -428,7 +384,6 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
         // Fallback: query Postgres for known agents
         if (agents.Count == 0)
         {
-            await _dbSemaphore.WaitAsync();
             try
             {
                 await using var conn = await _dataSource.OpenConnectionAsync();
@@ -454,10 +409,6 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
             catch (Exception ex)
             {
                 Console.WriteLine($"[Storage] Failed to query agents from Postgres: {ex.Message}");
-            }
-            finally
-            {
-                _dbSemaphore.Release();
             }
         }
 
@@ -547,7 +498,7 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
         await Task.WhenAll(replicationTasks);
     }
 
-    public async Task StoreChunkByKeyInternalAsync(string chunkKey, byte[] chunkData)
+    public Task StoreChunkByKeyInternalAsync(string chunkKey, byte[] chunkData)
     {
         // Verify chunk key matches data
         var expectedKey = GenerateChunkKey(chunkData);
@@ -559,41 +510,47 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
         // Store locally in RocksDB
         _rocksDb.Put(Encoding.UTF8.GetBytes(chunkKey), chunkData);
         
-        // Record ownership
-        await RecordChunkOwnershipAsync(chunkKey, _myPodName);
-    }
-
-    private async Task RecordRemoteChunkOwnershipAsync(string chunkKey, string agentPod)
-    {
-        // This method is no longer needed - we now use StoreChunkByKey RPC
-        // Keeping for backwards compatibility but it's a no-op
+        // Batch ownership write (non-blocking)
+        _ownershipQueue.Enqueue((chunkKey, _myPodName));
+        return Task.CompletedTask;
     }
 
     private async Task<byte[]?> FetchChunkFromRemoteAsync(string chunkKey)
     {
-        // Query Postgres for agents that have this chunk
-        var ownerAgents = new List<string>();
-        await _dbSemaphore.WaitAsync();
-        try
+        // ── Check in-memory ownership cache first ──
+        List<string> ownerAgents;
+        if (_ownershipCache.TryGetValue(chunkKey, out var cached) && (DateTime.UtcNow - cached.ts).TotalSeconds < 60)
         {
-            await using var conn = await _dataSource.OpenConnectionAsync();
-            var cmd = new NpgsqlCommand(@"
-                SELECT agent_pod_name 
-                FROM chunk_owners 
-                WHERE chunk_key = @chunkKey
-                GROUP BY agent_pod_name
-                ORDER BY MIN(created_at) ASC;
-            ", conn);
-            cmd.Parameters.AddWithValue("@chunkKey", chunkKey);
-            await using var reader = await cmd.ExecuteReaderAsync();
-            while (await reader.ReadAsync())
-            {
-                ownerAgents.Add(reader.GetString(0));
-            }
+            ownerAgents = cached.agents;
         }
-        finally
+        else
         {
-            _dbSemaphore.Release();
+            // Query Postgres for agents that have this chunk
+            ownerAgents = new List<string>();
+            try
+            {
+                await using var conn = await _dataSource.OpenConnectionAsync();
+                var cmd = new NpgsqlCommand(@"
+                    SELECT agent_pod_name 
+                    FROM chunk_owners 
+                    WHERE chunk_key = @chunkKey
+                    GROUP BY agent_pod_name
+                    ORDER BY MIN(created_at) ASC;
+                ", conn);
+                cmd.Parameters.AddWithValue("@chunkKey", chunkKey);
+                await using var reader = await cmd.ExecuteReaderAsync();
+                while (await reader.ReadAsync())
+                {
+                    ownerAgents.Add(reader.GetString(0));
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[Storage] Failed to query chunk owners for {chunkKey}: {ex.Message}");
+            }
+
+            // Cache even empty results briefly to avoid hammering Postgres
+            _ownershipCache[chunkKey] = (ownerAgents, DateTime.UtcNow);
         }
 
         if (ownerAgents.Count == 0)
@@ -627,7 +584,7 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
                     
                     // Cache locally for future access
                     _rocksDb.Put(Encoding.UTF8.GetBytes(chunkKey), chunkData);
-                    await RecordChunkOwnershipAsync(chunkKey, _myPodName);
+                    _ownershipQueue.Enqueue((chunkKey, _myPodName));
                     
                     Console.WriteLine($"[Storage] Fetched chunk {chunkKey} from remote agent {agentPod}");
                     return chunkData;
