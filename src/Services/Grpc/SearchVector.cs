@@ -2,7 +2,6 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Numerics;
-using System.Text.Json;
 using Agent.Modules.Agneta;
 using Agent.Modules.Peer;
 using Agent.Modules.Storage;
@@ -10,15 +9,14 @@ using Agent.Utils.Globals;
 using Agent.Utils.Misc;
 using Agent.Utils;
 using Google.Protobuf;
-using Google.Protobuf.Collections;
 using Grpc.Core;
-using Grpc.Net.Client;
 
 public class SearchVectorService : SearchVector.SearchVectorBase
 {
     /// <summary>
     /// Unified search: gather ALL vectors from ALL requested buckets (in-memory + single Postgres batch),
     /// then run a single cosine similarity pass over the combined set.
+    /// Postgres results are cached in Globals._NODE.Buckets so repeat lookups never hit the DB.
     /// </summary>
     public override async Task<SearchVector_Result> Get(SearchVector_Req request, ServerCallContext context)
     {
@@ -29,9 +27,7 @@ public class SearchVectorService : SearchVector.SearchVectorBase
             var allBitstrings = request.Bitstrings.ToList();
 
             if (allBitstrings.Count == 0)
-            {
                 return MakeSaveResult(request.Index);
-            }
 
             // ── DHT range check (distributed mode only) ──
             if (!LocalModeDetector.IsLocalMode())
@@ -47,12 +43,10 @@ public class SearchVectorService : SearchVector.SearchVectorBase
 
             // ──────────────────────────────────────────────────────────────
             // Step 1: Collect vectors from all buckets.
-            //   a) In-memory buckets (already loaded) — free
+            //   a) In-memory buckets (already loaded / cached) — zero cost
             //   b) Remaining buckets — single batch Postgres query
+            //   c) Cache Postgres results in memory for future searches
             // ──────────────────────────────────────────────────────────────
-            var gatherSw = Stopwatch.StartNew();
-
-            // Lightweight struct to avoid allocations
             var candidates = new List<(float[] vector, string storageGuid, ulong bucketId, ulong bucketIndex)>();
             var bucketsToFetch = new List<string>();
 
@@ -77,152 +71,120 @@ public class SearchVectorService : SearchVector.SearchVectorBase
             if (bucketsToFetch.Count > 0)
             {
                 var dbRows = await NetworkFileStorageHandler.GetVectorsByBucketsAsync(bucketsToFetch);
-                foreach (var (vec, sg, bid, bidx) in dbRows)
+
+                // Group by bucket name and import into in-memory cache
+                // so future searches for these buckets skip Postgres entirely.
+                var byBucket = new Dictionary<string, List<(float[] vec, string sg, long bid, long bidx)>>();
+                foreach (var row in dbRows)
                 {
-                    if (vec != null && vec.Length == queryVector.Length)
-                        candidates.Add((vec, sg, (ulong)bid, (ulong)bidx));
+                    if (row.vector != null && row.vector.Length == queryVector.Length)
+                    {
+                        candidates.Add((row.vector, row.storageGuid, (ulong)row.bucketId, (ulong)row.bucketIndex));
+
+                        if (!byBucket.TryGetValue(row.bucketName, out var list))
+                        {
+                            list = new List<(float[], string, long, long)>();
+                            byBucket[row.bucketName] = list;
+                        }
+                        list.Add((row.vector, row.storageGuid, row.bucketId, row.bucketIndex));
+                    }
+                }
+
+                // Import into Globals._NODE.Buckets (idempotent — TryAdd ignores if another thread beat us)
+                foreach (var (bName, rows) in byBucket)
+                {
+                    var newBucket = new M_Bucket(bName);
+                    foreach (var (vec, sg, bid, bidx) in rows)
+                    {
+                        newBucket.data.Add(new M_Data
+                        {
+                            vector = vec,
+                            storageGuid = sg,
+                            id = (ulong)bid,
+                            index = (ulong)bidx,
+                            chunk = null // chunk bytes loaded lazily when needed
+                        });
+                    }
+                    Globals._NODE.Buckets.TryAdd(bName, newBucket);
                 }
             }
-
-            gatherSw.Stop();
-            Observability.RecordStage("GatherVectors", gatherSw.Elapsed.TotalMilliseconds,
-                ("in_memory_buckets", allBitstrings.Count - bucketsToFetch.Count),
-                ("pg_buckets", bucketsToFetch.Count),
-                ("total_vectors", candidates.Count));
 
             if (candidates.Count == 0)
                 return MakeSaveResult(request.Index);
 
             // ──────────────────────────────────────────────────────────────
             // Step 2: Single cosine similarity pass over ALL candidates.
-            //   Parallel scan with thread-local top-K to minimise locking.
             // ──────────────────────────────────────────────────────────────
-            var simSw = Stopwatch.StartNew();
             int k = Math.Max(1, request.K);
             float threshold = request.MinimumSimilarity;
 
-            // Thread-local best candidates → merge at end
-            var globalBest = new List<(int idx, float sim)>();
-            var lockObj = new object();
+            // For small candidate sets (< 256), sequential is faster than Parallel overhead
+            (int idx, float sim) best = (-1, -1f);
 
-            Parallel.ForEach(
-                Partitioner.Create(0, candidates.Count),
-                new ParallelOptions { MaxDegreeOfParallelism = Math.Max(1, (int)(Environment.ProcessorCount * 0.75)) },
-                () => new List<(int idx, float sim)>(),  // thread-local
-                (range, _, localBest) =>
+            if (candidates.Count < 256)
+            {
+                for (int i = 0; i < candidates.Count; i++)
                 {
-                    for (int i = range.Item1; i < range.Item2; i++)
-                    {
-                        var vec = candidates[i].vector;
-                        // Quick NaN guard
-                        bool bad = false;
-                        for (int vi = 0; vi < vec.Length; vi++)
-                        {
-                            if (float.IsNaN(vec[vi]) || float.IsInfinity(vec[vi]))
-                            { bad = true; break; }
-                        }
-                        if (bad) continue;
-
-                        float sim = Misc.CalculateDistance(queryVector, vec);
-                        if (sim >= threshold)
-                        {
-                            if (localBest.Count < k)
-                            {
-                                localBest.Add((i, sim));
-                            }
-                            else
-                            {
-                                // Replace worst
-                                int worstIdx = 0;
-                                float worstSim = localBest[0].sim;
-                                for (int j = 1; j < localBest.Count; j++)
-                                {
-                                    if (localBest[j].sim < worstSim)
-                                    { worstSim = localBest[j].sim; worstIdx = j; }
-                                }
-                                if (sim > worstSim)
-                                    localBest[worstIdx] = (i, sim);
-                            }
-                        }
-                    }
-                    return localBest;
-                },
-                localBest =>
-                {
-                    if (localBest.Count == 0) return;
-                    lock (lockObj)
-                    {
-                        foreach (var c in localBest)
-                        {
-                            if (globalBest.Count < k)
-                            {
-                                globalBest.Add(c);
-                            }
-                            else
-                            {
-                                int worstIdx = 0;
-                                float worstSim = globalBest[0].sim;
-                                for (int j = 1; j < globalBest.Count; j++)
-                                {
-                                    if (globalBest[j].sim < worstSim)
-                                    { worstSim = globalBest[j].sim; worstIdx = j; }
-                                }
-                                if (c.sim > worstSim)
-                                    globalBest[worstIdx] = c;
-                            }
-                        }
-                    }
+                    var vec = candidates[i].vector;
+                    float sim = Misc.CalculateDistance(queryVector, vec);
+                    if (sim >= threshold && sim > best.sim)
+                        best = (i, sim);
                 }
-            );
+            }
+            else
+            {
+                // Parallel scan for large candidate sets
+                (int idx, float sim) globalBest = (-1, -1f);
+                var lockObj = new object();
 
-            simSw.Stop();
-            Observability.RecordStage("CosineSimilarity", simSw.Elapsed.TotalMilliseconds,
-                ("candidates_scanned", candidates.Count),
-                ("matches_found", globalBest.Count));
+                Parallel.ForEach(
+                    Partitioner.Create(0, candidates.Count),
+                    new ParallelOptions { MaxDegreeOfParallelism = Math.Max(1, (int)(Environment.ProcessorCount * 0.75)) },
+                    () => (-1, -1f),  // thread-local best
+                    (range, _, localBest) =>
+                    {
+                        for (int i = range.Item1; i < range.Item2; i++)
+                        {
+                            float sim = Misc.CalculateDistance(queryVector, candidates[i].vector);
+                            if (sim >= threshold && sim > localBest.Item2)
+                                localBest = (i, sim);
+                        }
+                        return localBest;
+                    },
+                    localBest =>
+                    {
+                        if (localBest.Item1 < 0) return;
+                        lock (lockObj)
+                        {
+                            if (localBest.Item2 > globalBest.sim)
+                                globalBest = localBest;
+                        }
+                    }
+                );
+                best = globalBest;
+            }
 
-            if (globalBest.Count == 0)
+            if (best.idx < 0)
                 return MakeSaveResult(request.Index);
 
             // ──────────────────────────────────────────────────────────────
-            // Step 3: Fetch chunk bytes for top-K results (lazy — only for matches).
+            // Step 3: Return the best match.
+            //   Fetch chunk bytes from local cache/RocksDB only.
+            //   If not locally available, return empty — gateway handles it.
             // ──────────────────────────────────────────────────────────────
-            var fetchSw = Stopwatch.StartNew();
-            var sortedBest = globalBest.OrderByDescending(b => b.sim).ToList();
+            var c = candidates[best.idx];
+            byte[]? chunk = await ChunkCacheHandler.GetChunkAsync(c.storageGuid);
+
             var res = new SearchVector_Result { Save = false };
-
-            var fetchTasks = sortedBest.Select(async b =>
+            res.Results.Add(new SearchVectorObject
             {
-                var c = candidates[b.idx];
-                byte[]? chunk = await ChunkCacheHandler.GetChunkAsync(c.storageGuid);
-                if (chunk != null && chunk.Length > 0)
-                {
-                    return new SearchVectorObject
-                    {
-                        BucketId = c.bucketId,
-                        BucketKey = (long)c.bucketIndex,
-                        Similarity = b.sim,
-                        Chunk = ByteString.CopyFrom(chunk),
-                        Index = request.Index
-                    };
-                }
-                return null;
+                BucketId = c.bucketId,
+                BucketKey = (long)c.bucketIndex,
+                Similarity = best.sim,
+                Chunk = (chunk != null && chunk.Length > 0) ? ByteString.CopyFrom(chunk) : ByteString.Empty,
+                Index = request.Index
             });
-
-            var fetchedResults = await Task.WhenAll(fetchTasks);
-            foreach (var r in fetchedResults)
-            {
-                if (r != null)
-                    res.Results.Add(r);
-            }
-            fetchSw.Stop();
-            Observability.RecordStage("FetchChunks", fetchSw.Elapsed.TotalMilliseconds,
-                ("fetched", res.Results.Count));
-
-            if (res.Results.Count > 0)
-                return res;
-
-            // All chunk fetches failed — fall back to save
-            return MakeSaveResult(request.Index);
+            return res;
         }
         catch (Exception ex)
         {
@@ -249,19 +211,13 @@ public class SearchVectorService : SearchVector.SearchVectorBase
         try
         {
             var _client = GrpcChannelFactory.GetClient(target: _ip, ctor: chan => new SearchVector.SearchVectorClient(chan), roundRobin: false);
-
             var deadline = DateTime.UtcNow.AddSeconds(Globals.GRPC_TIMEOUT);
             return await _client.GetAsync(req, deadline: deadline, cancellationToken: ct);
         }
-        catch(RpcException ex)
-        {
-            await AgnetaHandler.Log(2, $"gRPC error: {ex.Status.StatusCode} - {ex.Status.Detail}");
-            throw;
-        }
+        catch (RpcException) { throw; }
         catch (Exception ex)
         {
-            await AgnetaHandler.Log(2, $"[SearchVector] General error: {ex.Message}");
-            throw;
+            throw new RpcException(new Status(StatusCode.Internal, $"[SearchVector] {ex.Message}"));
         }
     }
 }

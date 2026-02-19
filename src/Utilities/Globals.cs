@@ -43,11 +43,9 @@ public static class Globals
             KeepAlivePingDelay = TimeSpan.FromSeconds(30),
             KeepAlivePingTimeout = TimeSpan.FromSeconds(10)
         },
-        LoggerFactory = LoggerFactory.Create(lb =>
-        {
-            lb.AddConsole();
-            lb.SetMinimumLevel(LogLevel.Debug);
-        }),
+        // Debug logging removed — it serialises all gRPC output through
+        // Console.WriteLine under the hood, creating a global lock that
+        // blocks every concurrent handler when there are 100+ in-flight RPCs.
         ServiceConfig = new Grpc.Net.Client.Configuration.ServiceConfig()
         {
             MethodConfigs =

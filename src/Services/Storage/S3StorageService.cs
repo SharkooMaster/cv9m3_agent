@@ -286,9 +286,8 @@ public class S3StorageService : INetworkFileStorageService
         }
     }
 
-    public async Task<List<(float[] vector, string storageGuid, long bucketId, long bucketIndex)>> GetVectorsByBucketsAsync(List<string> bucketNames)
+    public Task<List<(float[] vector, string storageGuid, long bucketId, long bucketIndex, string bucketName)>> GetVectorsByBucketsAsync(List<string> bucketNames)
     {
-        // S3 backend not actively used — stub for interface compliance
         throw new NotSupportedException("GetVectorsByBucketsAsync not supported on S3StorageService. Use RocksDB backend.");
     }
 }

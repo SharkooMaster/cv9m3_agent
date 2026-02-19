@@ -13,7 +13,8 @@ namespace Agent.Interfaces.Infs
         public Task<byte[]?> GetChunkByReferenceAsync(ulong bucketId, ulong bucketIndex);
         /// <summary>
         /// Batch-fetch vectors from multiple buckets in a single round-trip.
+        /// Returns (vector, storageGuid, bucketId, bucketIndex, bucketName).
         /// </summary>
-        public Task<List<(float[] vector, string storageGuid, long bucketId, long bucketIndex)>> GetVectorsByBucketsAsync(List<string> bucketNames);
+        public Task<List<(float[] vector, string storageGuid, long bucketId, long bucketIndex, string bucketName)>> GetVectorsByBucketsAsync(List<string> bucketNames);
     }
 }

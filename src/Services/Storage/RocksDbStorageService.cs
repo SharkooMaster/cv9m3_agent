@@ -4,6 +4,7 @@ using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Text;
 using Agent.Interfaces.Infs;
+using Agent.Modules.Storage;
 using Agent.Utils.Globals;
 using Google.Protobuf;
 using Grpc.Core;
@@ -108,15 +109,20 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
 
         var key = GenerateChunkKey(data.chunk);
 
-        // ── Dedup fast-path: if this exact chunk already has a vector entry, return it. ──
-        // Same chunk content → same SHA256 → same key → same vector → same bucket.
-        // No need to store, replicate, or insert metadata again.
-        var existing = await TryGetExistingVectorAsync(key);
+        // ── Use ONE Postgres connection for dedup check + insert ──
+        // This halves connection pool pressure under high concurrency.
+        await using var conn = await _dataSource.OpenConnectionAsync();
+
+        // Dedup fast-path: if this exact chunk already has a vector entry, return it.
+        var existing = await TryGetExistingVectorInternal(conn, key);
         if (existing.HasValue)
             return existing.Value;
         
         // Store locally in RocksDB
         _rocksDb.Put(Encoding.UTF8.GetBytes(key), data.chunk);
+
+        // Cache in memory for fast search-time fetch
+        ChunkCacheHandler.CacheChunk(key, data.chunk);
         
         // Batch ownership write (non-blocking)
         _ownershipQueue.Enqueue((key, _myPodName));
@@ -124,17 +130,15 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
         // Replicate to N other agents (fire and forget for performance)
         _ = Task.Run(async () => await ReplicateChunkAsync(key, data.chunk));
         
-        return await InsertChunkMetadataAsync(data.vector, key, data.chunk.Length, bucket_Id);
+        return await InsertChunkMetadataInternal(conn, data.vector, key, data.chunk.Length, bucket_Id);
     }
 
     /// <summary>
     /// Check if this chunk (by storage_guid / SHA256 key) already has a row in the vectors table.
-    /// Returns (bucket_id, bucket_index) if found, null otherwise.
-    /// This prevents duplicate vector rows from concurrent stores of the same chunk content.
+    /// Uses a provided connection to avoid opening a second one.
     /// </summary>
-    private async Task<(int, int)?> TryGetExistingVectorAsync(string storageGuid)
+    private static async Task<(int, int)?> TryGetExistingVectorInternal(NpgsqlConnection conn, string storageGuid)
     {
-        await using var conn = await _dataSource.OpenConnectionAsync();
         var cmd = new NpgsqlCommand(@"
             SELECT bucket_id, bucket_index FROM vectors WHERE storage_guid = @sg LIMIT 1;
         ", conn);
@@ -212,8 +216,8 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
         var b = new NpgsqlConnectionStringBuilder(raw);
         if (b.MaxPoolSize <= 0)
             b.MaxPoolSize = 120;
-        if (b.MinPoolSize < 0)
-            b.MinPoolSize = 0;
+        // Pre-warm the pool so hot-path requests don't pay connection-open cost.
+        b.MinPoolSize = Math.Max(b.MinPoolSize, 10);
         return b.ConnectionString;
     }
 
@@ -238,24 +242,16 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
     }
 
     /// <summary>
-    /// Two-step upsert inside one transaction:
+    /// Two-step upsert inside one transaction using a provided connection.
     ///   1. UPSERT bucket_keys — atomically allocates the next index.
-    ///      The DO UPDATE actually modifies usage_count AND next_index so
-    ///      RETURNING always fires (the old no-op SET caused zero-row returns
-    ///      under high concurrency).
     ///   2. INSERT the vector row with the allocated (bucket_id, bucket_index).
     /// </summary>
-    private async Task<(int, int)> InsertChunkMetadataAsync(float[] vector, string storagePath, int size, string bucketName)
+    private static async Task<(int, int)> InsertChunkMetadataInternal(NpgsqlConnection conn, float[] vector, string storagePath, int size, string bucketName)
     {
-        await using var conn = await _dataSource.OpenConnectionAsync();
         await using var tx = await conn.BeginTransactionAsync();
 
         try
         {
-            // Step 1: Upsert bucket and atomically allocate an index.
-            // - Fresh insert: usage_count=1, next_index=2  → allocated index = 1  (next_index-1)
-            // - Conflict:     usage_count++, next_index++   → allocated index = old next_index  (next_index-1)
-            // Because the DO UPDATE genuinely changes column values, RETURNING always fires.
             var bucketCmd = new NpgsqlCommand(@"
                 INSERT INTO bucket_keys (bucket_name, usage_count, next_index)
                 VALUES (@bucketName, 1, 2)
@@ -271,12 +267,11 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
             await using (var reader = await bucketCmd.ExecuteReaderAsync())
             {
                 if (!await reader.ReadAsync())
-                    throw new InvalidOperationException($"InsertChunkMetadataAsync: UPSERT returned no rows for bucket '{bucketName}'");
+                    throw new InvalidOperationException($"InsertChunkMetadata: UPSERT returned no rows for bucket '{bucketName}'");
                 bucketId    = reader.GetInt32(0);
                 bucketIndex = reader.GetInt32(1);
             }
 
-            // Step 2: Insert the vector metadata.
             var vectorCmd = new NpgsqlCommand(@"
                 INSERT INTO vectors (vector, storage_guid, size, created_at, bucket_id, bucket_index)
                 VALUES (@vector, @storagePath, @size, NOW(), @bucketId, @bucketIndex);
@@ -328,10 +323,10 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
     /// Filters out known-missing buckets beforehand and marks newly-empty ones.
     /// Returns all vectors grouped by bucket name.
     /// </summary>
-    public async Task<List<(float[] vector, string storageGuid, long bucketId, long bucketIndex)>> GetVectorsByBucketsAsync(List<string> bucketNames)
+    public async Task<List<(float[] vector, string storageGuid, long bucketId, long bucketIndex, string bucketName)>> GetVectorsByBucketsAsync(List<string> bucketNames)
     {
         if (bucketNames == null || bucketNames.Count == 0)
-            return new List<(float[], string, long, long)>();
+            return new List<(float[], string, long, long, string)>();
 
         // Filter out buckets we already know are empty (TTL-based cache)
         var toQuery = new List<string>();
@@ -342,9 +337,9 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
         }
 
         if (toQuery.Count == 0)
-            return new List<(float[], string, long, long)>();
+            return new List<(float[], string, long, long, string)>();
 
-        var results = new List<(float[] vector, string storageGuid, long bucketId, long bucketIndex)>();
+        var results = new List<(float[] vector, string storageGuid, long bucketId, long bucketIndex, string bucketName)>();
         // Track which buckets returned rows so we can mark the rest as missing
         var foundBuckets = new HashSet<string>();
 
@@ -360,13 +355,14 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
         await using var reader = await cmd.ExecuteReaderAsync();
         while (await reader.ReadAsync())
         {
-            var bucketName = reader.GetString(4);
-            foundBuckets.Add(bucketName);
+            var bName = reader.GetString(4);
+            foundBuckets.Add(bName);
             results.Add((
                 reader.GetFieldValue<float[]>(0),
                 reader.GetString(1),
                 reader.GetInt32(2),
-                reader.GetInt32(3)));
+                reader.GetInt32(3),
+                bName));
         }
 
         // Mark buckets that returned zero rows as missing (avoids future Postgres round-trips)
@@ -393,9 +389,12 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
             );
             CREATE INDEX IF NOT EXISTS idx_chunk_owners_chunk_key ON chunk_owners(chunk_key);
             CREATE INDEX IF NOT EXISTS idx_chunk_owners_agent ON chunk_owners(agent_pod_name);
+            -- Critical performance indexes for the vectors <-> bucket_keys JOIN
+            CREATE INDEX IF NOT EXISTS idx_vectors_bucket_id ON vectors(bucket_id);
+            CREATE INDEX IF NOT EXISTS idx_vectors_storage_guid ON vectors(storage_guid);
         ", conn);
         await cmd.ExecuteNonQueryAsync();
-        Console.WriteLine("[Storage] ✅ chunk_owners table verified/created successfully");
+        Console.WriteLine("[Storage] ✅ Tables/indexes verified");
     }
 
     /// <summary>Batched flush — runs every 500 ms via timer, inserts all queued ownership rows in one round-trip.</summary>
@@ -431,9 +430,8 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
             cmd.CommandText = sb.ToString();
             await cmd.ExecuteNonQueryAsync();
         }
-        catch (Exception ex)
+        catch
         {
-            Console.WriteLine($"[Storage] Ownership batch flush failed ({batch.Count} rows): {ex.Message}");
             // Re-enqueue so we don't lose data
             foreach (var item in batch)
                 _ownershipQueue.Enqueue(item);
@@ -459,7 +457,6 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
                 ?? (Globals.AgentsLoadbalancer.Contains("headless") 
                     ? Globals.AgentsLoadbalancer 
                     : "agent-headless.crossv9.svc.cluster.local");
-            Console.WriteLine($"[Storage] Discovering agents via DNS: {headlessService}");
             
             var addresses = await Dns.GetHostAddressesAsync(headlessService);
             var myIp = Environment.GetEnvironmentVariable("MY_POD_IP");
@@ -473,10 +470,7 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
                 }
             }
         }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"[Storage] Failed to discover agents via DNS: {ex.Message}");
-        }
+        catch { /* DNS resolve failed — fall through to Postgres fallback */ }
 
         // Fallback: query Postgres for known agents
         if (agents.Count == 0)
@@ -503,10 +497,7 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
                     }
                 }
             }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[Storage] Failed to query agents from Postgres: {ex.Message}");
-            }
+            catch { /* Postgres agent query failed */ }
         }
 
         // Update cache
@@ -547,10 +538,7 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
 
         var agents = await GetActiveAgentPodsAsync();
         if (agents.Count == 0)
-        {
-            Console.WriteLine($"[Storage] No other agents available for replication of {chunkKey}");
             return;
-        }
 
         // Deterministic selection: hash chunk key to select N agents
         var selectedAgents = SelectReplicationTargets(chunkKey, agents, replicationFactor - 1); // -1 because we already stored locally
@@ -577,19 +565,9 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
                     deadline: DateTime.UtcNow.AddSeconds(10),
                     cancellationToken: CancellationToken.None);
 
-                if (res.Success)
-                {
-                    Console.WriteLine($"[Storage] Replicated chunk {chunkKey} to {agentPod}");
-                }
-                else
-                {
-                    Console.WriteLine($"[Storage] Replication to {agentPod} failed: {res.ErrorMessage}");
-                }
+                // Silently ignore success/failure — replication is best-effort background work
             }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[Storage] Failed to replicate {chunkKey} to {agentPod}: {ex.Message}");
-            }
+            catch { /* best-effort replication */ }
         });
 
         await Task.WhenAll(replicationTasks);
@@ -641,20 +619,14 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
                     ownerAgents.Add(reader.GetString(0));
                 }
             }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[Storage] Failed to query chunk owners for {chunkKey}: {ex.Message}");
-            }
+            catch { /* chunk owner query failed */ }
 
             // Cache even empty results briefly to avoid hammering Postgres
             _ownershipCache[chunkKey] = (ownerAgents, DateTime.UtcNow);
         }
 
         if (ownerAgents.Count == 0)
-        {
-            Console.WriteLine($"[Storage] No owners found for chunk {chunkKey}");
             return null;
-        }
 
         // Try fetching from each owner agent
         foreach (var agentPod in ownerAgents)
@@ -682,16 +654,10 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
                     // Cache locally for future access
                     _rocksDb.Put(Encoding.UTF8.GetBytes(chunkKey), chunkData);
                     _ownershipQueue.Enqueue((chunkKey, _myPodName));
-                    
-                    Console.WriteLine($"[Storage] Fetched chunk {chunkKey} from remote agent {agentPod}");
                     return chunkData;
                 }
             }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[Storage] Failed to fetch {chunkKey} from {agentPod}: {ex.Message}");
-                // Continue to next agent
-            }
+            catch { /* try next agent */ }
         }
 
         return null;

@@ -94,7 +94,6 @@ public static class NodeService
     
     private static async Task<string> S_FindPeerResponsible(ulong target, string _ip)
     {
-        Console.WriteLine("$$$ FindPeerResponsible $$$");
         FindPeerResponsibleService _findPeerResponsible = new FindPeerResponsibleService();
 
         QueryReq req = new QueryReq() { Val = target };
@@ -104,27 +103,20 @@ public static class NodeService
 
     public static async Task<string> FindSuccessor(M_Node node, ulong target)
     {
-        Console.WriteLine("$$$ FindSuccessor $$$");
         if(node.predecessor != null && NodeUtils.inBetween(target, node.predecessor.id, node.id))
         {
-            Console.WriteLine("$$$ FindSuccessor : first $$$");
             return node.ip;
         }
         else if(node.successor != null && NodeUtils.inBetween(target, node.id, node.successor.id))
         {
-            Console.WriteLine("$$$ FindSuccessor : second $$$");
             return node.successor.ip;
         }
         else
         {
-            Console.WriteLine("$$$ FindSuccessor : third $$$");
             if(target < node.id)
             {
                 if (node.predecessor == null)
-                {
-                    Console.WriteLine($"[FindSuccessor] ERROR: Predecessor not initialized for node {node.id}");
                     return node.ip; // Fallback to current node
-                }
                 return await S_FindPeerResponsible(target, node.predecessor.ip);
             }
             else
@@ -138,7 +130,6 @@ public static class NodeService
     
     private static async Task<M_Node> ClosestPreceedingNode(M_Node node, ulong target)
     {
-        Console.WriteLine("$$$ ClosestPreceedingNode $$$");
         ulong[] fingerTableKeys = node.fingerTable.Keys.ToArray();
         for (int i = Globals.FINGER_TABLE_SIZE - 1; i >= 0; i--)
         {
@@ -152,7 +143,6 @@ public static class NodeService
 
     public static async Task<M_Node> VerifySuccessor(M_Node node)
     {
-        Console.WriteLine("$$$ VERIFY SUCCESSOR $$$");
         GetPredecessorService _getPredecessorService = new GetPredecessorService();
         UpdatePredecessorService _updatePredecessorService = new UpdatePredecessorService();
 

@@ -53,7 +53,7 @@ public static class NetworkFileStorageHandler
         return await _instance.GetChunkAsync(storageGuid);
     }
 
-    public static async Task<List<(float[] vector, string storageGuid, long bucketId, long bucketIndex)>> GetVectorsByBucketsAsync(List<string> bucketNames)
+    public static async Task<List<(float[] vector, string storageGuid, long bucketId, long bucketIndex, string bucketName)>> GetVectorsByBucketsAsync(List<string> bucketNames)
     {
         return await _instance.GetVectorsByBucketsAsync(bucketNames);
     }

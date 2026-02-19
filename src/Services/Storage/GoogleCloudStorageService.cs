@@ -295,6 +295,6 @@ public class GcsSqlStorageService : INetworkFileStorageService
         }
     }
 
-    public Task<List<(float[] vector, string storageGuid, long bucketId, long bucketIndex)>> GetVectorsByBucketsAsync(List<string> bucketNames)
+    public Task<List<(float[] vector, string storageGuid, long bucketId, long bucketIndex, string bucketName)>> GetVectorsByBucketsAsync(List<string> bucketNames)
         => throw new NotSupportedException("GetVectorsByBucketsAsync not supported on GCS backend.");
 }
