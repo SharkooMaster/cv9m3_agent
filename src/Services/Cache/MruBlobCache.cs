@@ -34,6 +34,9 @@ public class MruBlobCache : IDisposable
     /// </summary>
     public byte[]? Get(string key)
     {
+        if (string.IsNullOrEmpty(key))
+            return null;
+
         if (_cache.TryGetValue(key, out var entry))
         {
             if (entry.IsExpired(_ttl))
@@ -56,7 +59,7 @@ public class MruBlobCache : IDisposable
     /// </summary>
     public void Put(string key, byte[] data)
     {
-        if (data == null || data.Length == 0)
+        if (string.IsNullOrEmpty(key) || data == null || data.Length == 0)
             return;
 
         // Evict if needed

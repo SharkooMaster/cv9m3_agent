@@ -109,6 +109,10 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
 
         var key = GenerateChunkKey(data.chunk);
 
+        // ── Propagate the storage key back to the M_Data so in-memory bucket entries
+        //    have a valid storageGuid for future cache/disk lookups. ──
+        data.storageGuid = key;
+
         // ── Use ONE Postgres connection for dedup check + insert ──
         // This halves connection pool pressure under high concurrency.
         await using var conn = await _dataSource.OpenConnectionAsync();

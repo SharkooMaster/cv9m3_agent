@@ -57,7 +57,8 @@ public class SearchVectorService : SearchVector.SearchVectorBase
                     // Fast path: bucket already in memory
                     foreach (var d in bucket.data)
                     {
-                        if (d?.vector != null && d.vector.Length == queryVector.Length)
+                        if (d?.vector != null && d.vector.Length == queryVector.Length
+                            && !string.IsNullOrEmpty(d.storageGuid))
                             candidates.Add((d.vector, d.storageGuid, d.id, d.index));
                     }
                 }
@@ -77,7 +78,8 @@ public class SearchVectorService : SearchVector.SearchVectorBase
                 var byBucket = new Dictionary<string, List<(float[] vec, string sg, long bid, long bidx)>>();
                 foreach (var row in dbRows)
                 {
-                    if (row.vector != null && row.vector.Length == queryVector.Length)
+                    if (row.vector != null && row.vector.Length == queryVector.Length
+                        && !string.IsNullOrEmpty(row.storageGuid))
                     {
                         candidates.Add((row.vector, row.storageGuid, (ulong)row.bucketId, (ulong)row.bucketIndex));
 

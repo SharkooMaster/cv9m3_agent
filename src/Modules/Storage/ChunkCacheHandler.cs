@@ -15,6 +15,9 @@ public static class ChunkCacheHandler
 
     public static async Task<byte[]?> GetChunkAsync(string storageGuid)
     {
+        if (string.IsNullOrEmpty(storageGuid))
+            return null;
+
         if (_instance != null)
         {
             return await _instance.GetChunkAsync(storageGuid);
