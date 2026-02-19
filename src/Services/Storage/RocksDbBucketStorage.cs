@@ -11,6 +11,7 @@ namespace Agent.Services.Storage;
 public sealed class RocksDbBucketStorage : IDisposable
 {
     private readonly RocksDb _rocksDb;
+    private readonly RocksDbWriteBatcher _writeBatcher;
     private readonly string _bucketDbPath;
     private static readonly object _bucketIdLock = new object();
     private static ulong _nextBucketId = 1;
@@ -23,14 +24,19 @@ public sealed class RocksDbBucketStorage : IDisposable
         var options = new DbOptions().SetCreateIfMissing(true);
         _rocksDb = RocksDb.Open(options, _bucketDbPath);
         
+        // Initialize write batcher (batches writes in background)
+        _writeBatcher = new RocksDbWriteBatcher(_rocksDb, batchSize: 50, flushIntervalMs: 50);
+        
         // Load existing bucket IDs on startup
         LoadBucketIds();
         
-        Console.WriteLine($"[RocksDB Buckets] Initialized at {_bucketDbPath}");
+        Console.WriteLine($"[RocksDB Buckets] Initialized at {_bucketDbPath} with write batching");
     }
 
     public void Dispose()
     {
+        _writeBatcher?.Flush(); // Flush pending writes before shutdown
+        _writeBatcher?.Dispose();
         _rocksDb?.Dispose();
     }
 
@@ -136,9 +142,9 @@ public sealed class RocksDbBucketStorage : IDisposable
                 ChunkSize = chunkSize
             });
 
-            // Write back to RocksDB
+            // Write back to RocksDB (batched, non-blocking)
             var json = JsonSerializer.Serialize(bucketData);
-            _rocksDb.Put(key, Encoding.UTF8.GetBytes(json));
+            _writeBatcher.Put(key, Encoding.UTF8.GetBytes(json));
 
             return (bucketData.BucketId, bucketIndex);
         }

@@ -51,6 +51,34 @@ public sealed class RedisChunkOwnershipService : IDisposable
     }
 
     /// <summary>
+    /// Store bucket reference mapping: bucketId:bucketIndex → storageGuid.
+    /// This allows any agent to look up which chunk a reference points to.
+    /// </summary>
+    public void RecordBucketReference(ulong bucketId, ulong bucketIndex, string storageGuid)
+    {
+        var key = $"bucket_ref:{bucketId}:{bucketIndex}";
+        _redis.StringSet(key, storageGuid, TimeSpan.FromDays(7)); // 7 day TTL
+    }
+
+    /// <summary>
+    /// Get storage GUID by bucket reference. Returns null if not found.
+    /// </summary>
+    public async Task<string?> GetStorageGuidByReferenceAsync(ulong bucketId, ulong bucketIndex)
+    {
+        try
+        {
+            var key = $"bucket_ref:{bucketId}:{bucketIndex}";
+            var value = await _redis.StringGetAsync(key);
+            return value.HasValue ? value.ToString() : null;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[Redis] Error getting bucket reference ({bucketId}, {bucketIndex}): {ex.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>
     /// Get all agents that own a specific chunk.
     /// </summary>
     public async Task<List<string>> GetChunkOwnersAsync(string chunkKey)

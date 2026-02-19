@@ -16,6 +16,7 @@ namespace Agent.Services.Storage;
 public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposable
 {
     private readonly RocksDb _rocksDb; // For chunk storage
+    private readonly RocksDbWriteBatcher _chunkWriteBatcher; // Batches chunk writes in background
     private readonly RocksDbBucketStorage _bucketStorage; // For buckets/vectors
     private readonly RedisChunkOwnershipService _ownershipService; // For chunk_owners
     private readonly string _myPodName;
@@ -33,6 +34,9 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
         Directory.CreateDirectory(rocksDbPath);
         var rocksOptions = new DbOptions().SetCreateIfMissing(true);
         _rocksDb = RocksDb.Open(rocksOptions, rocksDbPath);
+        
+        // Initialize write batcher for chunks (batches writes in background, non-blocking)
+        _chunkWriteBatcher = new RocksDbWriteBatcher(_rocksDb, batchSize: 100, flushIntervalMs: 50);
         
         // Initialize bucket/vector storage (separate RocksDB instance)
         _bucketStorage = new RocksDbBucketStorage(rocksDbPath);
@@ -53,6 +57,8 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
 
     public void Dispose()
     {
+        _chunkWriteBatcher?.Flush(); // Flush pending writes before shutdown
+        _chunkWriteBatcher?.Dispose();
         _rocksDb?.Dispose();
         _bucketStorage?.Dispose();
         _ownershipService?.Dispose();
@@ -102,14 +108,17 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
         // Store vector in RocksDB bucket storage (handles dedup internally)
         var (bucketId, bucketIndex) = _bucketStorage.StoreVector(bucket_Id, data.vector, key, data.chunk.Length);
         
-        // Store chunk locally in RocksDB
-        _rocksDb.Put(Encoding.UTF8.GetBytes(key), data.chunk);
+        // Store chunk locally in RocksDB (batched, non-blocking background write)
+        _chunkWriteBatcher.Put(key, data.chunk);
 
         // Cache in memory for fast search-time fetch
         ChunkCacheHandler.CacheChunk(key, data.chunk);
         
         // Record ownership in Redis (non-blocking, queued)
         _ownershipService.RecordOwnership(key);
+        
+        // Record bucket reference mapping in Redis (allows any agent to resolve bucketId:bucketIndex → storageGuid)
+        _ownershipService.RecordBucketReference(bucketId, bucketIndex, key);
         
         // Replicate to N other agents (fire and forget for performance)
         _ = Task.Run(async () =>
@@ -140,10 +149,18 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
 
     public async Task<byte[]?> GetChunkByReferenceAsync(ulong bucketId, ulong bucketIndex)
     {
-        // Look up storage GUID from RocksDB bucket storage
+        // First try local RocksDB (fast path)
         var storageGuid = _bucketStorage.GetStorageGuidByReference(bucketId, bucketIndex);
+        
+        // If not found locally, try Redis (bucket might be on another agent)
+        if (string.IsNullOrWhiteSpace(storageGuid))
+        {
+            storageGuid = await _ownershipService.GetStorageGuidByReferenceAsync(bucketId, bucketIndex);
+        }
+        
         if (string.IsNullOrWhiteSpace(storageGuid))
             return null;
+            
         return await GetChunkAsync(storageGuid);
     }
 
@@ -484,8 +501,8 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
             throw new ArgumentException($"Chunk key mismatch: expected {expectedKey}, got {chunkKey}");
         }
 
-        // Store locally in RocksDB
-        _rocksDb.Put(Encoding.UTF8.GetBytes(chunkKey), chunkData);
+        // Store locally in RocksDB (batched, non-blocking background write)
+        _chunkWriteBatcher.Put(chunkKey, chunkData);
         
         // Record ownership in Redis (non-blocking, queued)
         _ownershipService.RecordOwnership(chunkKey);
@@ -523,8 +540,8 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
                 {
                     var chunkData = responseChunk.ToByteArray();
                     
-                    // Cache locally for future access
-                    _rocksDb.Put(Encoding.UTF8.GetBytes(chunkKey), chunkData);
+                    // Cache locally for future access (batched, non-blocking background write)
+                    _chunkWriteBatcher.Put(chunkKey, chunkData);
                     _ownershipService.RecordOwnership(chunkKey);
                     return chunkData;
                 }
