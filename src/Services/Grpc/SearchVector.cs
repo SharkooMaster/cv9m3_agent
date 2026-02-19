@@ -141,7 +141,7 @@ public class SearchVectorService : SearchVector.SearchVectorBase
 
                 Parallel.ForEach(
                     Partitioner.Create(0, candidates.Count),
-                    new ParallelOptions { MaxDegreeOfParallelism = Math.Max(1, (int)(Environment.ProcessorCount * 0.75)) },
+                    new ParallelOptions { MaxDegreeOfParallelism = Math.Max(50, Environment.ProcessorCount) }, // Use all cores
                     () => (-1, -1f),  // thread-local best
                     (range, _, localBest) =>
                     {

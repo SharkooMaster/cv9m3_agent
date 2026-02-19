@@ -18,7 +18,7 @@ public sealed class RocksDbWriteBatcher : IDisposable
     private readonly object _flushLock = new();
     private volatile bool _disposed = false;
 
-    public RocksDbWriteBatcher(RocksDb rocksDb, int batchSize = 100, int flushIntervalMs = 100)
+    public RocksDbWriteBatcher(RocksDb rocksDb, int batchSize = 500, int flushIntervalMs = 50)
     {
         _rocksDb = rocksDb ?? throw new ArgumentNullException(nameof(rocksDb));
         _batchSize = batchSize;

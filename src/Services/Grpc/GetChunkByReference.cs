@@ -80,6 +80,16 @@ public class ChunkReferenceServiceImpl : ChunkReferenceService.ChunkReferenceSer
     {
         try
         {
+            // Check if request was cancelled (common during replication timeouts)
+            if (context.CancellationToken.IsCancellationRequested)
+            {
+                return new StoreChunkByKey_Res
+                {
+                    Success = false,
+                    ErrorMessage = "Request cancelled"
+                };
+            }
+
             if (string.IsNullOrWhiteSpace(request.ChunkKey) || request.ChunkData == null || request.ChunkData.Length == 0)
             {
                 return new StoreChunkByKey_Res
@@ -108,8 +118,36 @@ public class ChunkReferenceServiceImpl : ChunkReferenceService.ChunkReferenceSer
                 Success = true
             };
         }
+        catch (TaskCanceledException) when (context.CancellationToken.IsCancellationRequested)
+        {
+            // Client cancelled the request (expected during replication timeouts) - suppress error
+            return new StoreChunkByKey_Res
+            {
+                Success = false,
+                ErrorMessage = "Request cancelled"
+            };
+        }
+        catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested)
+        {
+            // Client cancelled the request (expected during replication timeouts) - suppress error
+            return new StoreChunkByKey_Res
+            {
+                Success = false,
+                ErrorMessage = "Request cancelled"
+            };
+        }
+        catch (Exception ex) when (ex.InnerException is Microsoft.AspNetCore.Connections.ConnectionAbortedException)
+        {
+            // HTTP/2 stream was reset by client (expected during replication) - suppress error
+            return new StoreChunkByKey_Res
+            {
+                Success = false,
+                ErrorMessage = "Connection aborted"
+            };
+        }
         catch (Exception ex)
         {
+            // Only log unexpected errors (not cancellations)
             Console.WriteLine($"[StoreChunkByKey] Error for chunk_key={request.ChunkKey}: {ex.Message}");
             return new StoreChunkByKey_Res
             {

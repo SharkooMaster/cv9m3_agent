@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Text;
 using System.Text.Json;
 using RocksDbSharp;
@@ -13,9 +14,11 @@ public sealed class RocksDbBucketStorage : IDisposable
     private readonly RocksDb _rocksDb;
     private readonly RocksDbWriteBatcher _writeBatcher;
     private readonly string _bucketDbPath;
-    private static readonly object _bucketIdLock = new object();
+    private static readonly object _bucketIdLock = new object(); // Only for bucket ID allocation
     private static ulong _nextBucketId = 1;
     private static readonly Dictionary<string, ulong> _bucketNameToId = new();
+    // Per-bucket locks to allow concurrent writes to different buckets
+    private static readonly ConcurrentDictionary<string, object> _bucketLocks = new();
 
     public RocksDbBucketStorage(string basePath)
     {
@@ -25,7 +28,8 @@ public sealed class RocksDbBucketStorage : IDisposable
         _rocksDb = RocksDb.Open(options, _bucketDbPath);
         
         // Initialize write batcher (batches writes in background)
-        _writeBatcher = new RocksDbWriteBatcher(_rocksDb, batchSize: 50, flushIntervalMs: 50);
+        // High-throughput: Larger batches for better performance
+        _writeBatcher = new RocksDbWriteBatcher(_rocksDb, batchSize: 200, flushIntervalMs: 50);
         
         // Load existing bucket IDs on startup
         LoadBucketIds();
@@ -91,19 +95,26 @@ public sealed class RocksDbBucketStorage : IDisposable
 
     /// <summary>
     /// Store a vector in a bucket. Returns (bucketId, bucketIndex).
-    /// Thread-safe: uses lock to ensure atomic read-modify-write.
+    /// Thread-safe: uses per-bucket locking to allow concurrent writes to different buckets.
     /// </summary>
     public (ulong bucketId, ulong bucketIndex) StoreVector(string bucketName, float[] vector, string storageGuid, int chunkSize)
     {
         var key = Encoding.UTF8.GetBytes($"bucket:{bucketName}");
         
-        // Thread-safe read-modify-write
-        lock (_bucketIdLock)
+        // Get per-bucket lock (allows concurrent writes to different buckets)
+        var bucketLock = _bucketLocks.GetOrAdd(bucketName, _ => new object());
+        
+        // Thread-safe read-modify-write for THIS bucket only
+        lock (bucketLock)
         {
-            // Get or create bucket ID
-            var bucketId = GetOrCreateBucketId(bucketName);
+            // Get or create bucket ID (quick operation, separate lock)
+            ulong bucketId;
+            lock (_bucketIdLock)
+            {
+                bucketId = GetOrCreateBucketId(bucketName);
+            }
             
-            // Read existing bucket data
+            // Read existing bucket data (outside bucketIdLock, but inside bucketLock)
             var existingJson = _rocksDb.Get(key);
             BucketData bucketData;
             

@@ -36,7 +36,8 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
         _rocksDb = RocksDb.Open(rocksOptions, rocksDbPath);
         
         // Initialize write batcher for chunks (batches writes in background, non-blocking)
-        _chunkWriteBatcher = new RocksDbWriteBatcher(_rocksDb, batchSize: 100, flushIntervalMs: 50);
+        // High-throughput: Larger batches, more frequent flushes
+        _chunkWriteBatcher = new RocksDbWriteBatcher(_rocksDb, batchSize: 500, flushIntervalMs: 50);
         
         // Initialize bucket/vector storage (separate RocksDB instance)
         _bucketStorage = new RocksDbBucketStorage(rocksDbPath);

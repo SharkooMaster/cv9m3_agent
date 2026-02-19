@@ -36,6 +36,8 @@ builder.Services.AddLogging( logging =>
 {
     logging.AddConsole();
     logging.SetMinimumLevel(LogLevel.Debug);
+    // Suppress expected cancellation errors from gRPC (common during replication timeouts)
+    logging.AddFilter("Grpc.AspNetCore.Server.ServerCallHandler", LogLevel.Warning);
 });
 
 
