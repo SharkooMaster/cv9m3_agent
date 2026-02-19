@@ -132,7 +132,11 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
         _ownershipQueue.Enqueue((key, _myPodName));
         
         // Replicate to N other agents (fire and forget for performance)
-        _ = Task.Run(async () => await ReplicateChunkAsync(key, data.chunk));
+        _ = Task.Run(async () =>
+        {
+            try { await ReplicateChunkAsync(key, data.chunk); }
+            catch { /* best-effort background replication — swallow to prevent unobserved task exceptions */ }
+        });
         
         return await InsertChunkMetadataInternal(conn, data.vector, key, data.chunk.Length, bucket_Id);
     }
@@ -522,11 +526,10 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
     {
         try
         {
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
             using var client = new TcpClient();
-            var connectTask = client.ConnectAsync(ipOrHost, port);
-            var timeoutTask = Task.Delay(TimeSpan.FromSeconds(2));
-            var completedTask = await Task.WhenAny(connectTask, timeoutTask);
-            return completedTask == connectTask && client.Connected;
+            await client.ConnectAsync(ipOrHost, port, cts.Token);
+            return client.Connected;
         }
         catch
         {
