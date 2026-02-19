@@ -52,39 +52,15 @@ public class StoreVectorService : StoreVector.StoreVectorBase
     {
         using var rootSpan = Observability.StartStage("StoreVector");
         var ingressSw = System.Diagnostics.Stopwatch.StartNew();
-        Console.WriteLine($"Storing vector - Chunk size: {request.Chunk?.Length ?? 0}, Vector size: {request.Vector?.Count ?? 0}");
         
         if (request.Chunk == null || request.Chunk.Length == 0)
-        {
-            Console.WriteLine($"[ERROR] StoreVector: Received null or empty chunk from Gateway!");
             throw new ArgumentException("Chunk data cannot be null or empty", nameof(request));
-        }
         
         if (request.Vector == null || request.Vector.Count == 0)
-        {
-            Console.WriteLine($"[ERROR] StoreVector: Received null or empty vector from Gateway!");
             throw new ArgumentException("Vector data cannot be null or empty", nameof(request));
-        }
-
-        bool isAllZero = true;
-        for (int i = 0; i < request.Vector.Count; i++)
-        {
-            if (request.Vector[i] != 0f)
-            {
-                isAllZero = false;
-                break;
-            }
-        }
-        if (isAllZero)
-        {
-            Console.WriteLine($"[WARN] StoreVector: all-zero vector accepted for bucket {request.Bitstring}; chunk size={request.Chunk.Length}");
-        }
 
         if (IsInvalidVector(request.Vector, out string invalidReason))
-        {
-            Console.WriteLine($"[ERROR] StoreVector: Invalid vector ({invalidReason}) for bucket {request.Bitstring}; chunk size={request.Chunk.Length}");
             throw new ArgumentException($"Invalid vector: {invalidReason}", nameof(request));
-        }
         
         M_Data _data = new M_Data();
         _data.vector = request.Vector.ToArray();
@@ -92,24 +68,10 @@ public class StoreVectorService : StoreVector.StoreVectorBase
         ingressSw.Stop();
         Observability.RecordStage("Deserialize", ingressSw.Elapsed.TotalMilliseconds, ("chunk_bytes", _data.chunk.Length));
         
-        Console.WriteLine($"StoreVector: Prepared M_Data - Chunk size: {_data.chunk?.Length ?? 0}, Vector size: {_data.vector?.Length ?? 0}");
-        
-        // Store synchronously - wait for storage to complete
-        // This ensures chunks are actually stored before returning
-        try
-        {
-            var storeSw = System.Diagnostics.Stopwatch.StartNew();
-            (ulong _id, ulong _index) = await NodeService.StoreInBucket(Globals._NODE, request.Bitstring, _data, request.HeadRouteID);
-            storeSw.Stop();
-            Observability.RecordStage("Serialize", storeSw.Elapsed.TotalMilliseconds, ("stored", true));
-            Console.WriteLine($"[StoreVector] ✅ Storage complete: id={_id}, index={_index}, chunk size={_data.chunk.Length} bytes");
-            return new StoreVector_Res() { Id = _id, Index = _index };
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"[StoreVector] ❌ Storage FAILED: {ex.Message}");
-            Console.WriteLine($"[StoreVector] Stack trace: {ex.StackTrace}");
-            throw; // Re-throw to let Gateway know storage failed
-        }
+        var storeSw = System.Diagnostics.Stopwatch.StartNew();
+        (ulong _id, ulong _index) = await NodeService.StoreInBucket(Globals._NODE, request.Bitstring, _data, request.HeadRouteID);
+        storeSw.Stop();
+        Observability.RecordStage("Serialize", storeSw.Elapsed.TotalMilliseconds, ("stored", true));
+        return new StoreVector_Res() { Id = _id, Index = _index };
     }
 }

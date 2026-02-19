@@ -23,181 +23,157 @@ public class SearchVectorService : SearchVector.SearchVectorBase
         return 8;
     }
 
+    /// <summary>Max neighbor buckets to search when the exact bucket has no match.
+    /// Default 10 — the gateway already sorts neighbors by LSH confidence.</summary>
+    private static int GetMaxNeighborSearch()
+    {
+        var raw = Environment.GetEnvironmentVariable("AGENT_MAX_NEIGHBOR_SEARCH");
+        if (int.TryParse(raw, out var v) && v >= 0)
+            return v;
+        return 10;
+    }
+
     public override async Task<SearchVector_Result> Get(SearchVector_Req request, ServerCallContext context)
     {
         using var rootSpan = Observability.StartStage("SearchVector.Get");
-        // SearchAll(M_Node node, string _bitstring, float[] _vector, float _minimum_similarity, int _k, SearchVector_Req _req, ServerCallContext context)
-        SearchVector_Result res = new SearchVector_Result();
-        SearchVectorObject? SavedObject = null;
-
-        bool forward = false;
-        bool save = true;
-        
-        // OPTIMIZED: Search buckets in parallel instead of sequentially for better performance
-        // Use dynamic resource management to prevent CPU overload
-        int baseParallelism = Math.Min(request.Bitstrings.Count, Environment.ProcessorCount);
-        int optimalParallelism = DynamicResourceManager.GetOptimalParallelism(baseParallelism);
-        optimalParallelism = Math.Min(optimalParallelism, GetSearchBucketConcurrencyCap());
-        var parallelOptions = new ParallelOptions
+        try
         {
-            MaxDegreeOfParallelism = Math.Max(1, optimalParallelism)
-        };
-        
-        var searchResults = new ConcurrentBag<(int index, List<M_SearchResult> results, bool forward, bool isDuplicate, bool isOriginal)>();
-        bool foundForward = false;
-        var forwardLock = new object();
-        
-        // OPTIMIZATION: More aggressive early termination for faster compression
-        // If we find a very good match (similarity >= 0.92) in original bucket, we can skip remaining buckets
-        // Lower threshold from 0.98 to 0.92 for better performance while still maintaining quality
-        const float EARLY_TERMINATION_THRESHOLD = 0.92f;
-        bool foundExcellentMatch = false;
-        var excellentMatchLock = new object();
+            var vector = request.Vector.ToArray();
 
-        var searchSw = Stopwatch.StartNew();
-        await Parallel.ForEachAsync(
-            Enumerable.Range(0, request.Bitstrings.Count),
-            parallelOptions,
-            async (i, ct) =>
+            // ────────────────────────────────────────────────────────────
+            // Phase 1 — Search the EXACT bucket (bitstring[0]) first.
+            // This is the bucket the chunk's own LSH hash points to.
+            // With a good hash, the match lives here ~99% of the time.
+            // If we find a match ≥ threshold, return IMMEDIATELY —
+            // skip all 64 neighbor buckets (and their Postgres cold-imports).
+            // ────────────────────────────────────────────────────────────
+            if (request.Bitstrings.Count > 0)
             {
-                lock (forwardLock)
-                {
-                    if (foundForward) return; // Early exit if forwarding needed
-                }
+                var phase1Sw = Stopwatch.StartNew();
+                var (resultList, needsForward, bucketEmpty) = await NodeService.SearchAll(
+                    Globals._NODE, /* canSave */ true,
+                    request.Bitstrings[0], vector,
+                    request.MinimumSimilarity, request.K,
+                    request, context);
+                phase1Sw.Stop();
+                Observability.RecordStage("SearchExactBucket", phase1Sw.Elapsed.TotalMilliseconds,
+                    ("result_count", resultList.Count), ("forward", needsForward));
 
-                // EARLY TERMINATION: If we found an excellent match in original bucket, skip remaining buckets
-                if (i > 0) // Not the original bucket
-                {
-                    lock (excellentMatchLock)
-                    {
-                        if (foundExcellentMatch) return; // Skip if we already found excellent match
-                    }
-                }
-                
-                (List<M_SearchResult>, bool, bool) result = await NodeService.SearchAll
-                (
-                    Globals._NODE, (i == 0), request.Bitstrings[i], request.Vector.ToArray(), request.MinimumSimilarity, request.K, request, context
-                );
+                // Not in our range — forward to successor
+                if (needsForward)
+                    return await ClientGet(request, Globals._NODE.successor.ip);
 
-                if (result.Item2)
+                // Found results above threshold → done, skip neighbors
+                if (!bucketEmpty && resultList.Count > 0)
                 {
-                    // forward - set flag and stop processing
-                    lock (forwardLock)
+                    var res = new SearchVector_Result { Save = false };
+                    foreach (var sr in resultList)
                     {
-                        foundForward = true;
-                    }
-                    searchResults.Add((i, result.Item1, true, result.Item3, i == 0));
-                    return;
-                }
-
-                // OPTIMIZATION: Early termination - if original bucket has excellent match, skip remaining buckets
-                // Threshold 0.92: Good balance between speed and compression quality
-                if (i == 0 && result.Item1.Count > 0)
-                {
-                    float bestSimilarity = result.Item1.Max(r => r.similarity);
-                    if (bestSimilarity >= EARLY_TERMINATION_THRESHOLD) // 0.92 threshold for faster compression
-                    {
-                        lock (excellentMatchLock)
+                        res.Results.Add(new SearchVectorObject
                         {
-                            foundExcellentMatch = true;
+                            BucketId = sr.id,
+                            BucketKey = (long)sr.index,
+                            Similarity = sr.similarity,
+                            Chunk = ByteString.CopyFrom(sr.chunk),
+                            Index = request.Index
+                        });
+                    }
+                    return res;
+                }
+            }
+
+            // ────────────────────────────────────────────────────────────
+            // Phase 2 — Exact bucket had no match.
+            // Search a LIMITED number of neighbor buckets in parallel.
+            // The gateway already sorts neighbors by LSH confidence
+            // (least-confident bits first), so the first few are the
+            // most likely to contain a match.
+            // ────────────────────────────────────────────────────────────
+            int maxNeighbors = GetMaxNeighborSearch();
+            int neighborCount = Math.Min(request.Bitstrings.Count - 1, maxNeighbors);
+
+            if (neighborCount > 0)
+            {
+                int concurrency = Math.Max(1, Math.Min(neighborCount, GetSearchBucketConcurrencyCap()));
+                var parallelOptions = new ParallelOptions { MaxDegreeOfParallelism = concurrency };
+
+                var neighborResults = new ConcurrentBag<M_SearchResult>();
+                int foundMatch = 0; // 0 = false, 1 = true (for Interlocked)
+
+                var phase2Sw = Stopwatch.StartNew();
+                await Parallel.ForEachAsync(
+                    Enumerable.Range(1, neighborCount),
+                    parallelOptions,
+                    async (i, ct) =>
+                    {
+                        // Early exit if another neighbor already found a match
+                        if (Volatile.Read(ref foundMatch) == 1) return;
+
+                        try
+                        {
+                            var (results, fwd, _) = await NodeService.SearchAll(
+                                Globals._NODE, /* canSave */ false,
+                                request.Bitstrings[i], vector,
+                                request.MinimumSimilarity, request.K,
+                                request, context);
+
+                            if (results.Count > 0)
+                            {
+                                Interlocked.Exchange(ref foundMatch, 1);
+                                foreach (var r in results)
+                                    neighborResults.Add(r);
+                            }
                         }
-                        Console.WriteLine($"[SearchVector] Early termination: Found excellent match (similarity={bestSimilarity:F3}) in original bucket - skipping remaining buckets");
+                        catch { /* swallow neighbor errors — exact bucket is authoritative */ }
+                    });
+                phase2Sw.Stop();
+                Observability.RecordStage("SearchNeighborBuckets", phase2Sw.Elapsed.TotalMilliseconds,
+                    ("neighbors_searched", neighborCount), ("match_found", foundMatch == 1));
+
+                if (!neighborResults.IsEmpty)
+                {
+                    var best = neighborResults
+                        .OrderByDescending(r => r.similarity)
+                        .Take(request.K)
+                        .ToList();
+
+                    if (best.Count > 0)
+                    {
+                        var res = new SearchVector_Result { Save = false };
+                        foreach (var sr in best)
+                        {
+                            res.Results.Add(new SearchVectorObject
+                            {
+                                BucketId = sr.id,
+                                BucketKey = (long)sr.index,
+                                Similarity = sr.similarity,
+                                Chunk = ByteString.CopyFrom(sr.chunk),
+                                Index = request.Index
+                            });
+                        }
+                        return res;
                     }
                 }
-
-                searchResults.Add((i, result.Item1, false, result.Item3, i == 0));
             }
-        );
-        searchSw.Stop();
-        Observability.RecordStage("SearchBuckets", searchSw.Elapsed.TotalMilliseconds, ("bucket_count", request.Bitstrings.Count));
 
-        // Process results (original bucket first, then others)
-        var serializeSw = Stopwatch.StartNew();
-        var sortedResults = searchResults.OrderBy(r => r.index).ToList();
-        
-        foreach (var (index, resultList, needsForward, isDuplicateFlag, isOriginal) in sortedResults)
-        {
-            if (needsForward)
+            // ────────────────────────────────────────────────────────────
+            // Phase 3 — No match found anywhere → tell gateway to store.
+            // ────────────────────────────────────────────────────────────
+            var saveRes = new SearchVector_Result { Save = true };
+            saveRes.Results.Add(new SearchVectorObject
             {
-                forward = true;
-                break;
-            }
-
-            // If a similar vector was found (original logic: !result.Item3 && result.Item1.Count > 0)
-            if (!isDuplicateFlag && resultList.Count > 0)
-            {
-                save = false;
-
-                // Insert all results from this bucket
-                foreach (var currentSearchResult in resultList)
-                {
-                    res.Results.Add(new SearchVectorObject()
-                    {
-                        BucketId = currentSearchResult.id,
-                        BucketKey = (long)currentSearchResult.index,
-                        Similarity = currentSearchResult.similarity,
-                        Chunk = ByteString.CopyFrom(currentSearchResult.chunk),
-                        Index = request.Index
-                    });
-                }
-            }
-
-            if (isDuplicateFlag && isOriginal) // Original bucket, save (original logic: result.Item3 && (i == 0))
-            {
-                // If result.Item1 has items, use the first one (from previous storage)
-                // Otherwise, SavedObject remains null - Gateway will store new chunk
-                if (resultList.Count > 0)
-                {
-                    M_SearchResult currentSearchResult = resultList[0];
-                    SavedObject = new SearchVectorObject()
-                    {
-                        BucketId = currentSearchResult.id,
-                        BucketKey = (long)currentSearchResult.index,
-                        Similarity = currentSearchResult.similarity,
-                        Chunk = ByteString.CopyFrom(currentSearchResult.chunk),
-                        Index = request.Index
-                    };
-                    Console.WriteLine($"[SearchVector] Found existing chunk for index {request.Index}");
-                }
-                else
-                {
-                    Console.WriteLine($"[SearchVector] New chunk needs to be saved for index {request.Index} - Gateway will provide chunk");
-                }
-            }
+                BucketId = 0,
+                BucketKey = 0,
+                Similarity = 0,
+                Chunk = ByteString.Empty,
+                Index = request.Index
+            });
+            return saveRes;
         }
-
-        if (forward)
+        catch (Exception ex)
         {
-            return await ClientGet(request, Globals._NODE.successor.ip);
+            throw new RpcException(new Status(StatusCode.Internal, $"Agent search failed: {ex.Message}"));
         }
-
-        // If no results and save
-        if (save)
-        {
-            res.Save = true;
-            // Create a placeholder result - Gateway will store the actual chunk
-            // The chunk will be provided by Gateway when it calls StoreVector
-            if (SavedObject != null)
-            {
-                res.Results.Add(SavedObject);
-            }
-            else
-            {
-                // Create a minimal placeholder result
-                res.Results.Add(new SearchVectorObject()
-                {
-                    BucketId = 0, // Will be set when stored
-                    BucketKey = 0,
-                    Similarity = 0,
-                    Chunk = ByteString.Empty, // Empty - Gateway will provide actual chunk
-                    Index = request.Index
-                });
-            }
-        }
-        serializeSw.Stop();
-        Observability.RecordStage("Serialize", serializeSw.Elapsed.TotalMilliseconds, ("result_count", res.Results.Count));
-
-        return res;
     }
 
     public async Task<SearchVector_Result> ClientGet(SearchVector_Req req, string _ip, CancellationToken ct = default)

@@ -39,15 +39,19 @@ public class M_Bucket
         return ((ulong)bucketId, (ulong)bucketIndex);
     }
     
+    private static int GetMaxScanPerBucket()
+    {
+        var raw = Environment.GetEnvironmentVariable("AGENT_MAX_SCAN_PER_BUCKET");
+        if (int.TryParse(raw, out var v) && v > 0) return v;
+        return 5000; // Default: cap scan at 5 000 vectors per bucket to prevent O(n) blowup
+    }
+
     public async Task<List<M_SearchResult>> SearchData(float[] _vector, float _minimum_similarity, int _k, int _i)
     {
         ConcurrentBag<M_SearchResult> to_return = new ConcurrentBag<M_SearchResult>();
 
-        // IMPORTANT: No pre-filtering here. We want maximum recall on cosine >= _minimum_similarity.
-        // Hamming-based gates can drop true positives and reduce compression quality.
         var candidates = new List<(M_Data data, float similarity)>();
         
-        // DYNAMIC: Adjust parallelism based on current CPU and memory usage
         int baseParallelism = (int)(Environment.ProcessorCount * 0.75);
         int optimalParallelism = DynamicResourceManager.GetOptimalParallelism(baseParallelism);
         var parallelOptions = new ParallelOptions
@@ -55,8 +59,10 @@ public class M_Bucket
             MaxDegreeOfParallelism = Math.Max(1, optimalParallelism)
         };
 
-        // Snapshot the concurrent bag for stable parallel iteration.
-        var rows = data.ToArray();
+        // Snapshot the concurrent bag. Cap at MAX_SCAN to prevent O(n) degradation on large buckets.
+        int maxScan = GetMaxScanPerBucket();
+        var allRows = data.ToArray();
+        var rows = allRows.Length > maxScan ? allRows.AsSpan(0, maxScan).ToArray() : allRows;
 
         // Full cosine similarity against all candidates; keep only top-K >= threshold.
         Parallel.ForEach(
@@ -184,7 +190,6 @@ public class M_Bucket
                 }
                 else
                 {
-                    Console.WriteLine($"### WARNING ### Chunk not found for storageGuid: {candidate.data.storageGuid}");
                     return null;
                 }
             });

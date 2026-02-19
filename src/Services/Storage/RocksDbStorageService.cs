@@ -165,7 +165,7 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
         var raw = Environment.GetEnvironmentVariable("AGENT_MISSING_BUCKET_TTL_SEC");
         if (int.TryParse(raw, out var v) && v > 0)
             return v;
-        return 20;
+        return 300;   // 5 minutes — empty buckets don't spontaneously fill
     }
 
     private static bool IsKnownMissingBucket(string bucketId)
@@ -212,52 +212,44 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
         return key;
     }
 
+    /// <summary>
+    /// Single-round-trip upsert: bucket → index → vector insert, all inside one CTE.
+    /// Previous implementation used 3–4 separate queries per chunk.
+    /// </summary>
     private async Task<(int, int)> InsertChunkMetadataAsync(float[] vector, string storagePath, int size, string bucketName)
     {
         await using var conn = await _dataSource.OpenConnectionAsync();
 
-        int bucketId;
-        var checkBucketCmd = new NpgsqlCommand("SELECT id FROM bucket_keys WHERE bucket_name = @bucketName LIMIT 1", conn);
-        checkBucketCmd.Parameters.AddWithValue("@bucketName", bucketName);
-        var existingId = await checkBucketCmd.ExecuteScalarAsync();
-
-        if (existingId != null)
-        {
-            bucketId = (int)existingId;
-        }
-        else
-        {
-            var insertBucketCmd = new NpgsqlCommand(@"
+        var cmd = new NpgsqlCommand(@"
+            WITH bucket AS (
                 INSERT INTO bucket_keys (bucket_name, usage_count, next_index)
                 VALUES (@bucketName, 0, 1)
                 ON CONFLICT (bucket_name) DO UPDATE SET usage_count = bucket_keys.usage_count
                 RETURNING id
-            ", conn);
-            insertBucketCmd.Parameters.AddWithValue("@bucketName", bucketName);
-            bucketId = (int)(await insertBucketCmd.ExecuteScalarAsync())!;
+            ),
+            idx AS (
+                UPDATE bucket_keys
+                SET next_index = next_index + 1
+                WHERE id = (SELECT id FROM bucket)
+                RETURNING id AS bucket_id, next_index - 1 AS bucket_index
+            )
+            INSERT INTO vectors (vector, storage_guid, size, created_at, bucket_id, bucket_index)
+            SELECT @vector, @storagePath, @size, NOW(), idx.bucket_id, idx.bucket_index
+            FROM idx
+            RETURNING bucket_id, bucket_index;
+        ", conn);
+        cmd.Parameters.AddWithValue("@bucketName", bucketName);
+        cmd.Parameters.AddWithValue("@vector", vector);
+        cmd.Parameters.AddWithValue("@storagePath", storagePath);
+        cmd.Parameters.AddWithValue("@size", size);
+
+        await using var reader = await cmd.ExecuteReaderAsync();
+        if (await reader.ReadAsync())
+        {
+            return (reader.GetInt32(0), reader.GetInt32(1));
         }
 
-        var getNextIndexCmd = new NpgsqlCommand(@"
-            UPDATE bucket_keys
-            SET next_index = next_index + 1
-            WHERE id = @bucketId
-            RETURNING next_index - 1 AS bucket_index
-        ", conn);
-        getNextIndexCmd.Parameters.AddWithValue("@bucketId", bucketId);
-        int bucketIndex = (int)(await getNextIndexCmd.ExecuteScalarAsync())!;
-
-        var insertVectorCmd = new NpgsqlCommand(@"
-            INSERT INTO vectors (vector, storage_guid, size, created_at, bucket_id, bucket_index)
-            VALUES (@vector, @storagePath, @size, NOW(), @bucketId, @bucketIndex)
-        ", conn);
-        insertVectorCmd.Parameters.AddWithValue("@vector", vector);
-        insertVectorCmd.Parameters.AddWithValue("@storagePath", storagePath);
-        insertVectorCmd.Parameters.AddWithValue("@size", size);
-        insertVectorCmd.Parameters.AddWithValue("@bucketId", bucketId);
-        insertVectorCmd.Parameters.AddWithValue("@bucketIndex", bucketIndex);
-        await insertVectorCmd.ExecuteNonQueryAsync();
-
-        return (bucketId, bucketIndex);
+        throw new InvalidOperationException($"InsertChunkMetadataAsync: CTE returned no rows for bucket '{bucketName}'");
     }
 
     private async Task<List<(float[] vector, string storageGuid, long id, long index)>> GetVectorsByBucketAsync(string bucketName)

@@ -217,29 +217,24 @@ public static class NodeService
         return node;
     }
 
-    // (res, forward, save)
+    // Limit concurrent cold-bucket imports to avoid Postgres connection pool exhaustion
+    // (65 bitstrings × N concurrent searches can easily exceed pool size)
+    private static readonly SemaphoreSlim _coldImportGate = new(16, 16);
+
     public static async Task<(List<M_SearchResult>, bool, bool)> 
       SearchAll(M_Node node, bool canSave, string _bitstring, float[] _vector, float _minimum_similarity, int _k, SearchVector_Req _req, ServerCallContext context)
     {
         using var rootSpan = Observability.StartStage("Node.SearchAll");
-        //Console.Writeline("Searching");
-        // LOCAL MODE: Skip DHT range checks, assume all buckets are local
-        // DISTRIBUTED MODE: Check if bitstring is in this node's range
         var routeSw = System.Diagnostics.Stopwatch.StartNew();
         bool is_inRange;
         if (LocalModeDetector.IsLocalMode())
         {
-            // In local mode, assume all buckets are in range (single agent handles everything)
             is_inRange = true;
         }
         else
         {
-            // Check if successor is initialized before accessing
             if (Globals._NODE.successor == null)
-            {
-                Console.WriteLine($"[SearchAll] ERROR: Successor not initialized for node {node.id}");
                 return (new List<M_SearchResult>(), false, false);
-            }
             is_inRange = Agent.Utils.Misc.Misc.IsKeyInRange(node.id, Globals._NODE.successor.id, _bitstring);
         }
         routeSw.Stop();
@@ -247,66 +242,67 @@ public static class NodeService
 
         if (is_inRange)
         {
-            Console.WriteLine("Is in range");
-            if(node.Buckets.ContainsKey(_bitstring))
+            if (node.Buckets.TryGetValue(_bitstring, out var bucket))
             {
-                Console.WriteLine("ContainsKey");
                 var searchSw = System.Diagnostics.Stopwatch.StartNew();
-                var localResults = await node.Buckets[_bitstring].SearchData(_vector, _minimum_similarity, _k, _req.Index);
+                var localResults = await bucket.SearchData(_vector, _minimum_similarity, _k, _req.Index);
                 searchSw.Stop();
-                Observability.RecordStage("ComputeSimilarity", searchSw.Elapsed.TotalMilliseconds, ("result_count", localResults.Count));
+                Observability.RecordStage("ComputeSimilarity", searchSw.Elapsed.TotalMilliseconds,
+                    ("result_count", localResults.Count), ("bucket_size", bucket.data.Count));
                 return (localResults, false, false);
             }
             else
             {
-                Console.WriteLine("Importing from cold storage");
-                var fetchSw = System.Diagnostics.Stopwatch.StartNew();
-                M_Bucket read_bucket = await NetworkFileStorageHandler.ReadBucket(_bitstring);
-                fetchSw.Stop();
-                Observability.RecordStage("FetchFromSSDOrNFS", fetchSw.Elapsed.TotalMilliseconds, ("rows_loaded", read_bucket.data.Count));
-                if(read_bucket.data.Count > 0)
+                // Cold import — throttle to prevent Postgres pool exhaustion
+                if (!await _coldImportGate.WaitAsync(TimeSpan.FromSeconds(3)))
                 {
-                    Console.WriteLine(" - Bucket not empty");
-                    if(node.Buckets.TryAdd(_bitstring, read_bucket))
+                    // Couldn't acquire permit within timeout — skip this bucket to avoid pile-up
+                    return (new List<M_SearchResult>(), false, canSave);
+                }
+                try
+                {
+                    var fetchSw = System.Diagnostics.Stopwatch.StartNew();
+                    M_Bucket read_bucket = await NetworkFileStorageHandler.ReadBucket(_bitstring);
+                    fetchSw.Stop();
+                    Observability.RecordStage("FetchFromSSDOrNFS", fetchSw.Elapsed.TotalMilliseconds, ("rows_loaded", read_bucket.data.Count));
+
+                    if (read_bucket.data.Count > 0)
                     {
-                        Console.WriteLine(" - Bucket added to memory");
-                        var searchSw = System.Diagnostics.Stopwatch.StartNew();
-                        var localResults = await node.Buckets[_bitstring].SearchData(_vector, _minimum_similarity, _k, _req.Index);
-                        searchSw.Stop();
-                        Observability.RecordStage("ComputeSimilarity", searchSw.Elapsed.TotalMilliseconds, ("result_count", localResults.Count));
-                        return (localResults, false, false);
+                        if (node.Buckets.TryAdd(_bitstring, read_bucket))
+                        {
+                            var searchSw = System.Diagnostics.Stopwatch.StartNew();
+                            var localResults = await read_bucket.SearchData(_vector, _minimum_similarity, _k, _req.Index);
+                            searchSw.Stop();
+                            Observability.RecordStage("ComputeSimilarity", searchSw.Elapsed.TotalMilliseconds,
+                                ("result_count", localResults.Count), ("bucket_size", read_bucket.data.Count));
+                            return (localResults, false, false);
+                        }
+                        else
+                        {
+                            // Another thread imported it — use theirs
+                            if (node.Buckets.TryGetValue(_bitstring, out var existing))
+                            {
+                                var localResults = await existing.SearchData(_vector, _minimum_similarity, _k, _req.Index);
+                                return (localResults, false, false);
+                            }
+                        }
                     }
                     else
                     {
-                        Console.WriteLine("Failed to import bucket from NFS");
+                        if (canSave)
+                            return (new List<M_SearchResult>(), false, true);
                     }
                 }
-                else
+                finally
                 {
-                    Console.WriteLine(" - Bucket not found in cold storage");
-                    if (canSave)
-                    {
-                        // Don't store here - just return that a save is needed
-                        // The Gateway will call StoreVector with the actual chunk data
-                        // Return empty result with save flag = true
-                        return (new List<M_SearchResult>(), false, true);
-                    }
+                    _coldImportGate.Release();
                 }
             }
             return (new List<M_SearchResult>(), false, false);
         }
         else
         {
-            Console.WriteLine("Out of range");
-            try
-            {
-                return (new List<M_SearchResult>(), true, false);
-            }
-            catch (System.Exception)
-            {
-                Console.WriteLine("ERROR: Couldnt forward request to correct peer (successor)");
-                throw;
-            }
+            return (new List<M_SearchResult>(), true, false);
         }
     }
 
