@@ -41,4 +41,3 @@ message StoreChunkByKey_Res
     bool success = 1;
     string error_message = 2;
 }
-
