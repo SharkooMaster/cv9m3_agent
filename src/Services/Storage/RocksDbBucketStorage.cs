@@ -1,6 +1,5 @@
 using System.Collections.Concurrent;
 using System.Text;
-using System.Text.Json;
 using RocksDbSharp;
 
 namespace Agent.Services.Storage;
@@ -14,13 +13,23 @@ public sealed class RocksDbBucketStorage : IDisposable
     private readonly RocksDb _rocksDb;
     private readonly RocksDbWriteBatcher _writeBatcher;
     private readonly string _bucketDbPath;
-    private static readonly object _bucketIdLock = new object(); // Only for bucket ID allocation
+    private static readonly object _bucketIdLock = new object();
     private static ulong _nextBucketId = 1;
     private static readonly Dictionary<string, ulong> _bucketNameToId = new();
-    // Per-bucket locks to allow concurrent writes to different buckets
     private static readonly ConcurrentDictionary<string, object> _bucketLocks = new();
-    // Index: bucketId -> bucketName for fast reverse lookups (O(1) instead of O(n) scan)
     private static readonly ConcurrentDictionary<ulong, string> _bucketIdToName = new();
+
+    // New append-friendly schema:
+    // bn:{bucketName}              -> ulong bucketId
+    // bi:{bucketId}                -> bucketName (utf8)
+    // bnext:{bucketId}             -> ulong next vector index
+    // bsg:{bucketId}:{storageGuid} -> ulong existing vector index (dedup)
+    // bv:{bucketId}:{index}        -> binary record: [int dim][float * dim][string storageGuid][int chunkSize]
+    private const string BucketNameToIdPrefix = "bn:";
+    private const string BucketIdToNamePrefix = "bi:";
+    private const string BucketNextPrefix = "bnext:";
+    private const string BucketStorageGuidPrefix = "bsg:";
+    private const string BucketVectorPrefix = "bv:";
 
     public RocksDbBucketStorage(string basePath)
     {
@@ -48,32 +57,30 @@ public sealed class RocksDbBucketStorage : IDisposable
 
     private void LoadBucketIds()
     {
-        // Scan all bucket keys to rebuild bucket ID mapping
         using var iterator = _rocksDb.NewIterator();
         iterator.SeekToFirst();
-        
+
         lock (_bucketIdLock)
         {
             while (iterator.Valid())
             {
                 var keyBytes = iterator.Key();
                 var key = Encoding.UTF8.GetString(keyBytes);
-                if (key.StartsWith("bucket:"))
+                if (key.StartsWith(BucketNameToIdPrefix, StringComparison.Ordinal))
                 {
-                    var bucketName = key.Substring(7); // "bucket:".Length
-                    var valueBytes = iterator.Value();
-                    try
+                    var bucketName = key.Substring(BucketNameToIdPrefix.Length);
+                    var idBytes = iterator.Value();
+                    if (idBytes != null && idBytes.Length == sizeof(ulong))
                     {
-                        var bucketData = JsonSerializer.Deserialize<BucketData>(Encoding.UTF8.GetString(valueBytes));
-                        if (bucketData != null && bucketData.BucketId > 0)
+                        var bucketId = BitConverter.ToUInt64(idBytes, 0);
+                        if (bucketId > 0)
                         {
-                            _bucketNameToId[bucketName] = bucketData.BucketId;
-                            _bucketIdToName[bucketData.BucketId] = bucketName; // Build reverse index
-                            if (bucketData.BucketId >= _nextBucketId)
-                                _nextBucketId = bucketData.BucketId + 1;
+                            _bucketNameToId[bucketName] = bucketId;
+                            _bucketIdToName[bucketId] = bucketName;
+                            if (bucketId >= _nextBucketId)
+                                _nextBucketId = bucketId + 1;
                         }
                     }
-                    catch { /* Skip invalid entries */ }
                 }
                 iterator.Next();
             }
@@ -89,9 +96,15 @@ public sealed class RocksDbBucketStorage : IDisposable
         {
             if (_bucketNameToId.TryGetValue(bucketName, out var id))
                 return id;
-            
+
             id = _nextBucketId++;
             _bucketNameToId[bucketName] = id;
+            _bucketIdToName[id] = bucketName;
+
+            _writeBatcher.Put(Encoding.UTF8.GetBytes($"{BucketNameToIdPrefix}{bucketName}"), BitConverter.GetBytes(id));
+            _writeBatcher.Put(Encoding.UTF8.GetBytes($"{BucketIdToNamePrefix}{id}"), Encoding.UTF8.GetBytes(bucketName));
+            _writeBatcher.Put(Encoding.UTF8.GetBytes($"{BucketNextPrefix}{id}"), BitConverter.GetBytes((ulong)0));
+
             return id;
         }
     }
@@ -102,65 +115,33 @@ public sealed class RocksDbBucketStorage : IDisposable
     /// </summary>
     public (ulong bucketId, ulong bucketIndex) StoreVector(string bucketName, float[] vector, string storageGuid, int chunkSize)
     {
-        var key = Encoding.UTF8.GetBytes($"bucket:{bucketName}");
-        
-        // Get per-bucket lock (allows concurrent writes to different buckets)
         var bucketLock = _bucketLocks.GetOrAdd(bucketName, _ => new object());
-        
-        // Thread-safe read-modify-write for THIS bucket only
+
         lock (bucketLock)
         {
-            // Get or create bucket ID (quick operation, separate lock)
-            ulong bucketId;
-            lock (_bucketIdLock)
+            var bucketId = GetOrCreateBucketId(bucketName);
+
+            var dedupKey = $"{BucketStorageGuidPrefix}{bucketId}:{storageGuid}";
+            var existingIndexBytes = _rocksDb.Get(Encoding.UTF8.GetBytes(dedupKey));
+            if (existingIndexBytes != null && existingIndexBytes.Length == sizeof(ulong))
             {
-                bucketId = GetOrCreateBucketId(bucketName);
-            }
-            
-            // Read existing bucket data (outside bucketIdLock, but inside bucketLock)
-            var existingJson = _rocksDb.Get(key);
-            BucketData bucketData;
-            
-            if (existingJson != null && existingJson.Length > 0)
-            {
-                try
-                {
-                    bucketData = JsonSerializer.Deserialize<BucketData>(Encoding.UTF8.GetString(existingJson)) ?? new BucketData();
-                    // Ensure bucket ID is set (in case it wasn't in the loaded data)
-                    if (bucketData.BucketId == 0)
-                        bucketData.BucketId = bucketId;
-                }
-                catch
-                {
-                    bucketData = new BucketData { BucketId = bucketId };
-                }
-            }
-            else
-            {
-                bucketData = new BucketData { BucketId = bucketId };
+                return (bucketId, BitConverter.ToUInt64(existingIndexBytes, 0));
             }
 
-            // Check for duplicate storageGuid
-            var existingIndex = bucketData.Vectors.FindIndex(v => v.StorageGuid == storageGuid);
-            if (existingIndex >= 0)
-            {
-                return (bucketData.BucketId, (ulong)existingIndex);
-            }
+            var nextKeyBytes = Encoding.UTF8.GetBytes($"{BucketNextPrefix}{bucketId}");
+            var nextBytes = _rocksDb.Get(nextKeyBytes);
+            ulong bucketIndex = (nextBytes != null && nextBytes.Length == sizeof(ulong))
+                ? BitConverter.ToUInt64(nextBytes, 0)
+                : 0UL;
 
-            // Add new vector
-            var bucketIndex = (ulong)bucketData.Vectors.Count;
-            bucketData.Vectors.Add(new VectorData
-            {
-                Vector = vector,
-                StorageGuid = storageGuid,
-                ChunkSize = chunkSize
-            });
+            var recordBytes = SerializeVectorRecord(vector, storageGuid, chunkSize);
+            var vectorKeyBytes = Encoding.UTF8.GetBytes($"{BucketVectorPrefix}{bucketId}:{bucketIndex}");
 
-            // Write back to RocksDB (batched, non-blocking)
-            var json = JsonSerializer.Serialize(bucketData);
-            _writeBatcher.Put(key, Encoding.UTF8.GetBytes(json));
+            _writeBatcher.Put(vectorKeyBytes, recordBytes);
+            _writeBatcher.Put(Encoding.UTF8.GetBytes(dedupKey), BitConverter.GetBytes(bucketIndex));
+            _writeBatcher.Put(nextKeyBytes, BitConverter.GetBytes(bucketIndex + 1));
 
-            return (bucketData.BucketId, bucketIndex);
+            return (bucketId, bucketIndex);
         }
     }
 
@@ -170,30 +151,29 @@ public sealed class RocksDbBucketStorage : IDisposable
     public List<(float[] vector, string storageGuid, ulong bucketId, ulong bucketIndex, string bucketName)> GetVectorsByBuckets(List<string> bucketNames)
     {
         var results = new List<(float[] vector, string storageGuid, ulong bucketId, ulong bucketIndex, string bucketName)>();
-        
+
         foreach (var bucketName in bucketNames)
         {
-            var key = Encoding.UTF8.GetBytes($"bucket:{bucketName}");
-            var json = _rocksDb.Get(key);
-            
-            if (json == null || json.Length == 0)
+            if (!_bucketNameToId.TryGetValue(bucketName, out var bucketId) || bucketId == 0)
                 continue;
 
-            try
+            var nextKey = Encoding.UTF8.GetBytes($"{BucketNextPrefix}{bucketId}");
+            var nextBytes = _rocksDb.Get(nextKey);
+            if (nextBytes == null || nextBytes.Length != sizeof(ulong))
+                continue;
+
+            var nextIndex = BitConverter.ToUInt64(nextBytes, 0);
+            for (ulong i = 0; i < nextIndex; i++)
             {
-                var bucketData = JsonSerializer.Deserialize<BucketData>(Encoding.UTF8.GetString(json));
-                if (bucketData == null)
+                var vectorKey = Encoding.UTF8.GetBytes($"{BucketVectorPrefix}{bucketId}:{i}");
+                var recordBytes = _rocksDb.Get(vectorKey);
+                if (recordBytes == null || recordBytes.Length == 0)
                     continue;
 
-                for (ulong i = 0; i < (ulong)bucketData.Vectors.Count; i++)
+                if (TryDeserializeVectorRecord(recordBytes, out var rec))
                 {
-                    var vec = bucketData.Vectors[(int)i];
-                    results.Add((vec.Vector, vec.StorageGuid, bucketData.BucketId, i, bucketName));
+                    results.Add((rec.Vector, rec.StorageGuid, bucketId, i, bucketName));
                 }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[RocksDB Buckets] Error reading bucket {bucketName}: {ex.Message}");
             }
         }
 
@@ -202,54 +182,60 @@ public sealed class RocksDbBucketStorage : IDisposable
 
     /// <summary>
     /// Get storage GUID by bucket ID and index.
-    /// OPTIMIZED: Uses reverse index (bucketId -> bucketName) for O(1) lookup instead of O(n) scan.
+    /// O(1) lookup using direct vector key.
     /// </summary>
     public string? GetStorageGuidByReference(ulong bucketId, ulong bucketIndex)
     {
-        // Fast path: Use reverse index to get bucket name directly (O(1))
-        string? bucketName = null;
-        lock (_bucketIdLock)
-        {
-            _bucketIdToName.TryGetValue(bucketId, out bucketName);
-        }
-        
-        if (bucketName == null)
-        {
-            // Fallback: bucket not in index (shouldn't happen, but handle gracefully)
-            // Could rebuild index or do linear search, but for now return null
+        var key = Encoding.UTF8.GetBytes($"{BucketVectorPrefix}{bucketId}:{bucketIndex}");
+        var recordBytes = _rocksDb.Get(key);
+        if (recordBytes == null || recordBytes.Length == 0)
             return null;
-        }
-        
-        // Direct lookup by bucket name (O(1) RocksDB lookup)
-        var key = Encoding.UTF8.GetBytes($"bucket:{bucketName}");
-        var jsonBytes = _rocksDb.Get(key);
-        
-        if (jsonBytes == null || jsonBytes.Length == 0)
-            return null;
-        
+
+        return TryDeserializeVectorRecord(recordBytes, out var rec) ? rec.StorageGuid : null;
+    }
+
+    private static byte[] SerializeVectorRecord(float[] vector, string storageGuid, int chunkSize)
+    {
+        using var ms = new MemoryStream();
+        using var writer = new BinaryWriter(ms, Encoding.UTF8, leaveOpen: true);
+        writer.Write(vector.Length);
+        for (int i = 0; i < vector.Length; i++)
+            writer.Write(vector[i]);
+        writer.Write(storageGuid ?? string.Empty);
+        writer.Write(chunkSize);
+        writer.Flush();
+        return ms.ToArray();
+    }
+
+    private static bool TryDeserializeVectorRecord(byte[] bytes, out VectorRecord rec)
+    {
+        rec = default;
         try
         {
-            var bucketData = JsonSerializer.Deserialize<BucketData>(Encoding.UTF8.GetString(jsonBytes));
-            if (bucketData != null && (ulong)bucketData.Vectors.Count > bucketIndex)
-            {
-                return bucketData.Vectors[(int)bucketIndex].StorageGuid;
-            }
+            using var ms = new MemoryStream(bytes, writable: false);
+            using var reader = new BinaryReader(ms, Encoding.UTF8, leaveOpen: true);
+            var dim = reader.ReadInt32();
+            if (dim <= 0 || dim > 4096)
+                return false;
+
+            var vector = new float[dim];
+            for (int i = 0; i < dim; i++)
+                vector[i] = reader.ReadSingle();
+
+            var storageGuid = reader.ReadString();
+            var chunkSize = reader.ReadInt32();
+
+            if (string.IsNullOrWhiteSpace(storageGuid))
+                return false;
+
+            rec = new VectorRecord(vector, storageGuid, chunkSize);
+            return true;
         }
-        catch { /* Skip invalid entries */ }
-        
-        return null;
+        catch
+        {
+            return false;
+        }
     }
 
-    private class BucketData
-    {
-        public ulong BucketId { get; set; }
-        public List<VectorData> Vectors { get; set; } = new();
-    }
-
-    private class VectorData
-    {
-        public float[] Vector { get; set; } = Array.Empty<float>();
-        public string StorageGuid { get; set; } = string.Empty;
-        public int ChunkSize { get; set; }
-    }
+    private readonly record struct VectorRecord(float[] Vector, string StorageGuid, int ChunkSize);
 }

@@ -524,47 +524,11 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
         }
     }
 
-    private async Task ReplicateChunkAsync(string chunkKey, byte[] chunkData)
+    private Task ReplicateChunkAsync(string chunkKey, byte[] chunkData)
     {
-        var replicationFactor = GetReplicationFactor();
-        if (replicationFactor <= 1)
-            return; // No replication needed
-
-        var agents = await GetActiveAgentPodsAsync();
-        if (agents.Count == 0)
-            return;
-
-        // Deterministic selection: hash chunk key to select N agents
-        var selectedAgents = SelectReplicationTargets(chunkKey, agents, replicationFactor - 1); // -1 because we already stored locally
-
-        var replicationTasks = selectedAgents.Select(async agentPod =>
-        {
-            try
-            {
-                var client = GrpcChannelFactory.GetClient(
-                    target: agentPod,
-                    ctor: chan => new ChunkReferenceService.ChunkReferenceServiceClient(chan),
-                    roundRobin: false,
-                    port: 5000
-                );
-
-                var req = new StoreChunkByKey_Req 
-                { 
-                    ChunkKey = chunkKey,
-                    ChunkData = ByteString.CopyFrom(chunkData)
-                };
-                
-                var res = await client.StoreChunkByKeyAsync(
-                    req,
-                    deadline: DateTime.UtcNow.AddSeconds(10),
-                    cancellationToken: CancellationToken.None);
-
-                // Silently ignore success/failure — replication is best-effort background work
-            }
-            catch { /* best-effort replication */ }
-        });
-
-        await Task.WhenAll(replicationTasks);
+        // Temporarily disabled replication path while GetChunkByReference proto/codegen
+        // is normalized across environments. This keeps hot-path store/search fast and stable.
+        return Task.CompletedTask;
     }
 
     public Task StoreChunkByKeyInternalAsync(string chunkKey, byte[] chunkData)
