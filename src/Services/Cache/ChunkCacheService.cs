@@ -58,6 +58,16 @@ public class ChunkCacheService
     }
 
     /// <summary>
+    /// Cache-only lookup — returns the chunk if it's in the MRU cache, null otherwise.
+    /// Does NOT fall back to disk. Used by GetChunkAsync to avoid missing chunks
+    /// that were CacheChunk'd but not yet flushed by the RocksDB write batcher.
+    /// </summary>
+    public byte[]? GetFromCacheOnly(string storageGuid)
+    {
+        return _chunkCache.Get(storageGuid);
+    }
+
+    /// <summary>
     /// Puts a chunk into the cache (e.g., after storing it).
     /// </summary>
     public void CacheChunk(string storageGuid, byte[] chunkData)

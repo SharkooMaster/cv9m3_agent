@@ -30,5 +30,15 @@ public static class ChunkCacheHandler
     {
         _instance?.CacheChunk(storageGuid, chunkData);
     }
+
+    /// <summary>
+    /// Cache-only lookup — does NOT fall back to disk/storage.
+    /// Critical for chunks that were just stored (in MRU cache)
+    /// but not yet flushed by the RocksDB write batcher.
+    /// </summary>
+    public static byte[]? GetFromCacheOnly(string storageGuid)
+    {
+        return _instance?.GetFromCacheOnly(storageGuid);
+    }
 }
 

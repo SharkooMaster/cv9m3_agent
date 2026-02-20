@@ -171,8 +171,17 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
             return null;
 
         var key = NormalizeStorageKey(storageGuid);
-        
-        // Try local RocksDB first (fast path — no Postgres hit)
+
+        // ── CRITICAL: Check MRU cache FIRST ──
+        // Chunks are CacheChunk'd immediately in StoreVector, but the RocksDB write
+        // batcher may not have flushed yet (up to 50ms / 500 items delay).
+        // Without this check, any GetChunkByReferenceAsync called before the flush
+        // would miss the chunk → return null → Cross diffs against zeros → file bloat + corruption.
+        var cached = ChunkCacheHandler.GetFromCacheOnly(key);
+        if (cached != null && cached.Length > 0)
+            return cached;
+
+        // Try local RocksDB (chunk may have been flushed by now)
         byte[]? bytes = _rocksDb.Get(Encoding.UTF8.GetBytes(key));
         if (bytes != null && bytes.Length > 0)
             return bytes;

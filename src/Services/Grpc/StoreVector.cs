@@ -40,38 +40,76 @@ public class StoreVectorService : StoreVector.StoreVectorBase
             normSq += (double)x * x;
         }
 
-        // All-zero and near-zero vectors can be legitimate for low-entropy chunks.
-        // They should be handled by similarity math (CalculateDistance), not rejected here.
         if (allZeros || normSq <= 1e-12)
             return false;
 
         return false;
     }
 
+    /// <summary>
+    /// Store a single chunk + vector. Kept for backward compat.
+    /// </summary>
     public override async Task<StoreVector_Res> Store(StoreVector_Req request, ServerCallContext context)
     {
-        using var rootSpan = Observability.StartStage("StoreVector");
-        var ingressSw = System.Diagnostics.Stopwatch.StartNew();
-        
+        return await StoreSingle(request);
+    }
+
+    /// <summary>
+    /// BatchStore: store ALL NeedToStore chunks for this agent in ONE gRPC call.
+    /// Cross groups chunks by target agent (rendezvous hash) and sends one batch per agent.
+    /// Eliminates ~8,000 per-chunk round trips per file → ~5 calls total.
+    /// </summary>
+    public override async Task<BatchStoreVector_Res> BatchStore(BatchStoreVector_Req request, ServerCallContext context)
+    {
+        var result = new BatchStoreVector_Res();
+        if (request.Items.Count == 0)
+            return result;
+
+        // Process all store requests in parallel — each one hits RAM + RocksDB batch writer
+        var results = new StoreVector_Res[request.Items.Count];
+
+        // Use Parallel.ForEachAsync for true async parallelism (each store may await)
+        await Parallel.ForEachAsync(
+            Enumerable.Range(0, request.Items.Count),
+            new ParallelOptions { MaxDegreeOfParallelism = -1 },
+            async (i, ct) =>
+            {
+                try
+                {
+                    results[i] = await StoreSingle(request.Items[i]);
+                }
+                catch
+                {
+                    // Individual store failure: return (0, 0) — Cross handles this gracefully
+                    results[i] = new StoreVector_Res { Id = 0, Index = 0 };
+                }
+            });
+
+        result.Results.AddRange(results);
+        return result;
+    }
+
+    /// <summary>
+    /// Core single-chunk store logic, shared by Store and BatchStore.
+    /// </summary>
+    private static async Task<StoreVector_Res> StoreSingle(StoreVector_Req request)
+    {
         if (request.Chunk == null || request.Chunk.Length == 0)
             throw new ArgumentException("Chunk data cannot be null or empty", nameof(request));
-        
+
         if (request.Vector == null || request.Vector.Count == 0)
             throw new ArgumentException("Vector data cannot be null or empty", nameof(request));
 
         if (IsInvalidVector(request.Vector, out string invalidReason))
             throw new ArgumentException($"Invalid vector: {invalidReason}", nameof(request));
-        
+
         M_Data _data = new M_Data();
         _data.vector = request.Vector.ToArray();
         _data.chunk = request.Chunk.ToArray();
-        ingressSw.Stop();
-        Observability.RecordStage("Deserialize", ingressSw.Elapsed.TotalMilliseconds, ("chunk_bytes", _data.chunk.Length));
-        
-        var storeSw = System.Diagnostics.Stopwatch.StartNew();
-        (ulong _id, ulong _index) = await NodeService.StoreInBucket(Globals._NODE, request.Bitstring, _data, request.HeadRouteID);
-        storeSw.Stop();
-        Observability.RecordStage("Serialize", storeSw.Elapsed.TotalMilliseconds, ("stored", true));
-        return new StoreVector_Res() { Id = _id, Index = _index };
+
+        (ulong _id, ulong _index) = await NodeService.StoreInBucket(
+            Globals._NODE, request.Bitstring, _data, request.HeadRouteID);
+
+        return new StoreVector_Res { Id = _id, Index = _index };
     }
 }
