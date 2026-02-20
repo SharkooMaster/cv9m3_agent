@@ -34,6 +34,10 @@ message SearchVector_Result
     bool save = 2;
 }
 
+// ── Batch search: many queries in one gRPC call ──
+// Gateway groups all queries destined for the same agent into one BatchGet call.
+// This eliminates per-query gRPC round-trip overhead (~600 calls → ~5 calls per file).
+
 message BatchSearchVector_Req
 {
     repeated SearchVector_Req queries = 1;
