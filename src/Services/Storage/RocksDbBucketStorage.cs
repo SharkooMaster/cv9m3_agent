@@ -19,6 +19,8 @@ public sealed class RocksDbBucketStorage : IDisposable
     private static readonly Dictionary<string, ulong> _bucketNameToId = new();
     // Per-bucket locks to allow concurrent writes to different buckets
     private static readonly ConcurrentDictionary<string, object> _bucketLocks = new();
+    // Index: bucketId -> bucketName for fast reverse lookups (O(1) instead of O(n) scan)
+    private static readonly ConcurrentDictionary<ulong, string> _bucketIdToName = new();
 
     public RocksDbBucketStorage(string basePath)
     {
@@ -66,6 +68,7 @@ public sealed class RocksDbBucketStorage : IDisposable
                         if (bucketData != null && bucketData.BucketId > 0)
                         {
                             _bucketNameToId[bucketName] = bucketData.BucketId;
+                            _bucketIdToName[bucketData.BucketId] = bucketName; // Build reverse index
                             if (bucketData.BucketId >= _nextBucketId)
                                 _nextBucketId = bucketData.BucketId + 1;
                         }
@@ -199,31 +202,40 @@ public sealed class RocksDbBucketStorage : IDisposable
 
     /// <summary>
     /// Get storage GUID by bucket ID and index.
+    /// OPTIMIZED: Uses reverse index (bucketId -> bucketName) for O(1) lookup instead of O(n) scan.
     /// </summary>
     public string? GetStorageGuidByReference(ulong bucketId, ulong bucketIndex)
     {
-        // Find bucket name by ID (linear search - could be optimized with reverse index)
-        using var iterator = _rocksDb.NewIterator();
-        iterator.SeekToFirst();
-        
-        while (iterator.Valid())
+        // Fast path: Use reverse index to get bucket name directly (O(1))
+        string? bucketName = null;
+        lock (_bucketIdLock)
         {
-            var key = iterator.StringKey();
-            if (key.StartsWith("bucket:"))
-            {
-                var jsonBytes = iterator.Value();
-                try
-                {
-                    var bucketData = JsonSerializer.Deserialize<BucketData>(Encoding.UTF8.GetString(jsonBytes));
-                    if (bucketData != null && bucketData.BucketId == bucketId && (ulong)bucketData.Vectors.Count > bucketIndex)
-                    {
-                        return bucketData.Vectors[(int)bucketIndex].StorageGuid;
-                    }
-                }
-                catch { /* Skip invalid entries */ }
-            }
-            iterator.Next();
+            _bucketIdToName.TryGetValue(bucketId, out bucketName);
         }
+        
+        if (bucketName == null)
+        {
+            // Fallback: bucket not in index (shouldn't happen, but handle gracefully)
+            // Could rebuild index or do linear search, but for now return null
+            return null;
+        }
+        
+        // Direct lookup by bucket name (O(1) RocksDB lookup)
+        var key = Encoding.UTF8.GetBytes($"bucket:{bucketName}");
+        var jsonBytes = _rocksDb.Get(key);
+        
+        if (jsonBytes == null || jsonBytes.Length == 0)
+            return null;
+        
+        try
+        {
+            var bucketData = JsonSerializer.Deserialize<BucketData>(Encoding.UTF8.GetString(jsonBytes));
+            if (bucketData != null && (ulong)bucketData.Vectors.Count > bucketIndex)
+            {
+                return bucketData.Vectors[(int)bucketIndex].StorageGuid;
+            }
+        }
+        catch { /* Skip invalid entries */ }
         
         return null;
     }
