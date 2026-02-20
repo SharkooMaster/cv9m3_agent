@@ -16,9 +16,11 @@ public sealed class RedisChunkOwnershipService : IDisposable
     private readonly string _myPodName;
     private static readonly ConcurrentQueue<(string chunkKey, string agent)> _ownershipQueue = new();
     private static readonly ConcurrentQueue<(ulong bucketId, ulong bucketIndex, string storageGuid)> _bucketRefQueue = new();
-    // Flush every 500ms - balanced between latency and throughput
-    private static readonly Timer _ownershipFlushTimer = new(_ => FlushOwnershipQueueAsync().ConfigureAwait(false), null, 500, 500);
-    private static readonly Timer _bucketRefFlushTimer = new(_ => FlushBucketRefQueueAsync().ConfigureAwait(false), null, 500, 500);
+    // DISABLED: Redis flush timers were causing thread pool starvation under load.
+    // Rendezvous hashing makes ownership/bucket-ref writes redundant.
+    // Timers set to Timeout.Infinite = never fire.
+    private static readonly Timer _ownershipFlushTimer = new(_ => { }, null, Timeout.Infinite, Timeout.Infinite);
+    private static readonly Timer _bucketRefFlushTimer = new(_ => { }, null, Timeout.Infinite, Timeout.Infinite);
     private static IDatabase? _sharedRedis;
 
     // ── Ownership read cache (chunkKey → list of agent IPs) ──

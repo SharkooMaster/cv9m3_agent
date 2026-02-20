@@ -146,20 +146,16 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
         // Cache in memory for fast search-time fetch
         ChunkCacheHandler.CacheChunk(key, data.chunk);
         
-        // Record ownership in Redis (non-blocking, queued)
-        _ownershipService.RecordOwnership(key);
-        
-        // NON-BLOCKING: Queue bucket reference for background Redis write.
-        // Decompression uses RAM-first lookup (rendezvous hash → agent → in-memory bucket).
-        // Redis is a fallback, not the hot path.
-        _ownershipService.RecordBucketReference(bucketId, bucketIndex, key);
-        
-        // Replicate to N other agents (fire and forget for performance)
-        _ = Task.Run(async () =>
-        {
-            try { await ReplicateChunkAsync(key, data.chunk); }
-            catch { /* best-effort background replication — swallow to prevent unobserved task exceptions */ }
-        });
+        // REMOVED: Redis ownership + bucket ref writes.
+        // These were the root cause of thread pool starvation under load:
+        //   - Queues grew faster than Redis could drain (3000+ stores/sec vs 500/500ms flush)
+        //   - Redis timeouts (34s) blocked thread pool threads
+        //   - Failed batches were re-enqueued → infinite feedback loop
+        //   - Kestrel couldn't serve gRPC → BatchGet/BatchStore timeouts
+        // Rendezvous hashing makes these writes redundant:
+        //   - Routing is deterministic → no need for ownership tracking
+        //   - RocksDbBucketStorage has the (bucketId, bucketIndex) → storageGuid mapping locally
+        //   - GetChunkByReferenceAsync finds chunks via local RocksDB bucket metadata
         
         return ((int)bucketId, (int)bucketIndex);
     }
@@ -198,19 +194,13 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
         // Fix: only use local RocksDB + Redis (both non-recursive). If we get a storageGuid,
         // GetChunkAsync can safely fetch bytes from another agent via GetChunkByKey (different RPC).
 
-        // 1. Try local RocksDB bucket metadata → storageGuid (O(1), no I/O)
+        // 1. Try local RocksDB bucket metadata → storageGuid (O(1), no network I/O)
         var storageGuid = _bucketStorage.GetStorageGuidByReference(bucketId, bucketIndex);
-        
-        // 2. If not found locally, try Redis (non-recursive, fast network lookup)
-        if (string.IsNullOrWhiteSpace(storageGuid))
-        {
-            storageGuid = await _ownershipService.GetStorageGuidByReferenceAsync(bucketId, bucketIndex);
-        }
-        
+
         if (string.IsNullOrWhiteSpace(storageGuid))
             return null;
 
-        // 3. Fetch chunk bytes: local RocksDB first, then remote via GetChunkByKey (safe, no recursion)
+        // 2. Fetch chunk bytes: MRU cache first, then local RocksDB
         return await GetChunkAsync(storageGuid);
     }
 
@@ -522,53 +512,15 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
 
         // Store locally in RocksDB (batched, non-blocking background write)
         _chunkWriteBatcher.Put(chunkKey, chunkData);
-        
-        // Record ownership in Redis (non-blocking, queued)
-        _ownershipService.RecordOwnership(chunkKey);
         return Task.CompletedTask;
     }
 
-    private async Task<byte[]?> FetchChunkFromRemoteAsync(string chunkKey)
+    private Task<byte[]?> FetchChunkFromRemoteAsync(string chunkKey)
     {
-        // Get owner agents from Redis
-        var ownerAgents = await _ownershipService.GetChunkOwnersAsync(chunkKey);
-        
-        if (ownerAgents.Count == 0)
-            return null;
-
-        // Try fetching from each owner agent
-        foreach (var agentPod in ownerAgents)
-        {
-            try
-            {
-                var client = GrpcChannelFactory.GetClient(
-                    target: agentPod,
-                    ctor: chan => new ChunkReferenceService.ChunkReferenceServiceClient(chan),
-                    roundRobin: false,
-                    port: 5000
-                );
-
-                var req = new GetChunkByKey_Req { ChunkKey = chunkKey };
-                var res = await client.GetChunkByKeyAsync(
-                    req,
-                    deadline: DateTime.UtcNow.AddSeconds(5),
-                    cancellationToken: CancellationToken.None);
-
-                var responseChunk = res.Chunk;
-                if (res.Found && responseChunk != null && responseChunk.Length > 0)
-                {
-                    var chunkData = responseChunk.ToByteArray();
-                    
-                    // Cache locally for future access (batched, non-blocking background write)
-                    _chunkWriteBatcher.Put(chunkKey, chunkData);
-                    _ownershipService.RecordOwnership(chunkKey);
-                    return chunkData;
-                }
-            }
-            catch { /* try next agent */ }
-        }
-
-        return null;
+        // With rendezvous hashing, Cross routes to the correct agent directly.
+        // If the chunk isn't in local RocksDB or MRU cache, it's not here.
+        // Cross handles retry on fallback agents.
+        return Task.FromResult<byte[]?>(null);
     }
 
     private static List<string> SelectReplicationTargets(string chunkKey, List<string> agents, int count)
