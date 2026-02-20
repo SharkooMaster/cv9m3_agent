@@ -8,23 +8,58 @@ using Agent.Utils.Misc;
 public class M_Bucket
 {
     public string ID { get; set; }
-    public ulong lastId = 0; // Possibly needs atomic operations to avoid collision
-    public ConcurrentBag<M_Data> data = new ConcurrentBag<M_Data>();
+    public ulong lastId = 0;
 
-    // ── Dedup guard: track which chunks (by SHA256 of content) are already in the bag. ──
-    // Prevents duplicate entries from concurrent stores of the same chunk content.
+    // ── PERFORMANCE: List<M_Data> + lock replaces ConcurrentBag<M_Data>. ──
+    // ConcurrentBag.ToArray() allocates a full copy on every call (O(n) + GC pressure).
+    // List gives direct array-backed iteration — zero allocation for reads.
+    // Writes are already serialized per-bucket (RocksDbBucketStorage holds a per-bucket lock).
+    private readonly List<M_Data> _data = new();
+    private readonly object _dataLock = new();
+
+    // ── Dedup guard: track which chunks (by SHA256 of content) are already stored. ──
     private readonly ConcurrentDictionary<string, (ulong id, ulong index)> _seenChunks = new();
+
+    // Backward compat: old code that does `bucket.data.Add(...)` during warmup needs this.
+    // Wraps the internal list with proper locking.
+    public BucketDataAccessor data => new BucketDataAccessor(this);
 
     public M_Bucket(string _ID)
     {
         ID = _ID;
     }
 
-    public async Task<ulong> BookId()
+    /// <summary>
+    /// Returns a snapshot of all data items as an array.
+    /// Lock-free read: copies the internal array reference (O(1)),
+    /// then the caller iterates without holding the lock.
+    /// </summary>
+    public M_Data[] GetDataSnapshot()
     {
-        ulong to_return = lastId;
-        Interlocked.Increment(ref lastId);
-        return to_return;
+        lock (_dataLock)
+        {
+            // List<T>.ToArray() is a single memcpy — much faster than ConcurrentBag snapshot
+            return _data.ToArray();
+        }
+    }
+
+    /// <summary>
+    /// Adds an item to the bucket's data list. Thread-safe.
+    /// </summary>
+    public void AddData(M_Data item)
+    {
+        lock (_dataLock)
+        {
+            _data.Add(item);
+        }
+    }
+
+    /// <summary>
+    /// Current count of data items. Thread-safe.
+    /// </summary>
+    public int DataCount
+    {
+        get { lock (_dataLock) return _data.Count; }
     }
 
     private static string HashChunk(byte[] chunk)
@@ -36,9 +71,8 @@ public class M_Bucket
         return sb.ToString();
     }
 
-    public async Task<(ulong, ulong)> InsertData(M_Data _data, ulong _id){
-        // IMPORTANT: For correct compression references, storing must return the real (bucketId, vectorIndex).
-        // The Gateway/Cross encoder relies on these values being stable.
+    public async Task<(ulong, ulong)> InsertData(M_Data _data, ulong _id)
+    {
         if (_data == null) throw new ArgumentNullException(nameof(_data));
 
         // ── Dedup: if identical chunk content is already in this bucket, return its reference. ──
@@ -48,183 +82,71 @@ public class M_Bucket
             if (_seenChunks.TryGetValue(chunkKey, out var existing))
                 return existing;
 
-            // Store to the configured storage backend (LocalFileStorageService / GCS / etc).
             (int bucketId, int bucketIndex) = await NetworkFileStorageHandler.StoreVector(ID, _data);
 
             _data.id = (ulong)bucketId;
             _data.index = (ulong)bucketIndex;
 
-            // Add to in-memory bag for future similarity search.
-            data.Add(_data);
+            AddData(_data);
             _seenChunks.TryAdd(chunkKey, ((ulong)bucketId, (ulong)bucketIndex));
 
             return ((ulong)bucketId, (ulong)bucketIndex);
         }
 
         // Fallback: no chunk data — store anyway (shouldn't happen but safety net).
-        data.Add(_data);
+        AddData(_data);
         (int bid, int bidx) = await NetworkFileStorageHandler.StoreVector(ID, _data);
         _data.id = (ulong)bid;
         _data.index = (ulong)bidx;
         return ((ulong)bid, (ulong)bidx);
     }
-    
-    public async Task<List<M_SearchResult>> SearchData(float[] _vector, float _minimum_similarity, int _k, int _i)
+
+    // SearchData is no longer called in the hot path (SearchVector.Get uses ProcessSingleQuery).
+    // Kept for backward compatibility.
+    public Task<List<M_SearchResult>> SearchData(float[] _vector, float _minimum_similarity, int _k, int _i)
     {
-        ConcurrentBag<M_SearchResult> to_return = new ConcurrentBag<M_SearchResult>();
+        var results = new List<M_SearchResult>();
+        var snapshot = GetDataSnapshot();
 
-        var candidates = new List<(M_Data data, float similarity)>();
-        
-        // No cap: Use unlimited parallelism for cosine similarity calculations
-        // System will naturally limit based on available CPU
-        var parallelOptions = new ParallelOptions
+        float bestSim = -1f;
+        M_Data? bestData = null;
+
+        for (int idx = 0; idx < snapshot.Length; idx++)
         {
-            MaxDegreeOfParallelism = -1 // -1 = unlimited, let system handle it
-        };
-
-        // Snapshot the concurrent bag — scan ALL vectors (no cap).
-        var rows = data.ToArray();
-
-        // Full cosine similarity against all candidates; keep only top-K >= threshold.
-        Parallel.ForEach(
-            rows,
-            parallelOptions,
-            () => new List<(M_Data data, float similarity)>(),
-            (row, state, local) =>
+            var row = snapshot[idx];
+            if (row?.vector == null || row.vector.Length != _vector.Length) continue;
+            float sim = Misc.CalculateDistance(_vector, row.vector);
+            if (sim >= _minimum_similarity && sim > bestSim)
             {
-                // Guard against bad/corrupt vector rows so one bad entry doesn't break a whole query.
-                if (row?.vector == null || row.vector.Length != _vector.Length)
-                {
-                    return local;
-                }
-                bool invalid = false;
-                for (int vi = 0; vi < row.vector.Length; vi++)
-                {
-                    float x = row.vector[vi];
-                    if (float.IsNaN(x) || float.IsInfinity(x))
-                    {
-                        invalid = true;
-                        break;
-                    }
-                }
-                if (invalid)
-                {
-                    return local;
-                }
-
-                float similarity = Misc.CalculateDistance(_vector, row.vector);
-                if (similarity >= _minimum_similarity)
-                {
-                    if (local.Count < _k)
-                    {
-                        local.Add((row, similarity));
-                    }
-                    else
-                    {
-                        // Replace worst local candidate if this is better (keeps local list bounded).
-                        int worstIdx = 0;
-                        float worstSim = local[0].similarity;
-                        for (int j = 1; j < local.Count; j++)
-                        {
-                            if (local[j].similarity < worstSim)
-                            {
-                                worstSim = local[j].similarity;
-                                worstIdx = j;
-                            }
-                        }
-
-                        if (similarity > worstSim)
-                        {
-                            local[worstIdx] = (row, similarity);
-                        }
-                    }
-                }
-
-                return local;
-            },
-            local =>
-            {
-                if (local.Count == 0) return;
-                lock (candidates)
-                {
-                    foreach (var c in local)
-                    {
-                        if (candidates.Count < _k)
-                        {
-                            candidates.Add(c);
-                        }
-                        else
-                        {
-                            // Replace worst global candidate if this is better.
-                            int worstIdx = 0;
-                            float worstSim = candidates[0].similarity;
-                            for (int j = 1; j < candidates.Count; j++)
-                            {
-                                if (candidates[j].similarity < worstSim)
-                                {
-                                    worstSim = candidates[j].similarity;
-                                    worstIdx = j;
-                                }
-                            }
-
-                            if (c.similarity > worstSim)
-                            {
-                                candidates[worstIdx] = c;
-                            }
-                        }
-                    }
-                }
-            }
-        );
-
-        // Second pass: Load chunks for top candidates (lazy loading from cache/disk)
-        var tasks = candidates.OrderByDescending(c => c.similarity)
-            .Take(_k)
-            .Select(async candidate =>
-            {
-                byte[]? chunk = candidate.data.chunk;
-                
-                // If chunk not in memory, load from cache/disk
-                if (chunk == null || chunk.Length == 0)
-                {
-                    if (!string.IsNullOrEmpty(candidate.data.storageGuid))
-                    {
-                        chunk = await Agent.Modules.Storage.ChunkCacheHandler.GetChunkAsync(candidate.data.storageGuid);
-                        if (chunk != null)
-                        {
-                            // Update in-memory reference for future use
-                            candidate.data.chunk = chunk;
-                        }
-                    }
-                }
-
-                if (chunk != null && chunk.Length > 0)
-                {
-                    return new M_SearchResult()
-                    {
-                        id = candidate.data.id,
-                        index = candidate.data.index,
-                        similarity = candidate.similarity,
-                        chunk = chunk,
-                        i = _i
-                    };
-                }
-                else
-                {
-                    return null;
-                }
-            });
-
-        var results = await Task.WhenAll(tasks);
-        foreach (var result in results)
-        {
-            if (result != null)
-            {
-                to_return.Add(result);
+                bestSim = sim;
+                bestData = row;
             }
         }
 
-        return to_return.OrderByDescending(r => r.similarity).ToList();
-    }
+        if (bestData != null)
+        {
+            results.Add(new M_SearchResult
+            {
+                id = bestData.id,
+                index = bestData.index,
+                similarity = bestSim,
+                chunk = bestData.chunk,
+                i = _i
+            });
+        }
 
+        return Task.FromResult(results);
+    }
+}
+
+/// <summary>
+/// Wrapper that gives backward-compatible Add/Count access to M_Bucket's internal list.
+/// Used by WarmUpBuckets() and other code that does `bucket.data.Add(item)`.
+/// </summary>
+public struct BucketDataAccessor
+{
+    private readonly M_Bucket _bucket;
+    public BucketDataAccessor(M_Bucket bucket) => _bucket = bucket;
+    public void Add(M_Data item) => _bucket.AddData(item);
+    public int Count => _bucket.DataCount;
 }

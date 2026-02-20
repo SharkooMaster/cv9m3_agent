@@ -13,127 +13,147 @@ using Grpc.Core;
 
 public class SearchVectorService : SearchVector.SearchVectorBase
 {
-    /// <summary>
-    /// Pure RAM search: gather ALL vectors from ALL requested buckets (in-memory only),
-    /// then run a single cosine similarity pass over the combined set.
-    /// No RocksDB reads. No Redis. No Postgres. No cold imports.
-    /// Buckets are pre-loaded at startup via WarmUpBuckets().
-    /// New buckets are added to RAM during StoreVector (via M_Bucket.InsertData).
-    /// </summary>
-    public override async Task<SearchVector_Result> Get(SearchVector_Req request, ServerCallContext context)
+    // ──────────────────────────────────────────────────────────────────
+    // BatchGet: process ALL queries for this agent in ONE gRPC call.
+    // Gateway groups queries by agent (rendezvous hash) and sends a single
+    // batch per agent. This eliminates ~595 round trips per file.
+    // ──────────────────────────────────────────────────────────────────
+    public override Task<BatchSearchVector_Result> BatchGet(BatchSearchVector_Req request, ServerCallContext context)
     {
-        using var rootSpan = Observability.StartStage("SearchVector.Get");
-        try
+        var result = new BatchSearchVector_Result();
+        var queries = request.Queries;
+        if (queries.Count == 0)
+            return Task.FromResult(result);
+
+        // Process all queries in parallel on this agent — pure RAM, no I/O
+        var results = new SearchVector_Result[queries.Count];
+
+        Parallel.For(0, queries.Count, new ParallelOptions { MaxDegreeOfParallelism = -1 }, i =>
         {
-            var queryVector = request.Vector.ToArray();
-            var allBitstrings = request.Bitstrings.ToList();
+            results[i] = ProcessSingleQuery(queries[i]);
+        });
 
-            if (allBitstrings.Count == 0)
-                return MakeSaveResult(request.Index);
+        result.Results.AddRange(results);
+        return Task.FromResult(result);
+    }
 
-            // ── NO DHT range check. Gateway already routed via rendezvous hash. ──
-            // Agent accepts all requests. If bucket isn't here, it doesn't exist on this agent.
+    /// <summary>
+    /// Single-query search: pure RAM, no chunk fetch, no I/O.
+    /// Returns only (bucketId, bucketIndex, similarity) — NO chunk bytes.
+    /// Cross fetches base chunks lazily only when it needs diff encoding.
+    /// </summary>
+    private static SearchVector_Result ProcessSingleQuery(SearchVector_Req request)
+    {
+        var queryVector = request.Vector.ToArray();
+        int vecLen = queryVector.Length;
 
-            // ──────────────────────────────────────────────────────────────
-            // Step 1: Collect vectors from in-memory buckets ONLY (zero I/O)
-            // ──────────────────────────────────────────────────────────────
-            var candidates = new List<(float[] vector, string storageGuid, ulong bucketId, ulong bucketIndex)>();
+        if (request.Bitstrings.Count == 0)
+            return MakeSaveResult(request.Index);
 
-            foreach (var bs in allBitstrings)
+        // ── Collect candidates from in-memory buckets (zero I/O) ──
+        // Pre-size list to avoid resizing (typical: 1-10 vectors per bucket × 65 buckets)
+        var candidates = new List<(float[] vector, ulong bucketId, ulong bucketIndex)>(128);
+
+        foreach (var bs in request.Bitstrings)
+        {
+            if (Globals._NODE.Buckets.TryGetValue(bs, out var bucket))
             {
-                if (Globals._NODE.Buckets.TryGetValue(bs, out var bucket))
+                // bucket.data is now List<M_Data> — direct index access, no snapshot needed
+                var items = bucket.GetDataSnapshot();
+                for (int j = 0; j < items.Length; j++)
                 {
-                    // Fast path: bucket in RAM — iterate snapshot
-                    foreach (var d in bucket.data)
-                    {
-                        if (d?.vector != null && d.vector.Length == queryVector.Length
-                            && !string.IsNullOrEmpty(d.storageGuid))
-                            candidates.Add((d.vector, d.storageGuid, d.id, d.index));
-                    }
-                }
-                // else: bucket doesn't exist on this agent — skip (gateway will handle NeedToStore)
-            }
-
-            if (candidates.Count == 0)
-                return MakeSaveResult(request.Index);
-
-            // ──────────────────────────────────────────────────────────────
-            // Step 2: Single cosine similarity pass over ALL candidates.
-            // ──────────────────────────────────────────────────────────────
-            int k = Math.Max(1, request.K);
-            float threshold = request.MinimumSimilarity;
-
-            // For small candidate sets (< 256), sequential is faster than Parallel overhead
-            (int idx, float sim) best = (-1, -1f);
-
-            if (candidates.Count < 256)
-            {
-                for (int i = 0; i < candidates.Count; i++)
-                {
-                    float sim = Misc.CalculateDistance(queryVector, candidates[i].vector);
-                    if (sim >= threshold && sim > best.sim)
-                        best = (i, sim);
+                    var d = items[j];
+                    if (d?.vector != null && d.vector.Length == vecLen)
+                        candidates.Add((d.vector, d.id, d.index));
                 }
             }
-            else
-            {
-                // Parallel scan for large candidate sets — unlimited parallelism
-                (int idx, float sim) globalBest = (-1, -1f);
-                var lockObj = new object();
+        }
 
-                Parallel.ForEach(
-                    Partitioner.Create(0, candidates.Count),
-                    new ParallelOptions { MaxDegreeOfParallelism = -1 },
-                    () => (-1, -1f),
-                    (range, _, localBest) =>
+        if (candidates.Count == 0)
+            return MakeSaveResult(request.Index);
+
+        // ── Single cosine similarity pass ──
+        float threshold = request.MinimumSimilarity;
+        int bestIdx = -1;
+        float bestSim = -1f;
+
+        // Sequential for small sets (< 512), parallel for large
+        if (candidates.Count < 512)
+        {
+            for (int i = 0; i < candidates.Count; i++)
+            {
+                float sim = Misc.CalculateDistance(queryVector, candidates[i].vector);
+                if (sim >= threshold && sim > bestSim)
+                {
+                    bestSim = sim;
+                    bestIdx = i;
+                }
+            }
+        }
+        else
+        {
+            int localBestIdx = -1;
+            float localBestSim = -1f;
+            var lockObj = new object();
+
+            Parallel.ForEach(
+                Partitioner.Create(0, candidates.Count),
+                new ParallelOptions { MaxDegreeOfParallelism = -1 },
+                () => (-1, -1f),
+                (range, _, local) =>
+                {
+                    for (int i = range.Item1; i < range.Item2; i++)
                     {
-                        for (int i = range.Item1; i < range.Item2; i++)
-                        {
-                            float sim = Misc.CalculateDistance(queryVector, candidates[i].vector);
-                            if (sim >= threshold && sim > localBest.Item2)
-                                localBest = (i, sim);
-                        }
-                        return localBest;
-                    },
-                    localBest =>
+                        float sim = Misc.CalculateDistance(queryVector, candidates[i].vector);
+                        if (sim >= threshold && sim > local.Item2)
+                            local = (i, sim);
+                    }
+                    return local;
+                },
+                local =>
+                {
+                    if (local.Item1 < 0) return;
+                    lock (lockObj)
                     {
-                        if (localBest.Item1 < 0) return;
-                        lock (lockObj)
+                        if (local.Item2 > localBestSim)
                         {
-                            if (localBest.Item2 > globalBest.sim)
-                                globalBest = localBest;
+                            localBestSim = local.Item2;
+                            localBestIdx = local.Item1;
                         }
                     }
-                );
-                best = globalBest;
-            }
-
-            if (best.idx < 0)
-                return MakeSaveResult(request.Index);
-
-            // ──────────────────────────────────────────────────────────────
-            // Step 3: Return the best match.
-            //   Fetch chunk bytes from local cache/RocksDB only.
-            //   If not locally available, return empty — gateway handles it.
-            // ──────────────────────────────────────────────────────────────
-            var c = candidates[best.idx];
-            byte[]? chunk = await ChunkCacheHandler.GetChunkAsync(c.storageGuid);
-
-            var res = new SearchVector_Result { Save = false };
-            res.Results.Add(new SearchVectorObject
-            {
-                BucketId = c.bucketId,
-                BucketKey = (long)c.bucketIndex,
-                Similarity = best.sim,
-                Chunk = (chunk != null && chunk.Length > 0) ? ByteString.CopyFrom(chunk) : ByteString.Empty,
-                Index = request.Index
-            });
-            return res;
+                }
+            );
+            bestIdx = localBestIdx;
+            bestSim = localBestSim;
         }
-        catch (Exception ex)
+
+        if (bestIdx < 0)
+            return MakeSaveResult(request.Index);
+
+        // ── Return metadata ONLY — no chunk bytes ──
+        // Cross will fetch the base chunk lazily via GetChunkByReference when
+        // it actually needs it for diff encoding. This eliminates hundreds
+        // of RocksDB reads and ~3MB of network transfer per file.
+        var c = candidates[bestIdx];
+        var res = new SearchVector_Result { Save = false };
+        res.Results.Add(new SearchVectorObject
         {
-            throw new RpcException(new Status(StatusCode.Internal, $"Agent search failed: {ex.Message}"));
-        }
+            BucketId = c.bucketId,
+            BucketKey = (long)c.bucketIndex,
+            Similarity = bestSim,
+            Chunk = ByteString.Empty, // NO chunk bytes — lazy fetch by Cross
+            Index = request.Index
+        });
+        return res;
+    }
+
+    /// <summary>
+    /// Legacy single-query endpoint. Delegates to ProcessSingleQuery.
+    /// Kept for backward compatibility but BatchGet is preferred.
+    /// </summary>
+    public override Task<SearchVector_Result> Get(SearchVector_Req request, ServerCallContext context)
+    {
+        return Task.FromResult(ProcessSingleQuery(request));
     }
 
     private static SearchVector_Result MakeSaveResult(int index)

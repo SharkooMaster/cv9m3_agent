@@ -3,6 +3,7 @@ syntax = "proto3";
 service SearchVector
 {
     rpc Get (SearchVector_Req) returns (SearchVector_Result);
+    rpc BatchGet (BatchSearchVector_Req) returns (BatchSearchVector_Result);
 }
 
 message SearchVector_Req
@@ -33,3 +34,12 @@ message SearchVector_Result
     bool save = 2;
 }
 
+message BatchSearchVector_Req
+{
+    repeated SearchVector_Req queries = 1;
+}
+
+message BatchSearchVector_Result
+{
+    repeated SearchVector_Result results = 1;
+}
