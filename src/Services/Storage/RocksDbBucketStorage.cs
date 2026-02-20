@@ -194,6 +194,46 @@ public sealed class RocksDbBucketStorage : IDisposable
         return TryDeserializeVectorRecord(recordBytes, out var rec) ? rec.StorageGuid : null;
     }
 
+    /// <summary>
+    /// Load ALL bucket vectors from RocksDB into memory.
+    /// Called once at startup to pre-warm Globals._NODE.Buckets so the hot path never touches disk.
+    /// </summary>
+    public Dictionary<string, List<(float[] vector, string storageGuid, ulong bucketId, ulong bucketIndex)>> LoadAllBucketsToMemory()
+    {
+        var result = new Dictionary<string, List<(float[] vector, string storageGuid, ulong bucketId, ulong bucketIndex)>>();
+
+        // _bucketNameToId was populated by LoadBucketIds() in constructor
+        lock (_bucketIdLock)
+        {
+            foreach (var (bucketName, bucketId) in _bucketNameToId)
+            {
+                var nextKey = Encoding.UTF8.GetBytes($"{BucketNextPrefix}{bucketId}");
+                var nextBytes = _rocksDb.Get(nextKey);
+                if (nextBytes == null || nextBytes.Length != sizeof(ulong))
+                    continue;
+
+                var nextIndex = BitConverter.ToUInt64(nextBytes, 0);
+                var vectors = new List<(float[], string, ulong, ulong)>();
+
+                for (ulong i = 0; i < nextIndex; i++)
+                {
+                    var vectorKey = Encoding.UTF8.GetBytes($"{BucketVectorPrefix}{bucketId}:{i}");
+                    var recordBytes = _rocksDb.Get(vectorKey);
+                    if (recordBytes == null || recordBytes.Length == 0)
+                        continue;
+
+                    if (TryDeserializeVectorRecord(recordBytes, out var rec))
+                        vectors.Add((rec.Vector, rec.StorageGuid, bucketId, i));
+                }
+
+                if (vectors.Count > 0)
+                    result[bucketName] = vectors;
+            }
+        }
+
+        return result;
+    }
+
     private static byte[] SerializeVectorRecord(float[] vector, string storageGuid, int chunkSize)
     {
         using var ms = new MemoryStream();

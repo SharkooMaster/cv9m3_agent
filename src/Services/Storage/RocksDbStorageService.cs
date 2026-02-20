@@ -65,6 +65,37 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
         _ownershipService?.Dispose();
     }
 
+    /// <summary>
+    /// Pre-load ALL buckets/vectors from RocksDB into Globals._NODE.Buckets.
+    /// Called once at startup. After this, the hot search path is pure RAM — zero disk reads.
+    /// </summary>
+    public void WarmUpBuckets()
+    {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var allBuckets = _bucketStorage.LoadAllBucketsToMemory();
+        int totalVectors = 0;
+
+        foreach (var (bucketName, vectors) in allBuckets)
+        {
+            var bucket = Globals._NODE.Buckets.GetOrAdd(bucketName, _ => new M_Bucket(bucketName));
+            foreach (var (vector, storageGuid, bucketId, bucketIndex) in vectors)
+            {
+                bucket.data.Add(new M_Data
+                {
+                    vector = vector,
+                    storageGuid = storageGuid,
+                    id = bucketId,
+                    index = bucketIndex,
+                    chunk = null // Chunk bytes lazily loaded from RocksDB when needed for decompression
+                });
+            }
+            totalVectors += vectors.Count;
+        }
+
+        sw.Stop();
+        Console.WriteLine($"[Storage] ✅ Warmed up {allBuckets.Count} buckets, {totalVectors} vectors into RAM in {sw.ElapsedMilliseconds}ms");
+    }
+
     public async Task<M_Bucket> ReadBucket(string bucket_Id)
     {
         var result = new M_Bucket(bucket_Id);
@@ -118,9 +149,10 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
         // Record ownership in Redis (non-blocking, queued)
         _ownershipService.RecordOwnership(key);
         
-        // OPTIMIZATION: Synchronous write for critical path - ensures bucket references are immediately available
-        // This reduces lookup misses during decompression
-        await _ownershipService.RecordBucketReferenceSyncAsync(bucketId, bucketIndex, key);
+        // NON-BLOCKING: Queue bucket reference for background Redis write.
+        // Decompression uses RAM-first lookup (rendezvous hash → agent → in-memory bucket).
+        // Redis is a fallback, not the hot path.
+        _ownershipService.RecordBucketReference(bucketId, bucketIndex, key);
         
         // Replicate to N other agents (fire and forget for performance)
         _ = Task.Run(async () =>
@@ -216,9 +248,7 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
                         // Cache locally for future access
                         _chunkWriteBatcher.Put(storageGuid, chunkData);
                         _ownershipService.RecordOwnership(storageGuid);
-                        
-                        // OPTIMIZATION: Synchronous write for critical path - ensures bucket references are immediately available
-                        await _ownershipService.RecordBucketReferenceSyncAsync(bucketId, bucketIndex, storageGuid);
+                        _ownershipService.RecordBucketReference(bucketId, bucketIndex, storageGuid);
                         
                         return storageGuid;
                     }

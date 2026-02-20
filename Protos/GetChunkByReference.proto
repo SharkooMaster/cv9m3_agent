@@ -4,6 +4,7 @@ service ChunkReferenceService
 {
     rpc GetChunkByReference (GetChunkByReference_Req) returns (GetChunkByReference_Res);
     rpc GetChunkByKey (GetChunkByKey_Req) returns (GetChunkByKey_Res);
+    rpc StoreChunkByKey (StoreChunkByKey_Req) returns (StoreChunkByKey_Res);
 }
 
 message GetChunkByReference_Req
@@ -27,5 +28,17 @@ message GetChunkByKey_Res
 {
     bool found = 1;
     bytes chunk = 2;
+}
+
+message StoreChunkByKey_Req
+{
+    string chunk_key = 1;   // SHA256 hash of chunk data
+    bytes chunk_data = 2;   // Raw chunk bytes
+}
+
+message StoreChunkByKey_Res
+{
+    bool success = 1;
+    string error_message = 2;
 }
 

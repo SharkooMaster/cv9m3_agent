@@ -14,9 +14,11 @@ using Grpc.Core;
 public class SearchVectorService : SearchVector.SearchVectorBase
 {
     /// <summary>
-    /// Unified search: gather ALL vectors from ALL requested buckets (in-memory + single Postgres batch),
+    /// Pure RAM search: gather ALL vectors from ALL requested buckets (in-memory only),
     /// then run a single cosine similarity pass over the combined set.
-    /// Postgres results are cached in Globals._NODE.Buckets so repeat lookups never hit the DB.
+    /// No RocksDB reads. No Redis. No Postgres. No cold imports.
+    /// Buckets are pre-loaded at startup via WarmUpBuckets().
+    /// New buckets are added to RAM during StoreVector (via M_Bucket.InsertData).
     /// </summary>
     public override async Task<SearchVector_Result> Get(SearchVector_Req request, ServerCallContext context)
     {
@@ -29,32 +31,19 @@ public class SearchVectorService : SearchVector.SearchVectorBase
             if (allBitstrings.Count == 0)
                 return MakeSaveResult(request.Index);
 
-            // ── DHT range check (distributed mode only) ──
-            if (!LocalModeDetector.IsLocalMode())
-            {
-                if (Globals._NODE.successor == null)
-                    return MakeSaveResult(request.Index);
-
-                bool inRange = Agent.Utils.Misc.Misc.IsKeyInRange(
-                    Globals._NODE.id, Globals._NODE.successor.id, allBitstrings[0]);
-                if (!inRange)
-                    return await ClientGet(request, Globals._NODE.successor.ip);
-            }
+            // ── NO DHT range check. Gateway already routed via rendezvous hash. ──
+            // Agent accepts all requests. If bucket isn't here, it doesn't exist on this agent.
 
             // ──────────────────────────────────────────────────────────────
-            // Step 1: Collect vectors from all buckets.
-            //   a) In-memory buckets (already loaded / cached) — zero cost
-            //   b) Remaining buckets — single batch Postgres query
-            //   c) Cache Postgres results in memory for future searches
+            // Step 1: Collect vectors from in-memory buckets ONLY (zero I/O)
             // ──────────────────────────────────────────────────────────────
             var candidates = new List<(float[] vector, string storageGuid, ulong bucketId, ulong bucketIndex)>();
-            var bucketsToFetch = new List<string>();
 
             foreach (var bs in allBitstrings)
             {
                 if (Globals._NODE.Buckets.TryGetValue(bs, out var bucket))
                 {
-                    // Fast path: bucket already in memory
+                    // Fast path: bucket in RAM — iterate snapshot
                     foreach (var d in bucket.data)
                     {
                         if (d?.vector != null && d.vector.Length == queryVector.Length
@@ -62,53 +51,7 @@ public class SearchVectorService : SearchVector.SearchVectorBase
                             candidates.Add((d.vector, d.storageGuid, d.id, d.index));
                     }
                 }
-                else
-                {
-                    bucketsToFetch.Add(bs);
-                }
-            }
-
-            // Single Postgres round-trip for all remaining buckets
-            if (bucketsToFetch.Count > 0)
-            {
-                var dbRows = await NetworkFileStorageHandler.GetVectorsByBucketsAsync(bucketsToFetch);
-
-                // Group by bucket name and import into in-memory cache
-                // so future searches for these buckets skip Postgres entirely.
-                var byBucket = new Dictionary<string, List<(float[] vec, string sg, long bid, long bidx)>>();
-                foreach (var row in dbRows)
-                {
-                    if (row.vector != null && row.vector.Length == queryVector.Length
-                        && !string.IsNullOrEmpty(row.storageGuid))
-                    {
-                        candidates.Add((row.vector, row.storageGuid, (ulong)row.bucketId, (ulong)row.bucketIndex));
-
-                        if (!byBucket.TryGetValue(row.bucketName, out var list))
-                        {
-                            list = new List<(float[], string, long, long)>();
-                            byBucket[row.bucketName] = list;
-                        }
-                        list.Add((row.vector, row.storageGuid, row.bucketId, row.bucketIndex));
-                    }
-                }
-
-                // Import into Globals._NODE.Buckets (idempotent — TryAdd ignores if another thread beat us)
-                foreach (var (bName, rows) in byBucket)
-                {
-                    var newBucket = new M_Bucket(bName);
-                    foreach (var (vec, sg, bid, bidx) in rows)
-                    {
-                        newBucket.data.Add(new M_Data
-                        {
-                            vector = vec,
-                            storageGuid = sg,
-                            id = (ulong)bid,
-                            index = (ulong)bidx,
-                            chunk = null // chunk bytes loaded lazily when needed
-                        });
-                    }
-                    Globals._NODE.Buckets.TryAdd(bName, newBucket);
-                }
+                // else: bucket doesn't exist on this agent — skip (gateway will handle NeedToStore)
             }
 
             if (candidates.Count == 0)
@@ -127,22 +70,21 @@ public class SearchVectorService : SearchVector.SearchVectorBase
             {
                 for (int i = 0; i < candidates.Count; i++)
                 {
-                    var vec = candidates[i].vector;
-                    float sim = Misc.CalculateDistance(queryVector, vec);
+                    float sim = Misc.CalculateDistance(queryVector, candidates[i].vector);
                     if (sim >= threshold && sim > best.sim)
                         best = (i, sim);
                 }
             }
             else
             {
-                // Parallel scan for large candidate sets
+                // Parallel scan for large candidate sets — unlimited parallelism
                 (int idx, float sim) globalBest = (-1, -1f);
                 var lockObj = new object();
 
                 Parallel.ForEach(
                     Partitioner.Create(0, candidates.Count),
-                    new ParallelOptions { MaxDegreeOfParallelism = -1 }, // -1 = unlimited
-                    () => (-1, -1f),  // thread-local best
+                    new ParallelOptions { MaxDegreeOfParallelism = -1 },
+                    () => (-1, -1f),
                     (range, _, localBest) =>
                     {
                         for (int i = range.Item1; i < range.Item2; i++)

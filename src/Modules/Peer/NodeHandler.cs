@@ -207,93 +207,33 @@ public static class NodeService
         return node;
     }
 
-    // Limit concurrent cold-bucket imports to avoid Postgres connection pool exhaustion
-    // (65 bitstrings × N concurrent searches can easily exceed pool size)
-    private static readonly SemaphoreSlim _coldImportGate = new(16, 16);
-
+    /// <summary>
+    /// Pure RAM search — NO cold imports, NO RocksDB reads, NO Redis.
+    /// Buckets are pre-loaded at startup. Gateway routes via rendezvous hash.
+    /// </summary>
     public static async Task<(List<M_SearchResult>, bool, bool)> 
       SearchAll(M_Node node, bool canSave, string _bitstring, float[] _vector, float _minimum_similarity, int _k, SearchVector_Req _req, ServerCallContext context)
     {
         using var rootSpan = Observability.StartStage("Node.SearchAll");
-        var routeSw = System.Diagnostics.Stopwatch.StartNew();
-        bool is_inRange;
-        if (LocalModeDetector.IsLocalMode())
-        {
-            is_inRange = true;
-        }
-        else
-        {
-            if (Globals._NODE.successor == null)
-                return (new List<M_SearchResult>(), false, false);
-            is_inRange = Agent.Utils.Misc.Misc.IsKeyInRange(node.id, Globals._NODE.successor.id, _bitstring);
-        }
-        routeSw.Stop();
-        Observability.RecordStage("Route", routeSw.Elapsed.TotalMilliseconds, ("in_range", is_inRange));
 
-        if (is_inRange)
-        {
-            if (node.Buckets.TryGetValue(_bitstring, out var bucket))
-            {
-                var searchSw = System.Diagnostics.Stopwatch.StartNew();
-                var localResults = await bucket.SearchData(_vector, _minimum_similarity, _k, _req.Index);
-                searchSw.Stop();
-                Observability.RecordStage("ComputeSimilarity", searchSw.Elapsed.TotalMilliseconds,
-                    ("result_count", localResults.Count), ("bucket_size", bucket.data.Count));
-                return (localResults, false, false);
-            }
-            else
-            {
-                // Cold import — throttle to prevent Postgres pool exhaustion
-                if (!await _coldImportGate.WaitAsync(TimeSpan.FromSeconds(3)))
-                {
-                    // Couldn't acquire permit within timeout — skip this bucket to avoid pile-up
-                    return (new List<M_SearchResult>(), false, canSave);
-                }
-                try
-                {
-                    var fetchSw = System.Diagnostics.Stopwatch.StartNew();
-                    M_Bucket read_bucket = await NetworkFileStorageHandler.ReadBucket(_bitstring);
-                    fetchSw.Stop();
-                    Observability.RecordStage("FetchFromSSDOrNFS", fetchSw.Elapsed.TotalMilliseconds, ("rows_loaded", read_bucket.data.Count));
+        // No DHT range check — gateway already routed via rendezvous hash.
+        // Agent accepts all requests.
 
-                    if (read_bucket.data.Count > 0)
-                    {
-                        if (node.Buckets.TryAdd(_bitstring, read_bucket))
-                        {
-                            var searchSw = System.Diagnostics.Stopwatch.StartNew();
-                            var localResults = await read_bucket.SearchData(_vector, _minimum_similarity, _k, _req.Index);
-                            searchSw.Stop();
-                            Observability.RecordStage("ComputeSimilarity", searchSw.Elapsed.TotalMilliseconds,
-                                ("result_count", localResults.Count), ("bucket_size", read_bucket.data.Count));
-                            return (localResults, false, false);
-                        }
-                        else
-                        {
-                            // Another thread imported it — use theirs
-                            if (node.Buckets.TryGetValue(_bitstring, out var existing))
-                            {
-                                var localResults = await existing.SearchData(_vector, _minimum_similarity, _k, _req.Index);
-                                return (localResults, false, false);
-                            }
-                        }
-                    }
-                    else
-                    {
-                        if (canSave)
-                            return (new List<M_SearchResult>(), false, true);
-                    }
-                }
-                finally
-                {
-                    _coldImportGate.Release();
-                }
-            }
-            return (new List<M_SearchResult>(), false, false);
-        }
-        else
+        if (node.Buckets.TryGetValue(_bitstring, out var bucket))
         {
-            return (new List<M_SearchResult>(), true, false);
+            var searchSw = System.Diagnostics.Stopwatch.StartNew();
+            var localResults = await bucket.SearchData(_vector, _minimum_similarity, _k, _req.Index);
+            searchSw.Stop();
+            Observability.RecordStage("ComputeSimilarity", searchSw.Elapsed.TotalMilliseconds,
+                ("result_count", localResults.Count), ("bucket_size", bucket.data.Count));
+            return (localResults, false, false);
         }
+
+        // Bucket doesn't exist on this agent — tell gateway to store
+        if (canSave)
+            return (new List<M_SearchResult>(), false, true);
+
+        return (new List<M_SearchResult>(), false, false);
     }
 
     public static async Task<(ulong, ulong)> StoreInBucket(M_Node node, string bucket_string, M_Data _data, string HeadRouteID)

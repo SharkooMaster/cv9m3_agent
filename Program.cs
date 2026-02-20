@@ -112,7 +112,6 @@ lifetime.ApplicationStarted.Register(() =>
         if (isLocalMode || Globals.bootstrap_node == null)
         {
             Console.WriteLine("[Agent] Local/standalone mode - skipping DHT initialization");
-            // Clear bootstrap_node to prevent any DHT operations
             Globals.bootstrap_node = null;
             Globals._NODE.successor = new Agent.Models.M_Node() { id = Globals._NODE.id, ip = Globals._NODE.ip };
             Globals._NODE.predecessor = new Agent.Models.M_Node() { id = Globals._NODE.id, ip = Globals._NODE.ip };
@@ -122,6 +121,21 @@ lifetime.ApplicationStarted.Register(() =>
         {
             Console.WriteLine($"[Agent] Distributed mode - joining network with bootstrap_node={Globals.bootstrap_node}");
             _ = await NodeService.JoinNetwork(Globals._NODE, Globals.bootstrap_node);
+        }
+
+        // ── WARMUP: Load ALL buckets/vectors from RocksDB into RAM ──
+        // After this, search is pure in-memory — zero disk reads in hot path.
+        try
+        {
+            var storageSvc = app.Services.GetRequiredService<INetworkFileStorageService>();
+            if (storageSvc is Agent.Services.Storage.RocksDbStorageService rocksDbSvc)
+            {
+                rocksDbSvc.WarmUpBuckets();
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[Agent] WarmUpBuckets failed: {ex.Message}");
         }
     });
 });
