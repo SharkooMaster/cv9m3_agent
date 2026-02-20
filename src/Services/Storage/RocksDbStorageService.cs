@@ -183,91 +183,32 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
 
     public async Task<byte[]?> GetChunkByReferenceAsync(ulong bucketId, ulong bucketIndex)
     {
-        // First try local RocksDB (fast path)
+        // ── NO RECURSIVE cross-agent GetChunkByReference calls. ──
+        // The old SearchBucketReferenceAcrossAgentsAsync caused an infinite loop:
+        //   Agent A → GetChunkByReference on Agent B → GetChunkByReference on Agent A → ...
+        // Fix: only use local RocksDB + Redis (both non-recursive). If we get a storageGuid,
+        // GetChunkAsync can safely fetch bytes from another agent via GetChunkByKey (different RPC).
+
+        // 1. Try local RocksDB bucket metadata → storageGuid (O(1), no I/O)
         var storageGuid = _bucketStorage.GetStorageGuidByReference(bucketId, bucketIndex);
         
-        // If not found locally, try Redis (bucket might be on another agent)
+        // 2. If not found locally, try Redis (non-recursive, fast network lookup)
         if (string.IsNullOrWhiteSpace(storageGuid))
         {
             storageGuid = await _ownershipService.GetStorageGuidByReferenceAsync(bucketId, bucketIndex);
         }
         
-        // If still not found, try querying all agents directly (fallback for batched Redis writes)
-        if (string.IsNullOrWhiteSpace(storageGuid))
-        {
-            storageGuid = await SearchBucketReferenceAcrossAgentsAsync(bucketId, bucketIndex);
-        }
-        
         if (string.IsNullOrWhiteSpace(storageGuid))
             return null;
-            
+
+        // 3. Fetch chunk bytes: local RocksDB first, then remote via GetChunkByKey (safe, no recursion)
         return await GetChunkAsync(storageGuid);
     }
 
-    /// <summary>
-    /// Fallback: Search for bucket reference across all agents when Redis lookup fails.
-    /// This handles cases where bucket references are still being batched to Redis.
-    /// </summary>
-    private async Task<string?> SearchBucketReferenceAcrossAgentsAsync(ulong bucketId, ulong bucketIndex)
-    {
-        try
-        {
-            var agents = await GetActiveAgentPodsAsync();
-            if (agents.Count == 0)
-                return null;
-
-            // Query all agents in parallel to find the bucket reference
-            var tasks = agents.Select(async agentPod =>
-            {
-                try
-                {
-                    var client = GrpcChannelFactory.GetClient(
-                        target: agentPod,
-                        ctor: chan => new ChunkReferenceService.ChunkReferenceServiceClient(chan),
-                        roundRobin: false,
-                        port: 5000
-                    );
-
-                    var req = new GetChunkByReference_Req
-                    {
-                        BucketId = bucketId,
-                        BucketIndex = bucketIndex
-                    };
-
-                    var res = await client.GetChunkByReferenceAsync(
-                        req,
-                        deadline: DateTime.UtcNow.AddSeconds(5),
-                        cancellationToken: CancellationToken.None);
-
-                    if (res.Found && res.Chunk != null && res.Chunk.Length > 0)
-                    {
-                        // Found it! Compute storageGuid from chunk data and cache locally
-                        var chunkData = res.Chunk.ToByteArray();
-                        var storageGuid = GenerateChunkKey(chunkData);
-                        
-                        // Cache locally for future access
-                        _chunkWriteBatcher.Put(storageGuid, chunkData);
-                        _ownershipService.RecordOwnership(storageGuid);
-                        _ownershipService.RecordBucketReference(bucketId, bucketIndex, storageGuid);
-                        
-                        return storageGuid;
-                    }
-                    
-                    return null;
-                }
-                catch { /* try next agent */ }
-                return null;
-            });
-
-            var results = await Task.WhenAll(tasks);
-            return results.FirstOrDefault(r => !string.IsNullOrWhiteSpace(r));
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"[RocksDbStorageService] Error searching bucket reference across agents ({bucketId}, {bucketIndex}): {ex.Message}");
-            return null;
-        }
-    }
+    // SearchBucketReferenceAcrossAgentsAsync REMOVED.
+    // It caused an infinite recursion: Agent A → GetChunkByReference on Agent B → Agent B → GetChunkByReference on Agent A → ...
+    // The fix: GetChunkByReferenceAsync uses only local RocksDB + Redis (both non-recursive).
+    // If the caller needs to try multiple agents, it should do so itself (e.g., Cross retries with different agents).
 
     private static int GetMissingBucketTtlSeconds()
     {
