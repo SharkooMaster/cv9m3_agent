@@ -16,6 +16,7 @@ public sealed class RedisChunkOwnershipService : IDisposable
     private readonly string _myPodName;
     private static readonly ConcurrentQueue<(string chunkKey, string agent)> _ownershipQueue = new();
     private static readonly ConcurrentQueue<(ulong bucketId, ulong bucketIndex, string storageGuid)> _bucketRefQueue = new();
+    // Flush every 500ms - balanced between latency and throughput
     private static readonly Timer _ownershipFlushTimer = new(_ => FlushOwnershipQueueAsync().ConfigureAwait(false), null, 500, 500);
     private static readonly Timer _bucketRefFlushTimer = new(_ => FlushBucketRefQueueAsync().ConfigureAwait(false), null, 500, 500);
     private static IDatabase? _sharedRedis;
@@ -74,6 +75,25 @@ public sealed class RedisChunkOwnershipService : IDisposable
     public void RecordBucketReference(ulong bucketId, ulong bucketIndex, string storageGuid)
     {
         _bucketRefQueue.Enqueue((bucketId, bucketIndex, storageGuid));
+    }
+    
+    /// <summary>
+    /// OPTIMIZATION: Synchronous write for critical path (when storing chunks).
+    /// Ensures bucket references are immediately available for lookups, reducing misses.
+    /// </summary>
+    public async Task RecordBucketReferenceSyncAsync(ulong bucketId, ulong bucketIndex, string storageGuid)
+    {
+        try
+        {
+            var key = $"bucket_ref:{bucketId}:{bucketIndex}";
+            await _redis.StringSetAsync(key, storageGuid, TimeSpan.FromDays(7)); // 7 day TTL
+        }
+        catch (Exception ex)
+        {
+            // Fallback to queued write if sync fails
+            Console.WriteLine($"[Redis] Sync bucket ref write failed, falling back to queue: {ex.Message}");
+            RecordBucketReference(bucketId, bucketIndex, storageGuid);
+        }
     }
 
     /// <summary>
@@ -163,6 +183,7 @@ public sealed class RedisChunkOwnershipService : IDisposable
         if (_ownershipQueue.IsEmpty || _sharedRedis == null)
             return;
 
+        // Batch size 500 - good balance between throughput and latency
         var batch = new List<(string key, string agent)>();
         while (batch.Count < 500 && _ownershipQueue.TryDequeue(out var item))
             batch.Add(item);
@@ -218,6 +239,7 @@ public sealed class RedisChunkOwnershipService : IDisposable
         if (_bucketRefQueue.IsEmpty || _sharedRedis == null)
             return;
 
+        // Batch size 500 - good balance between throughput and latency
         var batch = new List<(ulong bucketId, ulong bucketIndex, string storageGuid)>();
         while (batch.Count < 500 && _bucketRefQueue.TryDequeue(out var item))
             batch.Add(item);

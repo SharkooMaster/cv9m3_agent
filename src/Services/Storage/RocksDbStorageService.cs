@@ -118,8 +118,9 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
         // Record ownership in Redis (non-blocking, queued)
         _ownershipService.RecordOwnership(key);
         
-        // Record bucket reference mapping in Redis (allows any agent to resolve bucketId:bucketIndex → storageGuid)
-        _ownershipService.RecordBucketReference(bucketId, bucketIndex, key);
+        // OPTIMIZATION: Synchronous write for critical path - ensures bucket references are immediately available
+        // This reduces lookup misses during decompression
+        await _ownershipService.RecordBucketReferenceSyncAsync(bucketId, bucketIndex, key);
         
         // Replicate to N other agents (fire and forget for performance)
         _ = Task.Run(async () =>
@@ -216,8 +217,8 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
                         _chunkWriteBatcher.Put(storageGuid, chunkData);
                         _ownershipService.RecordOwnership(storageGuid);
                         
-                        // Record bucket reference so future lookups are faster (even if batched)
-                        _ownershipService.RecordBucketReference(bucketId, bucketIndex, storageGuid);
+                        // OPTIMIZATION: Synchronous write for critical path - ensures bucket references are immediately available
+                        await _ownershipService.RecordBucketReferenceSyncAsync(bucketId, bucketIndex, storageGuid);
                         
                         return storageGuid;
                     }
