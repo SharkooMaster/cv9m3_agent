@@ -69,7 +69,7 @@ builder.Services.AddOpenTelemetry()
             .AddHttpClientInstrumentation()
             .AddRuntimeInstrumentation()
             .AddPrometheusExporter();
-    });
+});
 
 ConfigureServices(builder.Services);
 
@@ -371,7 +371,7 @@ void ConfigureServices(IServiceCollection services)
             return new RocksDbStorageService(rocksPath, pgbuilder.ConnectionString);
         }
 
-        var storageDir = Environment.GetEnvironmentVariable("CHUNK_STORAGE_DIR") ?? "/tmp/crossv9_chunks";
+    var storageDir = Environment.GetEnvironmentVariable("CHUNK_STORAGE_DIR") ?? "/tmp/crossv9_chunks";
         Console.WriteLine($"[Storage] Using local backend dir={storageDir}");
         return new LocalFileStorageService(storageDir, pgbuilder.ConnectionString);
     });
