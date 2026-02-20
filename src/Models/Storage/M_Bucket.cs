@@ -75,12 +75,11 @@ public class M_Bucket
 
         var candidates = new List<(M_Data data, float similarity)>();
         
-        // OPTIMIZED: Use all CPU cores for cosine similarity calculations
-        int baseParallelism = Environment.ProcessorCount; // Use all cores
-        int optimalParallelism = DynamicResourceManager.GetOptimalParallelism(baseParallelism);
+        // No cap: Use unlimited parallelism for cosine similarity calculations
+        // System will naturally limit based on available CPU
         var parallelOptions = new ParallelOptions
         {
-            MaxDegreeOfParallelism = Math.Max(50, optimalParallelism) // Higher minimum for throughput
+            MaxDegreeOfParallelism = -1 // -1 = unlimited, let system handle it
         };
 
         // Snapshot the concurrent bag — scan ALL vectors (no cap).
