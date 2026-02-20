@@ -159,10 +159,83 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
             storageGuid = await _ownershipService.GetStorageGuidByReferenceAsync(bucketId, bucketIndex);
         }
         
+        // If still not found, try querying all agents directly (fallback for batched Redis writes)
+        if (string.IsNullOrWhiteSpace(storageGuid))
+        {
+            storageGuid = await SearchBucketReferenceAcrossAgentsAsync(bucketId, bucketIndex);
+        }
+        
         if (string.IsNullOrWhiteSpace(storageGuid))
             return null;
             
         return await GetChunkAsync(storageGuid);
+    }
+
+    /// <summary>
+    /// Fallback: Search for bucket reference across all agents when Redis lookup fails.
+    /// This handles cases where bucket references are still being batched to Redis.
+    /// </summary>
+    private async Task<string?> SearchBucketReferenceAcrossAgentsAsync(ulong bucketId, ulong bucketIndex)
+    {
+        try
+        {
+            var agents = await GetActiveAgentPodsAsync();
+            if (agents.Count == 0)
+                return null;
+
+            // Query all agents in parallel to find the bucket reference
+            var tasks = agents.Select(async agentPod =>
+            {
+                try
+                {
+                    var client = GrpcChannelFactory.GetClient(
+                        target: agentPod,
+                        ctor: chan => new ChunkReferenceService.ChunkReferenceServiceClient(chan),
+                        roundRobin: false,
+                        port: 5000
+                    );
+
+                    var req = new GetChunkByReference_Req
+                    {
+                        BucketId = bucketId,
+                        BucketIndex = bucketIndex
+                    };
+
+                    var res = await client.GetChunkByReferenceAsync(
+                        req,
+                        deadline: DateTime.UtcNow.AddSeconds(5),
+                        cancellationToken: CancellationToken.None);
+
+                    if (res.Found && res.Chunk != null && res.Chunk.Length > 0)
+                    {
+                        // Found it! Compute storageGuid from chunk data and cache locally
+                        var chunkData = res.Chunk.ToByteArray();
+                        var storageGuid = GenerateChunkKey(chunkData);
+                        
+                        // Cache locally for future access
+                        _chunkWriteBatcher.Put(storageGuid, chunkData);
+                        _ownershipService.RecordOwnership(storageGuid);
+                        
+                        // Record bucket reference so future lookups are faster (even if batched)
+                        _ownershipService.RecordBucketReference(bucketId, bucketIndex, storageGuid);
+                        
+                        return storageGuid;
+                    }
+                    
+                    return null;
+                }
+                catch { /* try next agent */ }
+                return null;
+            });
+
+            var results = await Task.WhenAll(tasks);
+            return results.FirstOrDefault(r => !string.IsNullOrWhiteSpace(r));
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[RocksDbStorageService] Error searching bucket reference across agents ({bucketId}, {bucketIndex}): {ex.Message}");
+            return null;
+        }
     }
 
     private static int GetMissingBucketTtlSeconds()
