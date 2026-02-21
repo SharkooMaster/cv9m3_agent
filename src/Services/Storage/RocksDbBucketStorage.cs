@@ -14,7 +14,6 @@ public sealed class RocksDbBucketStorage : IDisposable
     private readonly RocksDbWriteBatcher _writeBatcher;
     private readonly string _bucketDbPath;
     private static readonly object _bucketIdLock = new object();
-    private static ulong _nextBucketId = 1;
     private static readonly Dictionary<string, ulong> _bucketNameToId = new();
     private static readonly ConcurrentDictionary<string, object> _bucketLocks = new();
     private static readonly ConcurrentDictionary<ulong, string> _bucketIdToName = new();
@@ -69,17 +68,13 @@ public sealed class RocksDbBucketStorage : IDisposable
                 if (key.StartsWith(BucketNameToIdPrefix, StringComparison.Ordinal))
                 {
                     var bucketName = key.Substring(BucketNameToIdPrefix.Length);
-                    var idBytes = iterator.Value();
-                    if (idBytes != null && idBytes.Length == sizeof(ulong))
+                    // Derive the deterministic ID from the bitstring — ignore any stale
+                    // auto-increment values that may be stored on disk from older versions.
+                    var bucketId = BitstringToUlong(bucketName);
+                    if (bucketId > 0)
                     {
-                        var bucketId = BitConverter.ToUInt64(idBytes, 0);
-                        if (bucketId > 0)
-                        {
-                            _bucketNameToId[bucketName] = bucketId;
-                            _bucketIdToName[bucketId] = bucketName;
-                            if (bucketId >= _nextBucketId)
-                                _nextBucketId = bucketId + 1;
-                        }
+                        _bucketNameToId[bucketName] = bucketId;
+                        _bucketIdToName[bucketId] = bucketName;
                     }
                 }
                 iterator.Next();
@@ -88,7 +83,10 @@ public sealed class RocksDbBucketStorage : IDisposable
     }
 
     /// <summary>
-    /// Get or create bucket ID for a bucket name.
+    /// Get or create bucket ID for a bucket name (64-char bitstring).
+    /// The ID is deterministic: bitstring → ulong (1:1 bijection).
+    /// This makes bucket IDs GLOBALLY unique — the same bitstring on any agent
+    /// produces the same ID, enabling decompression to route via RendezvousRouter.
     /// </summary>
     private ulong GetOrCreateBucketId(string bucketName)
     {
@@ -97,7 +95,7 @@ public sealed class RocksDbBucketStorage : IDisposable
             if (_bucketNameToId.TryGetValue(bucketName, out var id))
                 return id;
 
-            id = _nextBucketId++;
+            id = BitstringToUlong(bucketName);
             _bucketNameToId[bucketName] = id;
             _bucketIdToName[id] = bucketName;
 
@@ -107,6 +105,30 @@ public sealed class RocksDbBucketStorage : IDisposable
 
             return id;
         }
+    }
+
+    /// <summary>
+    /// Convert a 64-char '0'/'1' bitstring into a ulong. 1:1 bijection — no collisions.
+    /// Bit 0 of the string maps to bit 0 of the ulong, etc.
+    /// </summary>
+    internal static ulong BitstringToUlong(string bitstring)
+    {
+        ulong result = 0;
+        int len = Math.Min(64, bitstring.Length);
+        for (int i = 0; i < len; i++)
+            if (bitstring[i] == '1') result |= (1UL << i);
+        return result;
+    }
+
+    /// <summary>
+    /// Convert a ulong back to a 64-char '0'/'1' bitstring. Inverse of BitstringToUlong.
+    /// </summary>
+    internal static string UlongToBitstring(ulong packed)
+    {
+        char[] chars = new char[64];
+        for (int i = 0; i < 64; i++)
+            chars[i] = (packed & (1UL << i)) != 0 ? '1' : '0';
+        return new string(chars);
     }
 
     /// <summary>
