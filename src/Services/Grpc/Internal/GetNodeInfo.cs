@@ -11,7 +11,8 @@ public class GetNodeInfoService : GetNodeInfo.GetNodeInfoBase
         GetNodeInfo_Result res = new GetNodeInfo_Result()
         {
             Ip = Globals._NODE.ip,
-            Id = Globals._NODE.id
+            Id = Globals._NODE.id,
+            NodeName = Environment.GetEnvironmentVariable("MY_NODE_NAME") ?? ""
         };
         return res;
     }
