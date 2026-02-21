@@ -18,6 +18,14 @@ public sealed class RocksDbBucketStorage : IDisposable
     private static readonly ConcurrentDictionary<string, object> _bucketLocks = new();
     private static readonly ConcurrentDictionary<ulong, string> _bucketIdToName = new();
 
+    // ── IN-MEMORY counters & dedup: fixes write-batcher read-after-write race ──
+    // The write batcher flushes to RocksDB every 50ms. Two rapid StoreVector calls
+    // for the same bucket would both read the same stale `next` counter from RocksDB
+    // → duplicate bucketIndex → wrong base chunk during decompression → CORRUPTION.
+    // Fix: track counters and dedup entries in memory (protected by per-bucket lock).
+    private static readonly ConcurrentDictionary<ulong, ulong> _nextIndexInMemory = new();
+    private static readonly ConcurrentDictionary<string, ulong> _dedupInMemory = new();
+
     // New append-friendly schema:
     // bn:{bucketName}              -> ulong bucketId
     // bi:{bucketId}                -> bucketName (utf8)
@@ -65,11 +73,10 @@ public sealed class RocksDbBucketStorage : IDisposable
             {
                 var keyBytes = iterator.Key();
                 var key = Encoding.UTF8.GetString(keyBytes);
+
                 if (key.StartsWith(BucketNameToIdPrefix, StringComparison.Ordinal))
                 {
                     var bucketName = key.Substring(BucketNameToIdPrefix.Length);
-                    // Derive the deterministic ID from the bitstring — ignore any stale
-                    // auto-increment values that may be stored on disk from older versions.
                     var bucketId = BitstringToUlong(bucketName);
                     if (bucketId > 0)
                     {
@@ -77,9 +84,33 @@ public sealed class RocksDbBucketStorage : IDisposable
                         _bucketIdToName[bucketId] = bucketName;
                     }
                 }
+                else if (key.StartsWith(BucketNextPrefix, StringComparison.Ordinal))
+                {
+                    // Load next-index counters into memory so we never read stale values from RocksDB
+                    var valueBytes = iterator.Value();
+                    if (valueBytes != null && valueBytes.Length == sizeof(ulong))
+                    {
+                        var idStr = key.Substring(BucketNextPrefix.Length);
+                        if (ulong.TryParse(idStr, out var bucketId))
+                            _nextIndexInMemory[bucketId] = BitConverter.ToUInt64(valueBytes, 0);
+                    }
+                }
+                else if (key.StartsWith(BucketStorageGuidPrefix, StringComparison.Ordinal))
+                {
+                    // Load dedup map into memory so we never miss a recently-stored entry
+                    var valueBytes = iterator.Value();
+                    if (valueBytes != null && valueBytes.Length == sizeof(ulong))
+                    {
+                        var dedupSuffix = key.Substring(BucketStorageGuidPrefix.Length); // "{bucketId}:{storageGuid}"
+                        _dedupInMemory[dedupSuffix] = BitConverter.ToUInt64(valueBytes, 0);
+                    }
+                }
+
                 iterator.Next();
             }
         }
+
+        Console.WriteLine($"[RocksDB Buckets] Loaded {_bucketNameToId.Count} buckets, {_nextIndexInMemory.Count} counters, {_dedupInMemory.Count} dedup entries into memory");
     }
 
     /// <summary>
@@ -98,6 +129,9 @@ public sealed class RocksDbBucketStorage : IDisposable
             id = BitstringToUlong(bucketName);
             _bucketNameToId[bucketName] = id;
             _bucketIdToName[id] = bucketName;
+
+            // Seed the in-memory next counter for this brand-new bucket
+            _nextIndexInMemory.TryAdd(id, 0UL);
 
             _writeBatcher.Put(Encoding.UTF8.GetBytes($"{BucketNameToIdPrefix}{bucketName}"), BitConverter.GetBytes(id));
             _writeBatcher.Put(Encoding.UTF8.GetBytes($"{BucketIdToNamePrefix}{id}"), Encoding.UTF8.GetBytes(bucketName));
@@ -143,24 +177,29 @@ public sealed class RocksDbBucketStorage : IDisposable
         {
             var bucketId = GetOrCreateBucketId(bucketName);
 
-            var dedupKey = $"{BucketStorageGuidPrefix}{bucketId}:{storageGuid}";
-            var existingIndexBytes = _rocksDb.Get(Encoding.UTF8.GetBytes(dedupKey));
-            if (existingIndexBytes != null && existingIndexBytes.Length == sizeof(ulong))
+            // ── Dedup check: use IN-MEMORY map (never stale, unlike RocksDB batcher) ──
+            var dedupSuffix = $"{bucketId}:{storageGuid}";
+            if (_dedupInMemory.TryGetValue(dedupSuffix, out var existingIndex))
             {
-                return (bucketId, BitConverter.ToUInt64(existingIndexBytes, 0));
+                return (bucketId, existingIndex);
             }
 
-            var nextKeyBytes = Encoding.UTF8.GetBytes($"{BucketNextPrefix}{bucketId}");
-            var nextBytes = _rocksDb.Get(nextKeyBytes);
-            ulong bucketIndex = (nextBytes != null && nextBytes.Length == sizeof(ulong))
-                ? BitConverter.ToUInt64(nextBytes, 0)
-                : 0UL;
+            // ── Next index: use IN-MEMORY counter (never stale) ──
+            ulong bucketIndex = _nextIndexInMemory.GetOrAdd(bucketId, 0UL);
 
+            // Increment the in-memory counter IMMEDIATELY (before releasing the lock)
+            _nextIndexInMemory[bucketId] = bucketIndex + 1;
+
+            // Track in dedup map IMMEDIATELY
+            _dedupInMemory[dedupSuffix] = bucketIndex;
+
+            // Persist to RocksDB via batcher (background, eventual consistency for durability)
             var recordBytes = SerializeVectorRecord(vector, storageGuid, chunkSize);
             var vectorKeyBytes = Encoding.UTF8.GetBytes($"{BucketVectorPrefix}{bucketId}:{bucketIndex}");
+            var nextKeyBytes = Encoding.UTF8.GetBytes($"{BucketNextPrefix}{bucketId}");
 
             _writeBatcher.Put(vectorKeyBytes, recordBytes);
-            _writeBatcher.Put(Encoding.UTF8.GetBytes(dedupKey), BitConverter.GetBytes(bucketIndex));
+            _writeBatcher.Put(Encoding.UTF8.GetBytes($"{BucketStorageGuidPrefix}{dedupSuffix}"), BitConverter.GetBytes(bucketIndex));
             _writeBatcher.Put(nextKeyBytes, BitConverter.GetBytes(bucketIndex + 1));
 
             return (bucketId, bucketIndex);
@@ -179,12 +218,10 @@ public sealed class RocksDbBucketStorage : IDisposable
             if (!_bucketNameToId.TryGetValue(bucketName, out var bucketId) || bucketId == 0)
                 continue;
 
-            var nextKey = Encoding.UTF8.GetBytes($"{BucketNextPrefix}{bucketId}");
-            var nextBytes = _rocksDb.Get(nextKey);
-            if (nextBytes == null || nextBytes.Length != sizeof(ulong))
+            // Use in-memory counter (always up-to-date, includes unflushed entries)
+            if (!_nextIndexInMemory.TryGetValue(bucketId, out var nextIndex) || nextIndex == 0)
                 continue;
 
-            var nextIndex = BitConverter.ToUInt64(nextBytes, 0);
             for (ulong i = 0; i < nextIndex; i++)
             {
                 var vectorKey = Encoding.UTF8.GetBytes($"{BucketVectorPrefix}{bucketId}:{i}");
@@ -229,12 +266,10 @@ public sealed class RocksDbBucketStorage : IDisposable
         {
             foreach (var (bucketName, bucketId) in _bucketNameToId)
             {
-                var nextKey = Encoding.UTF8.GetBytes($"{BucketNextPrefix}{bucketId}");
-                var nextBytes = _rocksDb.Get(nextKey);
-                if (nextBytes == null || nextBytes.Length != sizeof(ulong))
+                // Use in-memory counter (always authoritative after LoadBucketIds)
+                if (!_nextIndexInMemory.TryGetValue(bucketId, out var nextIndex) || nextIndex == 0)
                     continue;
 
-                var nextIndex = BitConverter.ToUInt64(nextBytes, 0);
                 var vectors = new List<(float[], string, ulong, ulong)>();
 
                 for (ulong i = 0; i < nextIndex; i++)
