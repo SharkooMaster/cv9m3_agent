@@ -189,18 +189,33 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
     public async Task<byte[]?> GetChunkByReferenceAsync(ulong bucketId, ulong bucketIndex)
     {
         // ── NO RECURSIVE cross-agent GetChunkByReference calls. ──
-        // The old SearchBucketReferenceAcrossAgentsAsync caused an infinite loop:
-        //   Agent A → GetChunkByReference on Agent B → GetChunkByReference on Agent A → ...
-        // Fix: only use local RocksDB + Redis (both non-recursive). If we get a storageGuid,
+        // Fix: only use local in-memory buckets + RocksDB. If we get a storageGuid,
         // GetChunkAsync can safely fetch bytes from another agent via GetChunkByKey (different RPC).
 
-        // 1. Try local RocksDB bucket metadata → storageGuid (O(1), no network I/O)
-        var storageGuid = _bucketStorage.GetStorageGuidByReference(bucketId, bucketIndex);
+        // 1. Try in-memory bucket first (always up-to-date, survives write-batcher lag)
+        //    BucketId is now a deterministic ulong derived from the 64-char bitstring.
+        string bucketName = RocksDbBucketStorage.UlongToBitstring(bucketId);
+        if (Globals._NODE.Buckets.TryGetValue(bucketName, out var bucket))
+        {
+            var snapshot = bucket.GetDataSnapshot();
+            for (int j = 0; j < snapshot.Length; j++)
+            {
+                if (snapshot[j] != null && snapshot[j].index == bucketIndex
+                    && !string.IsNullOrEmpty(snapshot[j].storageGuid))
+                {
+                    var chunk = await GetChunkAsync(snapshot[j].storageGuid);
+                    if (chunk != null) return chunk;
+                    break;
+                }
+            }
+        }
 
+        // 2. Fallback: RocksDB bucket metadata → storageGuid (handles data loaded from disk)
+        var storageGuid = _bucketStorage.GetStorageGuidByReference(bucketId, bucketIndex);
         if (string.IsNullOrWhiteSpace(storageGuid))
             return null;
 
-        // 2. Fetch chunk bytes: MRU cache first, then local RocksDB
+        // 3. Fetch chunk bytes: MRU cache first, then local RocksDB
         return await GetChunkAsync(storageGuid);
     }
 
