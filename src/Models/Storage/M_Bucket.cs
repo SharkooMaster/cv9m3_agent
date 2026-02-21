@@ -82,23 +82,23 @@ public class M_Bucket
             if (_seenChunks.TryGetValue(chunkKey, out var existing))
                 return existing;
 
-            (int bucketId, int bucketIndex) = await NetworkFileStorageHandler.StoreVector(ID, _data);
+            (ulong bucketId, ulong bucketIndex) = await NetworkFileStorageHandler.StoreVector(ID, _data);
 
-            _data.id = (ulong)bucketId;
-            _data.index = (ulong)bucketIndex;
+            _data.id = bucketId;
+            _data.index = bucketIndex;
 
             AddData(_data);
-            _seenChunks.TryAdd(chunkKey, ((ulong)bucketId, (ulong)bucketIndex));
+            _seenChunks.TryAdd(chunkKey, (bucketId, bucketIndex));
 
-            return ((ulong)bucketId, (ulong)bucketIndex);
+            return (bucketId, bucketIndex);
         }
 
         // Fallback: no chunk data — store anyway (shouldn't happen but safety net).
         AddData(_data);
-        (int bid, int bidx) = await NetworkFileStorageHandler.StoreVector(ID, _data);
-        _data.id = (ulong)bid;
-        _data.index = (ulong)bidx;
-        return ((ulong)bid, (ulong)bidx);
+        (ulong bid, ulong bidx) = await NetworkFileStorageHandler.StoreVector(ID, _data);
+        _data.id = bid;
+        _data.index = bidx;
+        return (bid, bidx);
     }
 
     // SearchData is no longer called in the hot path (SearchVector.Get uses ProcessSingleQuery).

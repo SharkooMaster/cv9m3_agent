@@ -33,7 +33,7 @@ public static class NetworkFileStorageHandler
         _instance = instance ?? throw new ArgumentNullException(nameof(instance));
     }
 
-    public static async Task<(int,int)> StoreVector(string bucket_Id, M_Data data)
+    public static async Task<(ulong,ulong)> StoreVector(string bucket_Id, M_Data data)
     {
         return await _instance.StoreVector(bucket_Id, data);
     }

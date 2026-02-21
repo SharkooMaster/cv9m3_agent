@@ -60,7 +60,7 @@ public class LocalFileStorageService : INetworkFileStorageService
         }
     }
 
-    public async Task<(int, int)> StoreVector(string bucket_Id, M_Data data)
+    public async Task<(ulong, ulong)> StoreVector(string bucket_Id, M_Data data)
     {
         if (data.chunk == null || data.chunk.Length == 0)
         {
@@ -77,7 +77,7 @@ public class LocalFileStorageService : INetworkFileStorageService
         {
             throw new Exception("Failed to store chunk");
         }
-        return (b, c);
+        return ((ulong)b, (ulong)c);
     }
 
     public static string GenerateChunkKey(byte[] chunkData)

@@ -111,7 +111,7 @@ public class S3StorageService : INetworkFileStorageService
         return result;
     }
 
-    public async Task<(int, int)> StoreVector(string bucket_Id, M_Data data)
+    public async Task<(ulong, ulong)> StoreVector(string bucket_Id, M_Data data)
     {
         if (data.chunk == null || data.chunk.Length == 0)
             throw new ArgumentException("Chunk data cannot be null or empty", nameof(data));
@@ -120,7 +120,8 @@ public class S3StorageService : INetworkFileStorageService
 
         string objectName = $"chunks/{GenerateChunkKey(data.chunk)}";
         await PutChunkAsync(objectName, data.chunk);
-        return await InsertChunkMetadataAsync(data.vector, objectName, data.chunk.Length, bucket_Id);
+        var (b, c) = await InsertChunkMetadataAsync(data.vector, objectName, data.chunk.Length, bucket_Id);
+        return ((ulong)b, (ulong)c);
     }
 
     public async Task<byte[]?> GetChunkAsync(string storageGuid)

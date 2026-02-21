@@ -124,7 +124,7 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
         return result;
     }
 
-    public async Task<(int, int)> StoreVector(string bucket_Id, M_Data data)
+    public async Task<(ulong, ulong)> StoreVector(string bucket_Id, M_Data data)
     {
         if (data.chunk == null || data.chunk.Length == 0)
             throw new ArgumentException("Chunk data cannot be null or empty", nameof(data));
@@ -146,18 +146,7 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
         // Cache in memory for fast search-time fetch
         ChunkCacheHandler.CacheChunk(key, data.chunk);
         
-        // REMOVED: Redis ownership + bucket ref writes.
-        // These were the root cause of thread pool starvation under load:
-        //   - Queues grew faster than Redis could drain (3000+ stores/sec vs 500/500ms flush)
-        //   - Redis timeouts (34s) blocked thread pool threads
-        //   - Failed batches were re-enqueued → infinite feedback loop
-        //   - Kestrel couldn't serve gRPC → BatchGet/BatchStore timeouts
-        // Rendezvous hashing makes these writes redundant:
-        //   - Routing is deterministic → no need for ownership tracking
-        //   - RocksDbBucketStorage has the (bucketId, bucketIndex) → storageGuid mapping locally
-        //   - GetChunkByReferenceAsync finds chunks via local RocksDB bucket metadata
-        
-        return ((int)bucketId, (int)bucketIndex);
+        return (bucketId, bucketIndex);
     }
 
 

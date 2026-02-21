@@ -83,10 +83,10 @@ public class GcsSqlStorageService : INetworkFileStorageService
         }
     }
 
-    public async Task<(int,int)> StoreVector(string bucket_Id, M_Data data)
+    public async Task<(ulong,ulong)> StoreVector(string bucket_Id, M_Data data)
     {
         (bool a, int b, int c) = await StoreChunkAsync(data.vector, data.chunk, bucket_Id);
-        return (b,c);
+        return ((ulong)b,(ulong)c);
     }
 
     public static string GenerateChunkKey(byte[] chunkData)

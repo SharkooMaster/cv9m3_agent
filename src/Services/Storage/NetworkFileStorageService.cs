@@ -12,7 +12,7 @@ namespace Agent.Services.Storage
             _nfs_path = nfs_path;
         }
 
-        public async Task<(int,int)> StoreVector(string bucket_Id, M_Data data)
+        public async Task<(ulong,ulong)> StoreVector(string bucket_Id, M_Data data)
         {
             if(string.IsNullOrEmpty(bucket_Id)){ throw new ArgumentNullException(nameof(bucket_Id)); }
 
