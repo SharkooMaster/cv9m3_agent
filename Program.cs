@@ -137,6 +137,13 @@ lifetime.ApplicationStarted.Register(() =>
         {
             Console.WriteLine($"[Agent] WarmUpBuckets failed: {ex.Message}");
         }
+
+        // ── READINESS GATE: Signal that this agent is ready to serve ──
+        // Until this flag is true, the K8s readiness probe returns 503,
+        // so the pod IP is NOT in the headless service DNS.
+        // This prevents Cross/Gateway from routing to a cold agent.
+        Globals.IsReady = true;
+        Console.WriteLine("[Agent] ✅ Readiness gate OPEN — agent is ready to serve");
     });
 });
 
@@ -195,7 +202,10 @@ app.MapGrpcService<StoreVectorService>();
 app.MapGrpcService<ChunkReferenceServiceImpl>();
 
 app.MapGet("/", () =>{ return "Hello world"; });
-app.MapGet("/health", () => "true");
+app.MapGet("/health", () => "true"); // Liveness: always alive once Kestrel is up
+app.MapGet("/ready", () => Globals.IsReady
+    ? Results.Ok("ready")
+    : Results.StatusCode(503)); // Readiness: only after WarmUpBuckets completes
 
 app.MapGet("/finger_table", () =>
 {

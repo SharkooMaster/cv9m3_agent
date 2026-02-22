@@ -27,6 +27,13 @@ public static class Globals
     public static string? bootstrap_node = null;
     public static bool bootstraped = false;
 
+    /// <summary>
+    /// Set to true ONLY after WarmUpBuckets() completes.
+    /// The readiness probe returns 503 until this is true,
+    /// preventing K8s from routing traffic to an unready agent.
+    /// </summary>
+    public static volatile bool IsReady = false;
+
     // LOCAL MODE: Reduce retries in local mode (local network is reliable)
     // Note: gRPC requires MaxAttempts > 1, so use 2 for local mode
     private static int GetMaxRetryAttempts()
