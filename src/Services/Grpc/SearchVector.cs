@@ -152,7 +152,8 @@ public class SearchVectorService : SearchVector.SearchVectorBase
             BucketKey = (long)c.bucketIndex,
             Similarity = bestSim,
             Chunk = chunkBytes,
-            Index = request.Index
+            Index = request.Index,
+            StorageGuid = c.storageGuid ?? ""
         });
         return res;
     }

@@ -110,6 +110,6 @@ public class StoreVectorService : StoreVector.StoreVectorBase
         (ulong _id, ulong _index) = await NodeService.StoreInBucket(
             Globals._NODE, request.Bitstring, _data, request.HeadRouteID);
 
-        return new StoreVector_Res { Id = _id, Index = _index };
+        return new StoreVector_Res { Id = _id, Index = _index, StorageGuid = _data.storageGuid ?? "" };
     }
 }
