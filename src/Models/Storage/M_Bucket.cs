@@ -80,7 +80,18 @@ public class M_Bucket
         {
             var chunkKey = HashChunk(_data.chunk);
             if (_seenChunks.TryGetValue(chunkKey, out var existing))
+            {
+                // CRITICAL: Always populate storageGuid on the M_Data object.
+                // Without this, the caller (StoreVectorService.StoreSingle) reads
+                // _data.storageGuid → null → returns empty StorageGuid in the gRPC
+                // response → Cross writes a ref with non-zero BucketId but all-zeros
+                // storageGuid → decompression can't fetch → "Missing base chunk".
+                // chunkKey IS the SHA256 hex of the chunk data (same as GenerateChunkKey).
+                _data.storageGuid = chunkKey;
+                _data.id = existing.Item1;
+                _data.index = existing.Item2;
                 return existing;
+            }
 
             (ulong bucketId, ulong bucketIndex) = await NetworkFileStorageHandler.StoreVector(ID, _data);
 
