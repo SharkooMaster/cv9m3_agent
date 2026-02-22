@@ -16,7 +16,7 @@ public static class Globals
     public static string ETCD_VALUE = "";
     public static long ETCD_LEASE_ID = -1;
 
-    public static int chunkSize = 5120;
+    public static int chunkSize = int.TryParse(Environment.GetEnvironmentVariable("CHUNK_SIZE"), out var cs) ? cs : 5120;
 
     // Allow running outside Kubernetes/Docker by overriding via env var.
     // Examples:
