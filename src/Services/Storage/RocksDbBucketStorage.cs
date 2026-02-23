@@ -254,6 +254,36 @@ public sealed class RocksDbBucketStorage : IDisposable
     }
 
     /// <summary>
+    /// Load a single bucket's vectors from RocksDB into memory.
+    /// Used by BucketCacheManager for on-demand L2 → L1 promotion.
+    /// Fully synchronous — no async overhead for the hot path.
+    /// </summary>
+    public List<(float[] vector, string storageGuid, ulong bucketId, ulong bucketIndex)>? LoadSingleBucketToMemory(string bucketName)
+    {
+        ulong bucketId;
+        ulong nextIndex;
+        lock (_bucketIdLock)
+        {
+            if (!_bucketNameToId.TryGetValue(bucketName, out bucketId) || bucketId == 0)
+                return null;
+        }
+        if (!_nextIndexInMemory.TryGetValue(bucketId, out nextIndex) || nextIndex == 0)
+            return null;
+
+        var vectors = new List<(float[], string, ulong, ulong)>();
+        for (ulong i = 0; i < nextIndex; i++)
+        {
+            var vectorKey = Encoding.UTF8.GetBytes($"{BucketVectorPrefix}{bucketId}:{i}");
+            var recordBytes = _rocksDb.Get(vectorKey);
+            if (recordBytes == null || recordBytes.Length == 0)
+                continue;
+            if (TryDeserializeVectorRecord(recordBytes, out var rec))
+                vectors.Add((rec.Vector, rec.StorageGuid, bucketId, i));
+        }
+        return vectors.Count > 0 ? vectors : null;
+    }
+
+    /// <summary>
     /// Load ALL bucket vectors from RocksDB into memory.
     /// Called once at startup to pre-warm Globals._NODE.Buckets so the hot path never touches disk.
     /// </summary>

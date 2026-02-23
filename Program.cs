@@ -123,14 +123,24 @@ lifetime.ApplicationStarted.Register(() =>
             _ = await NodeService.JoinNetwork(Globals._NODE, Globals.bootstrap_node);
         }
 
-        // ── WARMUP: Load ALL buckets/vectors from RocksDB into RAM ──
-        // After this, search is pure in-memory — zero disk reads in hot path.
+        // ── BUCKET CACHE: Initialize tiered bucket cache (L1=RAM, L2=RocksDB) ──
+        var bucketCacheMaxGb = long.Parse(Environment.GetEnvironmentVariable("BUCKET_CACHE_MAX_GB") ?? "12");
+        var bucketCacheMaxBytes = bucketCacheMaxGb * 1024L * 1024 * 1024;
+        var bucketEvictionSec = int.Parse(Environment.GetEnvironmentVariable("BUCKET_CACHE_EVICTION_SEC") ?? "10");
+
+        // ── WARMUP: Load buckets from RocksDB into RAM (up to L1 budget) ──
+        // Hot buckets go to L1 (RAM). Cold buckets stay on L2 (RocksDB disk),
+        // loaded on-demand during search/store with ~0.1-0.3ms latency.
         try
         {
             var storageSvc = app.Services.GetRequiredService<INetworkFileStorageService>();
             if (storageSvc is Agent.Services.Storage.RocksDbStorageService rocksDbSvc)
             {
-                rocksDbSvc.WarmUpBuckets();
+                // Initialize BucketCacheManager with RocksDB access for on-demand L2 loads
+                Agent.Services.Cache.BucketCacheManager.Initialize(
+                    rocksDbSvc.BucketStorage, bucketCacheMaxBytes, bucketEvictionSec);
+
+                rocksDbSvc.WarmUpBuckets(bucketCacheMaxBytes);
             }
         }
         catch (Exception ex)

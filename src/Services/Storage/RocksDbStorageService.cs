@@ -66,17 +66,30 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
     }
 
     /// <summary>
-    /// Pre-load ALL buckets/vectors from RocksDB into Globals._NODE.Buckets.
-    /// Called once at startup. After this, the hot search path is pure RAM — zero disk reads.
+    /// Pre-load buckets/vectors from RocksDB into Globals._NODE.Buckets, up to the RAM budget.
+    /// Buckets that don't fit are left on disk (L2) and loaded on-demand during search/store.
     /// </summary>
-    public void WarmUpBuckets()
+    public void WarmUpBuckets(long maxCacheBytes)
     {
         var sw = System.Diagnostics.Stopwatch.StartNew();
         var allBuckets = _bucketStorage.LoadAllBucketsToMemory();
         int totalVectors = 0;
+        long estimatedBytes = 0;
+        int loadedBuckets = 0;
+        int skippedBuckets = 0;
 
-        foreach (var (bucketName, vectors) in allBuckets)
+        // Sort by vector count descending — largest buckets are most likely to be hit
+        var sorted = allBuckets.OrderByDescending(kv => kv.Value.Count);
+
+        foreach (var (bucketName, vectors) in sorted)
         {
+            long bucketBytes = vectors.Count * 470L; // EstBytesPerVector
+            if (maxCacheBytes > 0 && estimatedBytes + bucketBytes > maxCacheBytes && estimatedBytes > 0)
+            {
+                skippedBuckets++;
+                continue; // Over budget — leave on disk (L2), loaded on-demand
+            }
+
             var bucket = Globals._NODE.Buckets.GetOrAdd(bucketName, _ => new M_Bucket(bucketName));
             foreach (var (vector, storageGuid, bucketId, bucketIndex) in vectors)
             {
@@ -86,15 +99,26 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
                     storageGuid = storageGuid,
                     id = bucketId,
                     index = bucketIndex,
-                    chunk = null // Chunk bytes lazily loaded from RocksDB when needed for decompression
+                    chunk = null // Chunks loaded on-demand from chunk cache / RocksDB
                 });
             }
+            bucket.TouchAccess();
             totalVectors += vectors.Count;
+            estimatedBytes += bucketBytes;
+            loadedBuckets++;
         }
 
         sw.Stop();
-        Console.WriteLine($"[Storage] ✅ Warmed up {allBuckets.Count} buckets, {totalVectors} vectors into RAM in {sw.ElapsedMilliseconds}ms");
+        Console.WriteLine(
+            $"[Storage] ✅ Warmed up {loadedBuckets} buckets ({skippedBuckets} cold on disk), " +
+            $"{totalVectors} vectors into RAM (~{estimatedBytes / (1024 * 1024)}MB / {maxCacheBytes / (1024 * 1024)}MB cap) " +
+            $"in {sw.ElapsedMilliseconds}ms. Total on disk: {allBuckets.Count} buckets.");
     }
+
+    /// <summary>
+    /// Expose the internal bucket storage for BucketCacheManager.
+    /// </summary>
+    public RocksDbBucketStorage BucketStorage => _bucketStorage;
 
     public async Task<M_Bucket> ReadBucket(string bucket_Id)
     {

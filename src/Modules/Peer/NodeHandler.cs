@@ -219,8 +219,14 @@ public static class NodeService
         // No DHT range check — gateway already routed via rendezvous hash.
         // Agent accepts all requests.
 
-        if (node.Buckets.TryGetValue(_bitstring, out var bucket))
+        // Try L1 (RAM), then L2 (RocksDB) for cold buckets
+        var bucket = node.Buckets.TryGetValue(_bitstring, out var hotBucket)
+            ? hotBucket
+            : Agent.Services.Cache.BucketCacheManager.LoadAndCache(_bitstring);
+
+        if (bucket != null && bucket.DataCount > 0)
         {
+            bucket.TouchAccess();
             var searchSw = System.Diagnostics.Stopwatch.StartNew();
             var localResults = await bucket.SearchData(_vector, _minimum_similarity, _k, _req.Index);
             searchSw.Stop();
@@ -238,7 +244,10 @@ public static class NodeService
 
     public static async Task<(ulong, ulong)> StoreInBucket(M_Node node, string bucket_string, M_Data _data, string HeadRouteID)
     {
-        var bucket = node.Buckets.GetOrAdd(bucket_string, _ => new M_Bucket(bucket_string));
+        // Use BucketCacheManager.GetOrLoad: if the bucket was evicted from L1,
+        // this loads its existing vectors from L2 (RocksDB) first, so the new
+        // vector is added alongside existing data — not to an empty bucket.
+        var bucket = Agent.Services.Cache.BucketCacheManager.GetOrLoad(bucket_string);
         return await bucket.InsertData(_data, 0);
     }
 

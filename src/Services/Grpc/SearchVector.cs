@@ -5,6 +5,7 @@ using System.Numerics;
 using Agent.Modules.Agneta;
 using Agent.Modules.Peer;
 using Agent.Modules.Storage;
+using Agent.Services.Cache;
 using Agent.Utils.Globals;
 using Agent.Utils.Misc;
 using Agent.Utils;
@@ -50,21 +51,29 @@ public class SearchVectorService : SearchVector.SearchVectorBase
         if (request.Bitstrings.Count == 0)
             return MakeSaveResult(request.Index);
 
-        // ── Collect candidates from in-memory buckets (zero I/O) ──
+        // ── Collect candidates from L1 (RAM) + L2 (RocksDB) buckets ──
+        // L1 hit: pure RAM, zero I/O. L2 miss: sync RocksDB read (~0.1-0.3ms per bucket).
         // Carry storageGuid through so we can fetch the base chunk on match.
         var candidates = new List<(float[] vector, ulong bucketId, ulong bucketIndex, string? storageGuid)>(128);
 
         foreach (var bs in request.Bitstrings)
         {
-            if (Globals._NODE.Buckets.TryGetValue(bs, out var bucket))
+            // L1 fast path
+            M_Bucket? bucket;
+            if (!Globals._NODE.Buckets.TryGetValue(bs, out bucket))
             {
-                var items = bucket.GetDataSnapshot();
-                for (int j = 0; j < items.Length; j++)
-                {
-                    var d = items[j];
-                    if (d?.vector != null && d.vector.Length == vecLen)
-                        candidates.Add((d.vector, d.id, d.index, d.storageGuid));
-                }
+                // L1 miss → load from L2 (RocksDB). Sync, ~0.1-0.3ms.
+                bucket = BucketCacheManager.LoadAndCache(bs);
+                if (bucket == null || bucket.DataCount == 0) continue;
+            }
+            bucket.TouchAccess();
+
+            var items = bucket.GetDataSnapshot();
+            for (int j = 0; j < items.Length; j++)
+            {
+                var d = items[j];
+                if (d?.vector != null && d.vector.Length == vecLen)
+                    candidates.Add((d.vector, d.id, d.index, d.storageGuid));
             }
         }
 

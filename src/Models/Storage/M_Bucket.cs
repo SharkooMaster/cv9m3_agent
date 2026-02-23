@@ -20,6 +20,29 @@ public class M_Bucket
     // ── Dedup guard: track which chunks (by SHA256 of content) are already stored. ──
     private readonly ConcurrentDictionary<string, (ulong id, ulong index)> _seenChunks = new();
 
+    // ── LRU tracking: updated on every search/store access ──
+    private long _lastAccessedTicks = DateTime.UtcNow.Ticks;
+    public long LastAccessedTicks => Interlocked.Read(ref _lastAccessedTicks);
+    public void TouchAccess() => Interlocked.Exchange(ref _lastAccessedTicks, DateTime.UtcNow.Ticks);
+
+    // ── Memory estimation ──
+    // Per vector: ~470 bytes (256 float[64] + 130 storageGuid string + 16 id/index + ~68 object/list overhead)
+    // Per dedup entry: ~200 bytes (64-char key + tuple + ConcurrentDict node overhead)
+    private const int EstBytesPerVector = 470;
+    private const int EstBytesPerDedupEntry = 200;
+    private const int EstBucketOverhead = 256; // object + lock + dict headers
+
+    public long EstimatedMemoryBytes
+    {
+        get
+        {
+            int dataCount, dedupCount;
+            lock (_dataLock) { dataCount = _data.Count; }
+            dedupCount = _seenChunks.Count;
+            return EstBucketOverhead + ((long)dataCount * EstBytesPerVector) + ((long)dedupCount * EstBytesPerDedupEntry);
+        }
+    }
+
     // Backward compat: old code that does `bucket.data.Add(...)` during warmup needs this.
     // Wraps the internal list with proper locking.
     public BucketDataAccessor data => new BucketDataAccessor(this);
@@ -75,6 +98,8 @@ public class M_Bucket
     {
         if (_data == null) throw new ArgumentNullException(nameof(_data));
 
+        TouchAccess();
+
         // ── Dedup: if identical chunk content is already in this bucket, return its reference. ──
         if (_data.chunk != null && _data.chunk.Length > 0)
         {
@@ -97,6 +122,11 @@ public class M_Bucket
 
             _data.id = bucketId;
             _data.index = bucketIndex;
+
+            // Free chunk bytes from RAM — they're now persisted in RocksDB + chunk cache.
+            // Search never reads _data.chunk; it uses ChunkCacheHandler.GetFromCacheOnly(storageGuid).
+            // Keeping chunk bytes alive here was the #1 source of unbounded RAM growth.
+            _data.chunk = null;
 
             AddData(_data);
             _seenChunks.TryAdd(chunkKey, (bucketId, bucketIndex));
