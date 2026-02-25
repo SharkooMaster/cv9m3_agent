@@ -27,9 +27,11 @@ public class SearchVectorService : SearchVector.SearchVectorBase
             return Task.FromResult(result);
 
         // Process all queries in parallel on this agent — pure RAM, no I/O
+        // Cap parallelism to prevent threadpool starvation under heavy concurrent BatchGet requests.
+        int maxPar = Math.Max(4, Environment.ProcessorCount * 2);
         var results = new SearchVector_Result[queries.Count];
 
-        Parallel.For(0, queries.Count, new ParallelOptions { MaxDegreeOfParallelism = -1 }, i =>
+        Parallel.For(0, queries.Count, new ParallelOptions { MaxDegreeOfParallelism = maxPar }, i =>
         {
             results[i] = ProcessSingleQuery(queries[i]);
         });
@@ -105,7 +107,7 @@ public class SearchVectorService : SearchVector.SearchVectorBase
 
             Parallel.ForEach(
                 Partitioner.Create(0, candidates.Count),
-                new ParallelOptions { MaxDegreeOfParallelism = -1 },
+                new ParallelOptions { MaxDegreeOfParallelism = Math.Max(4, Environment.ProcessorCount) },
                 () => (-1, -1f),
                 (range, _, local) =>
                 {

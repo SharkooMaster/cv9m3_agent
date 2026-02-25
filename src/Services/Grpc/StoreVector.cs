@@ -68,10 +68,12 @@ public class StoreVectorService : StoreVector.StoreVectorBase
         // Process all store requests in parallel — each one hits RAM + RocksDB batch writer
         var results = new StoreVector_Res[request.Items.Count];
 
-        // Use Parallel.ForEachAsync for true async parallelism (each store may await)
+        // Cap parallelism to avoid unbounded memory growth during massive batch stores.
+        // 2× CPU cores gives good throughput without starving the threadpool.
+        int maxPar = Math.Max(4, Environment.ProcessorCount * 2);
         await Parallel.ForEachAsync(
             Enumerable.Range(0, request.Items.Count),
-            new ParallelOptions { MaxDegreeOfParallelism = -1 },
+            new ParallelOptions { MaxDegreeOfParallelism = maxPar },
             async (i, ct) =>
             {
                 try

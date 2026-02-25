@@ -28,7 +28,8 @@ public class M_Bucket
     // ── Memory estimation ──
     // Per vector: ~470 bytes (256 float[64] + 130 storageGuid string + 16 id/index + ~68 object/list overhead)
     // Per dedup entry: ~200 bytes (64-char key + tuple + ConcurrentDict node overhead)
-    private const int EstBytesPerVector = 470;
+    public const int EstBytesPerVectorPublic = 470;
+    private const int EstBytesPerVector = EstBytesPerVectorPublic;
     private const int EstBytesPerDedupEntry = 200;
     private const int EstBucketOverhead = 256; // object + lock + dict headers
 

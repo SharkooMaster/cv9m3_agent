@@ -248,7 +248,11 @@ public static class NodeService
         // this loads its existing vectors from L2 (RocksDB) first, so the new
         // vector is added alongside existing data — not to an empty bucket.
         var bucket = Agent.Services.Cache.BucketCacheManager.GetOrLoad(bucket_string);
-        return await bucket.InsertData(_data, 0);
+        var result = await bucket.InsertData(_data, 0);
+
+        // Notify cache that a bucket grew — triggers inline eviction if over budget
+        Agent.Services.Cache.BucketCacheManager.NotifyBucketGrew(M_Bucket.EstBytesPerVectorPublic);
+        return result;
     }
 
 }
