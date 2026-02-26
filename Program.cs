@@ -133,7 +133,17 @@ var lifetime = app.Services.GetRequiredService<IHostApplicationLifetime>();
 // the DI container ordering, especially during OOM-related kills.
 lifetime.ApplicationStopping.Register(() =>
 {
-    Console.WriteLine("[Agent] ⚠️ ApplicationStopping — flushing write batchers to SSD...");
+    Console.WriteLine("[Agent] ⚠️ ApplicationStopping — stopping background evictors and flushing write batchers...");
+    try
+    {
+        // Stop the background evictor threads first (they may be modifying data)
+        Agent.Services.Cache.BucketCacheManager.Shutdown();
+        Console.WriteLine("[Agent] ✅ BucketCacheManager stopped.");
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"[Agent] ❌ Error stopping BucketCacheManager: {ex.Message}");
+    }
     try
     {
         NetworkFileStorageHandler.FlushPendingWrites();
@@ -173,6 +183,12 @@ lifetime.ApplicationStarted.Register(() =>
 
         // ── BUCKET CACHE: uses pre-computed bucketCacheMaxBytes from top-level ──
         var bucketEvictionSec = int.Parse(Environment.GetEnvironmentVariable("BUCKET_CACHE_EVICTION_SEC") ?? "10");
+        var bucketHighWaterPct = double.Parse(Environment.GetEnvironmentVariable("BUCKET_CACHE_HIGH_WATER_PCT") ?? "0.70",
+            System.Globalization.CultureInfo.InvariantCulture);
+        var bucketLowWaterPct = double.Parse(Environment.GetEnvironmentVariable("BUCKET_CACHE_LOW_WATER_PCT") ?? "0.50",
+            System.Globalization.CultureInfo.InvariantCulture);
+        var bucketHardCeilingPct = double.Parse(Environment.GetEnvironmentVariable("BUCKET_CACHE_HARD_CEILING_PCT") ?? "0.90",
+            System.Globalization.CultureInfo.InvariantCulture);
 
         // ── WARMUP: Load buckets from RocksDB into RAM (up to L1 budget) ──
         // Hot buckets go to L1 (RAM). Cold buckets stay on L2 (RocksDB disk),
@@ -182,9 +198,12 @@ lifetime.ApplicationStarted.Register(() =>
             var storageSvc = app.Services.GetRequiredService<INetworkFileStorageService>();
             if (storageSvc is Agent.Services.Storage.RocksDbStorageService rocksDbSvc)
             {
-                // Initialize BucketCacheManager with RocksDB access for on-demand L2 loads
+                // Initialize BucketCacheManager with RocksDB access and watermark eviction
                 Agent.Services.Cache.BucketCacheManager.Initialize(
-                    rocksDbSvc.BucketStorage, bucketCacheMaxBytes, bucketEvictionSec);
+                    rocksDbSvc.BucketStorage, bucketCacheMaxBytes, bucketEvictionSec,
+                    highWaterPct: bucketHighWaterPct,
+                    lowWaterPct: bucketLowWaterPct,
+                    hardCeilingPct: bucketHardCeilingPct);
 
                 rocksDbSvc.WarmUpBuckets(bucketCacheMaxBytes);
             }

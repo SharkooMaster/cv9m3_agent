@@ -3,9 +3,16 @@ using System.Collections.Concurrent;
 namespace Agent.Services.Cache;
 
 /// <summary>
-/// LRU blob cache with size and time-based eviction.
+/// LRU blob cache with high-water/low-water background eviction.
+///
 /// Uses a doubly-linked list for O(1) eviction of the least recently used entry.
-/// Thread-safe via a dedicated lock for the LRU list + size tracking.
+/// Eviction model (non-blocking):
+///   - High-water (90%): signals dedicated background thread to start evicting.
+///   - Low-water (75%): eviction stops, creating ~15% headroom for burst writes.
+///   - Hard ceiling (98%): inline blocking eviction during Put() — emergency only.
+///
+/// Thread-safe: _lruLock protects the linked list and size tracking.
+/// The background evictor acquires the lock in small batches to avoid starving hot-path ops.
 /// </summary>
 public class MruBlobCache : IDisposable
 {
@@ -13,19 +20,49 @@ public class MruBlobCache : IDisposable
     private readonly LinkedList<CacheEntry> _lruList; // Head = most recent, Tail = least recent
     private readonly long _maxSizeBytes;
     private readonly TimeSpan _ttl;
-    private readonly Timer _evictionTimer;
+    private readonly Timer _ttlTimer;
     private long _currentSizeBytes;
     private readonly object _lruLock = new(); // protects _lruList and _currentSizeBytes
 
+    // ── Watermark thresholds ──
+    private readonly long _highWaterBytes;
+    private readonly long _lowWaterBytes;
+    private readonly long _hardCeilingBytes;
+
+    // ── Background evictor thread ──
+    private readonly Thread _evictorThread;
+    private readonly ManualResetEventSlim _evictSignal = new(false);
+    private volatile bool _disposed;
+
+    private const int EvictBatchSize = 200;
+
     public MruBlobCache(
         long maxSizeBytes = 1024 * 1024 * 1024, // 1GB default
-        TimeSpan? ttl = null)
+        TimeSpan? ttl = null,
+        double highWaterPct = 0.70,
+        double lowWaterPct = 0.50,
+        double hardCeilingPct = 0.90)
     {
         _maxSizeBytes = maxSizeBytes;
         _ttl = ttl ?? TimeSpan.FromMinutes(30);
         _cache = new ConcurrentDictionary<string, LinkedListNode<CacheEntry>>();
         _lruList = new LinkedList<CacheEntry>();
-        _evictionTimer = new Timer(EvictExpired, null, TimeSpan.FromMinutes(5), TimeSpan.FromMinutes(5));
+
+        _highWaterBytes = (long)(maxSizeBytes * highWaterPct);
+        _lowWaterBytes = (long)(maxSizeBytes * lowWaterPct);
+        _hardCeilingBytes = (long)(maxSizeBytes * hardCeilingPct);
+
+        // TTL expiry timer (runs every 5 minutes to clean old entries)
+        _ttlTimer = new Timer(EvictExpired, null, TimeSpan.FromMinutes(5), TimeSpan.FromMinutes(5));
+
+        // Background evictor thread
+        _evictorThread = new Thread(BackgroundEvictorLoop)
+        {
+            IsBackground = true,
+            Name = "ChunkCache-Evictor",
+            Priority = ThreadPriority.BelowNormal
+        };
+        _evictorThread.Start();
     }
 
     public int Count => _cache.Count;
@@ -65,7 +102,8 @@ public class MruBlobCache : IDisposable
 
     /// <summary>
     /// Adds or updates a blob in cache.
-    /// O(1) eviction of LRU entries when over budget.
+    /// Signals background eviction if over high-water mark.
+    /// Emergency inline eviction at hard ceiling only.
     /// </summary>
     public void Put(string key, byte[] data)
     {
@@ -81,14 +119,22 @@ public class MruBlobCache : IDisposable
                 Interlocked.Add(ref _currentSizeBytes, -oldNode.Value.Data.Length);
             }
 
-            // Evict LRU entries until we have space — O(1) per eviction
-            while (Interlocked.Read(ref _currentSizeBytes) + data.Length > _maxSizeBytes && _lruList.Count > 0)
+            // Hard ceiling (98%): emergency inline eviction — evict just enough to fit
+            long afterAdd = Interlocked.Read(ref _currentSizeBytes) + data.Length;
+            if (afterAdd > _hardCeilingBytes)
             {
-                var tail = _lruList.Last;
-                if (tail == null) break;
-                _lruList.RemoveLast();
-                _cache.TryRemove(tail.Value.Key, out _);
-                Interlocked.Add(ref _currentSizeBytes, -tail.Value.Data.Length);
+                int inlineEvicted = 0;
+                while (Interlocked.Read(ref _currentSizeBytes) + data.Length > _lowWaterBytes && _lruList.Count > 0)
+                {
+                    var tail = _lruList.Last;
+                    if (tail == null) break;
+                    _lruList.RemoveLast();
+                    _cache.TryRemove(tail.Value.Key, out _);
+                    Interlocked.Add(ref _currentSizeBytes, -tail.Value.Data.Length);
+                    inlineEvicted++;
+                }
+                if (inlineEvicted > 100) // only log if significant
+                    Console.WriteLine($"[ChunkCache] ⚠️ Hard ceiling inline eviction: removed {inlineEvicted} entries");
             }
 
             // Add new entry at head (most recently used)
@@ -103,6 +149,10 @@ public class MruBlobCache : IDisposable
             _cache[key] = newNode;
             Interlocked.Add(ref _currentSizeBytes, data.Length);
         }
+
+        // Signal background evictor if over high-water (non-blocking)
+        if (Interlocked.Read(ref _currentSizeBytes) > _highWaterBytes)
+            _evictSignal.Set();
     }
 
     /// <summary>
@@ -136,6 +186,72 @@ public class MruBlobCache : IDisposable
         }
     }
 
+    // ═══════════════════════════════════════════════════════════════════
+    //  BACKGROUND EVICTOR
+    // ═══════════════════════════════════════════════════════════════════
+
+    /// <summary>
+    /// Dedicated background thread: waits for signal, evicts down to low-water in batches.
+    /// </summary>
+    private void BackgroundEvictorLoop()
+    {
+        while (!_disposed)
+        {
+            _evictSignal.Wait(TimeSpan.FromSeconds(5));
+            _evictSignal.Reset();
+
+            if (_disposed) break;
+
+            long currentSize = Interlocked.Read(ref _currentSizeBytes);
+            if (currentSize <= _highWaterBytes) continue;
+
+            long target = _lowWaterBytes;
+            int totalEvicted = 0;
+            long totalFreed = 0;
+
+            // Evict in batches, yielding between batches
+            while (Interlocked.Read(ref _currentSizeBytes) > target && !_disposed)
+            {
+                int batchEvicted = 0;
+                long batchFreed = 0;
+
+                lock (_lruLock)
+                {
+                    for (int i = 0; i < EvictBatchSize && _lruList.Count > 0; i++)
+                    {
+                        long curSize = Interlocked.Read(ref _currentSizeBytes);
+                        if (curSize <= target) break;
+
+                        var tail = _lruList.Last;
+                        if (tail == null) break;
+                        _lruList.RemoveLast();
+                        _cache.TryRemove(tail.Value.Key, out _);
+                        long entrySize = tail.Value.Data.Length;
+                        Interlocked.Add(ref _currentSizeBytes, -entrySize);
+                        batchEvicted++;
+                        batchFreed += entrySize;
+                    }
+                }
+
+                totalEvicted += batchEvicted;
+                totalFreed += batchFreed;
+
+                if (batchEvicted == 0) break; // nothing left to evict
+
+                // Yield between batches to let Put()/Get() proceed
+                Thread.Yield();
+            }
+
+            if (totalEvicted > 0)
+            {
+                long afterSize = Interlocked.Read(ref _currentSizeBytes);
+                Console.WriteLine(
+                    $"[ChunkCache] [bg] Evicted {totalEvicted} entries, freed ~{totalFreed / (1024 * 1024)}MB. " +
+                    $"Usage: {afterSize / (1024 * 1024)}MB / {_maxSizeBytes / (1024 * 1024)}MB ({afterSize * 100 / Math.Max(1, _maxSizeBytes)}%)");
+            }
+        }
+    }
+
     /// <summary>
     /// Timer callback: evict entries that have exceeded TTL.
     /// </summary>
@@ -163,7 +279,11 @@ public class MruBlobCache : IDisposable
 
     public void Dispose()
     {
-        _evictionTimer?.Dispose();
+        _disposed = true;
+        _evictSignal.Set(); // wake up background thread so it exits
+        _evictorThread?.Join(TimeSpan.FromSeconds(3));
+        _ttlTimer?.Dispose();
+        _evictSignal?.Dispose();
         Clear();
     }
 
