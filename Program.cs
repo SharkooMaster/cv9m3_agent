@@ -206,6 +206,16 @@ lifetime.ApplicationStarted.Register(() =>
                     hardCeilingPct: bucketHardCeilingPct);
 
                 rocksDbSvc.WarmUpBuckets(bucketCacheMaxBytes);
+
+                // Initialize live stats counters (O(1) from persisted, or one-time scan)
+                rocksDbSvc.InitializeStats();
+
+                // Persist stats counters every 60 seconds (survives crashes)
+                var statsTimer = new System.Threading.Timer(_ =>
+                {
+                    try { rocksDbSvc.PersistStatsCounters(); }
+                    catch (Exception ex2) { Console.WriteLine($"[Agent] Stats persist failed: {ex2.Message}"); }
+                }, null, TimeSpan.FromSeconds(60), TimeSpan.FromSeconds(60));
             }
         }
         catch (Exception ex)

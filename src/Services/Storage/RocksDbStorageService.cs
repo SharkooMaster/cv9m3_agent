@@ -70,6 +70,7 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
     public void Dispose()
     {
         _chunkWriteBatcher?.Flush(); // Flush pending writes before shutdown
+        PersistStatsCounters(); // Save stats so next startup is O(1)
         _chunkWriteBatcher?.Dispose();
         _rocksDb?.Dispose();
         _bucketStorage?.Dispose();
@@ -131,35 +132,65 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
     /// </summary>
     public RocksDbBucketStorage BucketStorage => _bucketStorage;
 
-    // ── Cached storage stats (recomputed max every 60s) ──
-    private static long _cachedUniqueChunks;
-    private static long _cachedChunkBytes;
-    private static long _cachedStatsAtTicks;
-    private static readonly object _statsLock = new();
+    // ── Live storage stats — O(1) reads, no scanning ──
+    // Counters track unique chunks and bytes. Initialized from a one-time startup scan
+    // (or persisted values), then maintained incrementally on each Store.
+    private long _liveUniqueChunks;
+    private long _liveChunkBytes;
+    private volatile bool _statsReady;
+
+    // Dedup guard for stats: tracks storageGuids we've already counted.
+    // Prevents double-counting when the same chunk content is stored via different buckets.
+    // Key = storageGuid (SHA256 hex), Value = chunk size in bytes.
+    private readonly ConcurrentDictionary<string, int> _knownChunkSizes = new();
+
+    // Persisted counter keys in RocksDB (prefixed to avoid collision with real chunk keys)
+    private static readonly byte[] StatsChunksKey = Encoding.UTF8.GetBytes("__crossv9_stats_unique_chunks__");
+    private static readonly byte[] StatsBytesKey = Encoding.UTF8.GetBytes("__crossv9_stats_total_bytes__");
 
     /// <summary>
-    /// Get total unique chunks and total bytes stored in the chunk RocksDB.
-    /// Iterates all keys/values; result is cached for 60 seconds.
+    /// Initialize stats counters. Call once during startup.
+    /// Tries to read persisted counters first (O(1)). If not found, does a one-time full scan.
+    /// Also populates _knownChunkSizes for accurate incremental tracking.
     /// </summary>
-    public (long uniqueChunks, long totalBytes) GetChunkStorageStats()
+    public void InitializeStats()
     {
-        long now = DateTime.UtcNow.Ticks;
-        if ((now - Interlocked.Read(ref _cachedStatsAtTicks)) < TimeSpan.FromSeconds(60).Ticks
-            && Interlocked.Read(ref _cachedStatsAtTicks) > 0)
-        {
-            return (Interlocked.Read(ref _cachedUniqueChunks), Interlocked.Read(ref _cachedChunkBytes));
-        }
+        var sw = System.Diagnostics.Stopwatch.StartNew();
 
-        lock (_statsLock)
+        // Try persisted counters first — O(1)
+        var chunksBytes = _rocksDb.Get(StatsChunksKey);
+        var bytesBytes = _rocksDb.Get(StatsBytesKey);
+
+        if (chunksBytes != null && bytesBytes != null && chunksBytes.Length == 8 && bytesBytes.Length == 8)
         {
-            // Double-check after acquiring lock
-            if ((DateTime.UtcNow.Ticks - _cachedStatsAtTicks) < TimeSpan.FromSeconds(60).Ticks
-                && _cachedStatsAtTicks > 0)
+            _liveUniqueChunks = BitConverter.ToInt64(chunksBytes);
+            _liveChunkBytes = BitConverter.ToInt64(bytesBytes);
+
+            // Populate known guids from a quick key-only scan (no value reads = fast)
+            long scannedKeys = 0;
+            using var iterator = _rocksDb.NewIterator();
+            iterator.SeekToFirst();
+            while (iterator.Valid())
             {
-                return (_cachedUniqueChunks, _cachedChunkBytes);
+                var keySpan = iterator.Key();
+                if (keySpan != null && keySpan.Length == 64) // SHA256 hex = 64 chars
+                {
+                    var keyStr = Encoding.UTF8.GetString(keySpan);
+                    if (!keyStr.StartsWith("__")) // Skip our internal keys
+                        _knownChunkSizes.TryAdd(keyStr, 0); // Size=0 is fine, we only need the key
+                    scannedKeys++;
+                }
+                iterator.Next();
             }
 
-            var sw = System.Diagnostics.Stopwatch.StartNew();
+            sw.Stop();
+            Console.WriteLine($"[StorageStats] Fast init from persisted counters: {_liveUniqueChunks:N0} chunks, " +
+                $"{_liveChunkBytes / (1024.0 * 1024.0):F1} MB, scanned {scannedKeys:N0} keys in {sw.ElapsedMilliseconds}ms");
+        }
+        else
+        {
+            // No persisted counters — full scan (first-ever startup)
+            Console.WriteLine("[StorageStats] No persisted counters found, performing full scan...");
             long chunks = 0;
             long bytes = 0;
 
@@ -167,21 +198,74 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
             iterator.SeekToFirst();
             while (iterator.Valid())
             {
-                chunks++;
-                var val = iterator.Value();
-                if (val != null)
-                    bytes += val.Length;
+                var keySpan = iterator.Key();
+                var valSpan = iterator.Value();
+                var keyStr = keySpan != null ? Encoding.UTF8.GetString(keySpan) : "";
+
+                // Skip our internal stat keys
+                if (!keyStr.StartsWith("__") && keySpan != null && keySpan.Length == 64)
+                {
+                    chunks++;
+                    int valLen = valSpan?.Length ?? 0;
+                    bytes += valLen;
+                    _knownChunkSizes.TryAdd(keyStr, valLen);
+                }
                 iterator.Next();
             }
 
-            sw.Stop();
-            _cachedUniqueChunks = chunks;
-            _cachedChunkBytes = bytes;
-            Interlocked.Exchange(ref _cachedStatsAtTicks, DateTime.UtcNow.Ticks);
+            _liveUniqueChunks = chunks;
+            _liveChunkBytes = bytes;
 
-            Console.WriteLine($"[StorageStats] Scanned chunk DB: {chunks:N0} unique chunks, {bytes / (1024.0 * 1024.0):F1} MB in {sw.ElapsedMilliseconds}ms");
-            return (chunks, bytes);
+            // Persist for next startup
+            PersistStatsCounters();
+
+            sw.Stop();
+            Console.WriteLine($"[StorageStats] Full scan complete: {chunks:N0} unique chunks, " +
+                $"{bytes / (1024.0 * 1024.0):F1} MB in {sw.ElapsedMilliseconds}ms (persisted for next startup)");
         }
+
+        _statsReady = true;
+    }
+
+    /// <summary>
+    /// Persist current counters to RocksDB so next startup is O(1).
+    /// Called periodically and on shutdown.
+    /// </summary>
+    public void PersistStatsCounters()
+    {
+        _rocksDb.Put(StatsChunksKey, BitConverter.GetBytes(Interlocked.Read(ref _liveUniqueChunks)));
+        _rocksDb.Put(StatsBytesKey, BitConverter.GetBytes(Interlocked.Read(ref _liveChunkBytes)));
+    }
+
+    /// <summary>
+    /// Track a newly stored chunk for stats. Returns true if this is a genuinely new chunk.
+    /// Thread-safe. Uses _knownChunkSizes to prevent double-counting across buckets.
+    /// </summary>
+    internal bool TrackChunkForStats(string storageGuid, int chunkSizeBytes)
+    {
+        if (_knownChunkSizes.TryAdd(storageGuid, chunkSizeBytes))
+        {
+            // Genuinely new — increment live counters
+            Interlocked.Increment(ref _liveUniqueChunks);
+            Interlocked.Add(ref _liveChunkBytes, chunkSizeBytes);
+            return true;
+        }
+        return false; // Already counted
+    }
+
+    /// <summary>
+    /// Get total unique chunks and total bytes stored. O(1) — returns live counters.
+    /// No scanning, no blocking. Safe to call at any frequency.
+    /// Note: counts only THIS agent's unique chunks. No replication exists —
+    /// each chunk routes to exactly one agent via Rendezvous Hashing.
+    /// Summing across agents gives the true global unique total.
+    /// </summary>
+    public (long uniqueChunks, long totalBytes) GetChunkStorageStats()
+    {
+        if (!_statsReady)
+            return (0, 0); // Background init not done yet
+
+        return (Interlocked.Read(ref _liveUniqueChunks), Interlocked.Read(ref _liveChunkBytes));
     }
 
     public async Task<M_Bucket> ReadBucket(string bucket_Id)
@@ -225,11 +309,16 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
         //    have a valid storageGuid for future cache/disk lookups. ──
         data.storageGuid = key;
 
+        int chunkLen = data.chunk.Length;
+
         // Store vector in RocksDB bucket storage (handles dedup internally)
-        var (bucketId, bucketIndex) = _bucketStorage.StoreVector(bucket_Id, data.vector, key, data.chunk.Length);
+        var (bucketId, bucketIndex) = _bucketStorage.StoreVector(bucket_Id, data.vector, key, chunkLen);
         
         // Store chunk locally in RocksDB (batched, non-blocking background write)
         _chunkWriteBatcher.Put(key, data.chunk);
+
+        // Track for live stats — only counts genuinely new chunks (dedup-safe across buckets)
+        TrackChunkForStats(key, chunkLen);
 
         // Cache in memory for fast search-time fetch
         ChunkCacheHandler.CacheChunk(key, data.chunk);
@@ -604,6 +693,10 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
 
         // Store locally in RocksDB (batched, non-blocking background write)
         _chunkWriteBatcher.Put(chunkKey, chunkData);
+
+        // Track for live stats — only counts genuinely new chunks
+        TrackChunkForStats(chunkKey, chunkData.Length);
+
         return Task.CompletedTask;
     }
 
