@@ -55,6 +55,15 @@ public sealed class RocksDbBucketStorage : IDisposable
         Console.WriteLine($"[RocksDB Buckets] Initialized at {_bucketDbPath} with write batching");
     }
 
+    /// <summary>
+    /// Flush pending bucket metadata writes to RocksDB.
+    /// Called by RocksDbStorageService.FlushPendingWrites().
+    /// </summary>
+    public void FlushWrites()
+    {
+        _writeBatcher?.Flush();
+    }
+
     public void Dispose()
     {
         _writeBatcher?.Flush(); // Flush pending writes before shutdown

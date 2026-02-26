@@ -291,5 +291,7 @@ public class S3StorageService : INetworkFileStorageService
     {
         throw new NotSupportedException("GetVectorsByBucketsAsync not supported on S3StorageService. Use RocksDB backend.");
     }
+
+    public void FlushPendingWrites() { /* S3 writes are synchronous — no buffering */ }
 }
 

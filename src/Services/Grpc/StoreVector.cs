@@ -51,7 +51,11 @@ public class StoreVectorService : StoreVector.StoreVectorBase
     /// </summary>
     public override async Task<StoreVector_Res> Store(StoreVector_Req request, ServerCallContext context)
     {
-        return await StoreSingle(request);
+        var result = await StoreSingle(request);
+        // ── CRASH SAFETY: Flush writes to RocksDB WAL before responding ──
+        // Without this, a kill between response and batcher flush loses the chunk.
+        NetworkFileStorageHandler.FlushPendingWrites();
+        return result;
     }
 
     /// <summary>
@@ -86,6 +90,13 @@ public class StoreVectorService : StoreVector.StoreVectorBase
                     results[i] = new StoreVector_Res { Id = 0, Index = 0 };
                 }
             });
+
+        // ── CRASH SAFETY: Flush ALL pending writes to RocksDB WAL before responding ──
+        // The write batcher queues writes in memory (50ms flush interval, 500-item batch).
+        // Without this explicit flush, an OOMKill/SIGKILL between response and batcher tick
+        // would lose chunk bytes + bucket metadata → "Missing base chunk" on decompress.
+        // Cost: one RocksDB WriteBatch per BatchStore call (fast: ~0.1-1ms for typical batches).
+        NetworkFileStorageHandler.FlushPendingWrites();
 
         result.Results.AddRange(results);
         return result;

@@ -69,5 +69,7 @@ namespace Agent.Services.Storage
 
         public Task<List<(float[] vector, string storageGuid, long bucketId, long bucketIndex, string bucketName)>> GetVectorsByBucketsAsync(List<string> bucketNames)
             => throw new NotSupportedException("GetVectorsByBucketsAsync not supported on NFS backend.");
+
+        public void FlushPendingWrites() { /* NFS writes are synchronous — no buffering */ }
     }
 }

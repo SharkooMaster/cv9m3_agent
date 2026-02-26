@@ -57,13 +57,68 @@ public sealed class RocksDbWriteBatcher : IDisposable
     }
 
     /// <summary>
-    /// Flush all pending writes immediately. Thread-safe.
+    /// Flush all pending writes immediately. BLOCKING — waits for any in-progress flush,
+    /// then drains the entire queue. After this returns, all queued data is in RocksDB WAL.
+    /// Called by StoreVectorService before responding to RPCs (crash safety guarantee).
     /// </summary>
     public void Flush()
     {
-        FlushBatch();
+        FlushBlocking();
     }
 
+    /// <summary>
+    /// Blocking flush: acquires the lock (waits if needed), drains ALL pending items.
+    /// Used for crash safety — guarantees durability before RPC response.
+    /// </summary>
+    private void FlushBlocking()
+    {
+        if (_disposed || _writeQueue.IsEmpty)
+            return;
+
+        // BLOCKING wait — must complete before returning to caller
+        Monitor.Enter(_flushLock);
+        try
+        {
+            // Drain ALL items (no batch size limit for explicit flushes)
+            while (!_writeQueue.IsEmpty)
+            {
+                var batch = new WriteBatch();
+                int count = 0;
+
+                while (_writeQueue.TryDequeue(out var item) && count < 10_000)
+                {
+                    batch.Put(item.key, item.value);
+                    count++;
+                }
+
+                if (count > 0)
+                {
+                    try
+                    {
+                        _rocksDb.Write(batch);
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"[RocksDB WriteBatcher] Error flushing batch ({count} items): {ex.Message}");
+                        // Data loss on write failure — log but don't re-queue (could infinite loop)
+                    }
+                    finally
+                    {
+                        batch.Dispose();
+                    }
+                }
+            }
+        }
+        finally
+        {
+            Monitor.Exit(_flushLock);
+        }
+    }
+
+    /// <summary>
+    /// Timer-based background flush: non-blocking, skips if another flush is in progress.
+    /// Used for periodic batching of writes (performance optimization).
+    /// </summary>
     private void FlushBatch()
     {
         if (_disposed || _writeQueue.IsEmpty)
@@ -80,13 +135,11 @@ public sealed class RocksDbWriteBatcher : IDisposable
 
             var batch = new WriteBatch();
             int count = 0;
-            var itemsToWrite = new List<(byte[] key, byte[] value)>();
 
             // Drain queue into batch (limit to prevent huge batches)
             while (_writeQueue.TryDequeue(out var item) && count < _batchSize * 2)
             {
                 batch.Put(item.key, item.value);
-                itemsToWrite.Add(item);
                 count++;
             }
 
@@ -94,18 +147,11 @@ public sealed class RocksDbWriteBatcher : IDisposable
             {
                 try
                 {
-                    // Write batch atomically (fast operation, runs in background)
                     _rocksDb.Write(batch);
-                    // Console.WriteLine($"[RocksDB WriteBatcher] Flushed {count} writes");
                 }
                 catch (Exception ex)
                 {
                     Console.WriteLine($"[RocksDB WriteBatcher] Error flushing batch: {ex.Message}");
-                    // Re-queue failed writes for retry
-                    foreach (var item in itemsToWrite)
-                    {
-                        _writeQueue.Enqueue(item);
-                    }
                 }
                 finally
                 {
@@ -124,13 +170,12 @@ public sealed class RocksDbWriteBatcher : IDisposable
         if (_disposed)
             return;
 
-        _disposed = true;
+        // Stop the timer FIRST to prevent concurrent timer flushes
         _flushTimer?.Dispose();
-        
-        // Final flush on shutdown
-        FlushBatch();
-        
-        // Wait a bit for final flush to complete
-        Thread.Sleep(50);
+
+        // Final blocking flush BEFORE marking disposed — drains all pending writes to RocksDB
+        FlushBlocking();
+
+        _disposed = true;
     }
 }

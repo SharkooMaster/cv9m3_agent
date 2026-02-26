@@ -301,5 +301,7 @@ public class LocalFileStorageService : INetworkFileStorageService
 
     public Task<List<(float[] vector, string storageGuid, long bucketId, long bucketIndex, string bucketName)>> GetVectorsByBucketsAsync(List<string> bucketNames)
         => throw new NotSupportedException("GetVectorsByBucketsAsync not supported on LocalFile backend.");
+
+    public void FlushPendingWrites() { /* Local file writes are synchronous — no buffering */ }
 }
 

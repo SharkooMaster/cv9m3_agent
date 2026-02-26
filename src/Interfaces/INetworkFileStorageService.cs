@@ -16,5 +16,12 @@ namespace Agent.Interfaces.Infs
         /// Returns (vector, storageGuid, bucketId, bucketIndex, bucketName).
         /// </summary>
         public Task<List<(float[] vector, string storageGuid, long bucketId, long bucketIndex, string bucketName)>> GetVectorsByBucketsAsync(List<string> bucketNames);
+
+        /// <summary>
+        /// Flush all pending writes to durable storage (SSD/disk).
+        /// Must be called before responding to RPCs to guarantee crash safety.
+        /// After this returns, all data is persisted even if the process is killed.
+        /// </summary>
+        void FlushPendingWrites();
     }
 }

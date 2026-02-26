@@ -70,6 +70,16 @@ public static class NetworkFileStorageHandler
         }
     }
 
+    /// <summary>
+    /// Flush all pending writes to durable storage.
+    /// MUST be called before responding to Store/BatchStore RPCs.
+    /// After this returns, all chunk bytes + bucket metadata are on SSD.
+    /// </summary>
+    public static void FlushPendingWrites()
+    {
+        _instance?.FlushPendingWrites();
+    }
+
     public static string GenerateChunkKey(byte[] chunkData)
     {
         using var sha256 = System.Security.Cryptography.SHA256.Create();

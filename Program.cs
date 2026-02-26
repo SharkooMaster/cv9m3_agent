@@ -125,6 +125,26 @@ else
 }
 
 var lifetime = app.Services.GetRequiredService<IHostApplicationLifetime>();
+
+// ── GRACEFUL SHUTDOWN: Flush all write batchers before exit ──
+// On SIGTERM (Kubernetes pod termination), ensure all pending RocksDB writes
+// are durably written to SSD before the process exits.
+// Belt-and-suspenders alongside DI Dispose: explicit is safer than relying on
+// the DI container ordering, especially during OOM-related kills.
+lifetime.ApplicationStopping.Register(() =>
+{
+    Console.WriteLine("[Agent] ⚠️ ApplicationStopping — flushing write batchers to SSD...");
+    try
+    {
+        NetworkFileStorageHandler.FlushPendingWrites();
+        Console.WriteLine("[Agent] ✅ Write batchers flushed successfully.");
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"[Agent] ❌ Error flushing write batchers: {ex.Message}");
+    }
+});
+
 lifetime.ApplicationStarted.Register(() => 
 {
     Task.Run(async () =>

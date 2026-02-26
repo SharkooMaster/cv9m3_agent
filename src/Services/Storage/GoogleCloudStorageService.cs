@@ -297,4 +297,6 @@ public class GcsSqlStorageService : INetworkFileStorageService
 
     public Task<List<(float[] vector, string storageGuid, long bucketId, long bucketIndex, string bucketName)>> GetVectorsByBucketsAsync(List<string> bucketNames)
         => throw new NotSupportedException("GetVectorsByBucketsAsync not supported on GCS backend.");
+
+    public void FlushPendingWrites() { /* GCS writes are synchronous — no buffering */ }
 }

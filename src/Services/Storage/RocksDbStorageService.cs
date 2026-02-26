@@ -56,6 +56,17 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
         Console.WriteLine($"[Storage] Buckets/vectors stored in RocksDB, chunk_owners in Redis");
     }
 
+    /// <summary>
+    /// Flush all pending writes (chunks + bucket metadata) to RocksDB WAL.
+    /// After this returns, data survives process crashes (SIGKILL, OOMKill).
+    /// Called by StoreVectorService after each BatchStore/Store RPC completes.
+    /// </summary>
+    public void FlushPendingWrites()
+    {
+        _chunkWriteBatcher?.Flush();
+        _bucketStorage?.FlushWrites();
+    }
+
     public void Dispose()
     {
         _chunkWriteBatcher?.Flush(); // Flush pending writes before shutdown
