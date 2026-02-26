@@ -330,6 +330,24 @@ public sealed class RocksDbBucketStorage : IDisposable
         return result;
     }
 
+    /// <summary>
+    /// Get fast O(1) bucket and vector counts from in-memory maps.
+    /// </summary>
+    public (long totalBuckets, long totalVectors) GetBucketAndVectorStats()
+    {
+        long totalBuckets;
+        lock (_bucketIdLock)
+        {
+            totalBuckets = _bucketNameToId.Count;
+        }
+
+        long totalVectors = 0;
+        foreach (var kv in _nextIndexInMemory)
+            totalVectors += (long)kv.Value;
+
+        return (totalBuckets, totalVectors);
+    }
+
     private static byte[] SerializeVectorRecord(float[] vector, string storageGuid, int chunkSize)
     {
         using var ms = new MemoryStream();

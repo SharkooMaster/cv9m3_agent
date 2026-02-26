@@ -131,6 +131,59 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
     /// </summary>
     public RocksDbBucketStorage BucketStorage => _bucketStorage;
 
+    // ── Cached storage stats (recomputed max every 60s) ──
+    private static long _cachedUniqueChunks;
+    private static long _cachedChunkBytes;
+    private static long _cachedStatsAtTicks;
+    private static readonly object _statsLock = new();
+
+    /// <summary>
+    /// Get total unique chunks and total bytes stored in the chunk RocksDB.
+    /// Iterates all keys/values; result is cached for 60 seconds.
+    /// </summary>
+    public (long uniqueChunks, long totalBytes) GetChunkStorageStats()
+    {
+        long now = DateTime.UtcNow.Ticks;
+        if ((now - Interlocked.Read(ref _cachedStatsAtTicks)) < TimeSpan.FromSeconds(60).Ticks
+            && Interlocked.Read(ref _cachedStatsAtTicks) > 0)
+        {
+            return (Interlocked.Read(ref _cachedUniqueChunks), Interlocked.Read(ref _cachedChunkBytes));
+        }
+
+        lock (_statsLock)
+        {
+            // Double-check after acquiring lock
+            if ((DateTime.UtcNow.Ticks - _cachedStatsAtTicks) < TimeSpan.FromSeconds(60).Ticks
+                && _cachedStatsAtTicks > 0)
+            {
+                return (_cachedUniqueChunks, _cachedChunkBytes);
+            }
+
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            long chunks = 0;
+            long bytes = 0;
+
+            using var iterator = _rocksDb.NewIterator();
+            iterator.SeekToFirst();
+            while (iterator.Valid())
+            {
+                chunks++;
+                var val = iterator.Value();
+                if (val != null)
+                    bytes += val.Length;
+                iterator.Next();
+            }
+
+            sw.Stop();
+            _cachedUniqueChunks = chunks;
+            _cachedChunkBytes = bytes;
+            Interlocked.Exchange(ref _cachedStatsAtTicks, DateTime.UtcNow.Ticks);
+
+            Console.WriteLine($"[StorageStats] Scanned chunk DB: {chunks:N0} unique chunks, {bytes / (1024.0 * 1024.0):F1} MB in {sw.ElapsedMilliseconds}ms");
+            return (chunks, bytes);
+        }
+    }
+
     public async Task<M_Bucket> ReadBucket(string bucket_Id)
     {
         var result = new M_Bucket(bucket_Id);

@@ -54,6 +54,7 @@
     <Protobuf Include="Protos\SearchVector.proto" GrpcServices="Both" />
     <Protobuf Include="Protos\StoreVector.proto" GrpcServices="Server" />
     <Protobuf Include="Protos\GetChunkByReference.proto" GrpcServices="Both" />
+    <Protobuf Include="Protos\StorageStats.proto" GrpcServices="Both" />
   </ItemGroup>
 
   <PropertyGroup>
