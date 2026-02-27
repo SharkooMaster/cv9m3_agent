@@ -63,7 +63,7 @@ public sealed class RocksDbBucketStorage : IDisposable
             .SetWriteBufferSize(64 * 1024 * 1024)                           // 64MB memtable (vs 4MB default)
             .SetMaxWriteBufferNumber(3)                                     // 3 memtables before stall
             .SetLevel0FileNumCompactionTrigger(4)                           // Compact after 4 L0 files
-            .SetCompression(Compression.Lz4);                               // Fast compression
+            .SetCompression(Compression.Zstd);
 
         var dbOpts = new DbOptions()
             .SetCreateIfMissing(true);

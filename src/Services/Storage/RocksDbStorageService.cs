@@ -45,7 +45,7 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
             .SetBlockBasedTableFactory(chunkTableOpts)
             .SetWriteBufferSize(64 * 1024 * 1024)   // 64MB memtable
             .SetMaxWriteBufferNumber(3)
-            .SetCompression(Compression.Lz4);        // Fast compression
+            .SetCompression(Compression.Zstd);
 
         var rocksOptions = new DbOptions().SetCreateIfMissing(true);
         var chunkCfs = new ColumnFamilies { { "default", chunkCfOpts } };
