@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using Agent.Interfaces.Infs;
+using Agent.Services.Storage;
 using Amazon.S3;
 using Amazon.S3.Model;
 using Npgsql;
@@ -81,7 +82,7 @@ public class S3StorageService : INetworkFileStorageService
 
     public async Task<M_Bucket> ReadBucket(string bucket_Id)
     {
-        var result = new M_Bucket(bucket_Id);
+        var result = new M_Bucket(RocksDbBucketStorage.BitstringToUlong(bucket_Id));
         if (IsKnownMissingBucket(bucket_Id))
         {
             return result;

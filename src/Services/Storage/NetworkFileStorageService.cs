@@ -1,5 +1,6 @@
 
 using Agent.Interfaces.Infs;
+using Agent.Services.Storage;
 
 namespace Agent.Services.Storage
 {
@@ -24,7 +25,7 @@ namespace Agent.Services.Storage
         public async Task<M_Bucket> ReadBucket(string bucket_Id)
         {
             string filePath = Path.Combine(_nfs_path, $"{bucket_Id}.tpdf");
-            M_Bucket new_bucket = new M_Bucket(bucket_Id);
+            M_Bucket new_bucket = new M_Bucket(RocksDbBucketStorage.BitstringToUlong(bucket_Id));
 
             if(!File.Exists(filePath)){ return new_bucket; }
 

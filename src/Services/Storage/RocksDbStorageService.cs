@@ -25,22 +25,40 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
     private static DateTime _agentListCacheTime = DateTime.MinValue;
     private static readonly object _agentListLock = new object();
 
-    public RocksDbStorageService(string rocksDbPath, string postgresConnectionString)
+    public RocksDbStorageService(string rocksDbPath, string postgresConnectionString, long bucketBlockCacheMb = 128, long chunkBlockCacheMb = 64)
     {
         if (string.IsNullOrWhiteSpace(rocksDbPath))
             throw new ArgumentException("RocksDB path cannot be empty.", nameof(rocksDbPath));
 
-        // Initialize chunk storage RocksDB
+        // ── Chunk storage RocksDB: tuned for point lookups (Get by storageGuid) ──
         Directory.CreateDirectory(rocksDbPath);
+        var chunkTableOpts = new BlockBasedTableOptions()
+            .SetFilterPolicy(BloomFilterPolicy.Create(10, false))                       // Bloom filter: skip SSTs without this key
+            .SetBlockCache(RocksDbSharp.Cache.CreateLru((ulong)(chunkBlockCacheMb * 1024 * 1024)))   // LRU block cache
+            .SetBlockSize(8 * 1024)                                                     // 8KB blocks (chunks are ~1KB)
+            .SetCacheIndexAndFilterBlocks(true)
+            .SetPinL0FilterAndIndexBlocksInCache(true)
+            .SetWholeKeyFiltering(true)
+            .SetFormatVersion(4);
+
+        var chunkCfOpts = new ColumnFamilyOptions()
+            .SetBlockBasedTableFactory(chunkTableOpts)
+            .SetWriteBufferSize(64 * 1024 * 1024)   // 64MB memtable
+            .SetMaxWriteBufferNumber(3)
+            .SetCompression(Compression.Lz4);        // Fast compression
+
         var rocksOptions = new DbOptions().SetCreateIfMissing(true);
-        _rocksDb = RocksDb.Open(rocksOptions, rocksDbPath);
-        
+        var chunkCfs = new ColumnFamilies { { "default", chunkCfOpts } };
+        _rocksDb = RocksDb.Open(rocksOptions, rocksDbPath, chunkCfs);
+
         // Initialize write batcher for chunks (batches writes in background, non-blocking)
         // High-throughput: Larger batches, more frequent flushes
         _chunkWriteBatcher = new RocksDbWriteBatcher(_rocksDb, batchSize: 500, flushIntervalMs: 50);
-        
-        // Initialize bucket/vector storage (separate RocksDB instance)
-        _bucketStorage = new RocksDbBucketStorage(rocksDbPath);
+
+        // Initialize bucket/vector storage (separate RocksDB instance, with its own bloom+cache)
+        _bucketStorage = new RocksDbBucketStorage(rocksDbPath, blockCacheSizeMb: bucketBlockCacheMb);
+
+        Console.WriteLine($"[Storage] RocksDB chunk block cache: {chunkBlockCacheMb}MB, bucket block cache: {bucketBlockCacheMb}MB");
         
         // Initialize Redis for chunk ownership
         var redisHost = Environment.GetEnvironmentVariable("REDIS_HOST");
@@ -102,7 +120,8 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
                 continue; // Over budget — leave on disk (L2), loaded on-demand
             }
 
-            var bucket = Globals._NODE.Buckets.GetOrAdd(bucketName, _ => new M_Bucket(bucketName));
+            ulong bucketKey = RocksDbBucketStorage.BitstringToUlong(bucketName);
+            var bucket = Globals._NODE.Buckets.GetOrAdd(bucketKey, _ => new M_Bucket(bucketKey));
             foreach (var (vector, storageGuid, bucketId, bucketIndex) in vectors)
             {
                 bucket.data.Add(new M_Data
@@ -270,7 +289,7 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
 
     public async Task<M_Bucket> ReadBucket(string bucket_Id)
     {
-        var result = new M_Bucket(bucket_Id);
+        var result = new M_Bucket(RocksDbBucketStorage.BitstringToUlong(bucket_Id));
         if (IsKnownMissingBucket(bucket_Id))
             return result;
 
@@ -359,9 +378,7 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
         // GetChunkAsync can safely fetch bytes from another agent via GetChunkByKey (different RPC).
 
         // 1. Try in-memory bucket first (always up-to-date, survives write-batcher lag)
-        //    BucketId is now a deterministic ulong derived from the 64-char bitstring.
-        string bucketName = RocksDbBucketStorage.UlongToBitstring(bucketId);
-        if (Globals._NODE.Buckets.TryGetValue(bucketName, out var bucket))
+        if (Globals._NODE.Buckets.TryGetValue(bucketId, out var bucket))
         {
             var snapshot = bucket.GetDataSnapshot();
             for (int j = 0; j < snapshot.Length; j++)
@@ -677,8 +694,18 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
 
     private Task ReplicateChunkAsync(string chunkKey, byte[] chunkData)
     {
-        // Temporarily disabled replication path while GetChunkByReference proto/codegen
-        // is normalized across environments. This keeps hot-path store/search fast and stable.
+        // REPLICATION DISABLED — single-copy storage only.
+        //
+        // RISK: If this agent's disk/pod is lost, all chunks it owns are permanently gone.
+        //       Compressed files referencing those chunks become undecompressible.
+        //
+        // MITIGATIONS (pick one or more):
+        //   1. Use PersistentVolumeClaims with a replicated StorageClass (e.g., Ceph RBD, Longhorn)
+        //   2. Re-enable async replication to N-1 agents (fire-and-forget background write)
+        //   3. External backup of the RocksDB data directory on a schedule
+        //
+        // Re-enabling replication requires normalizing GetChunkByReference proto/codegen
+        // across environments and deciding on replication factor + consistency model.
         return Task.CompletedTask;
     }
 

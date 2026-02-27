@@ -4,10 +4,11 @@ using System.Security.Cryptography;
 using System.Text;
 using Agent.Utils;
 using Agent.Utils.Misc;
+using Agent.Services.Storage;
 
 public class M_Bucket
 {
-    public string ID { get; set; }
+    public ulong ID { get; set; }
     public ulong lastId = 0;
 
     // ── PERFORMANCE: List<M_Data> + lock replaces ConcurrentBag<M_Data>. ──
@@ -48,7 +49,7 @@ public class M_Bucket
     // Wraps the internal list with proper locking.
     public BucketDataAccessor data => new BucketDataAccessor(this);
 
-    public M_Bucket(string _ID)
+    public M_Bucket(ulong _ID)
     {
         ID = _ID;
     }
@@ -119,7 +120,8 @@ public class M_Bucket
                 return existing;
             }
 
-            (ulong bucketId, ulong bucketIndex) = await NetworkFileStorageHandler.StoreVector(ID, _data);
+            string bucketName = RocksDbBucketStorage.UlongToBitstring(ID);
+            (ulong bucketId, ulong bucketIndex) = await NetworkFileStorageHandler.StoreVector(bucketName, _data);
 
             _data.id = bucketId;
             _data.index = bucketIndex;
@@ -137,7 +139,8 @@ public class M_Bucket
 
         // Fallback: no chunk data — store anyway (shouldn't happen but safety net).
         AddData(_data);
-        (ulong bid, ulong bidx) = await NetworkFileStorageHandler.StoreVector(ID, _data);
+        string fallbackName = RocksDbBucketStorage.UlongToBitstring(ID);
+        (ulong bid, ulong bidx) = await NetworkFileStorageHandler.StoreVector(fallbackName, _data);
         _data.id = bid;
         _data.index = bidx;
         return (bid, bidx);

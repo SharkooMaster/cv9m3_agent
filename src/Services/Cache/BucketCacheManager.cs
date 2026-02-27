@@ -181,7 +181,8 @@ public static class BucketCacheManager
 
     public static M_Bucket? TryGet(string bucketName)
     {
-        if (Globals._NODE.Buckets.TryGetValue(bucketName, out var bucket))
+        ulong key = RocksDbBucketStorage.BitstringToUlong(bucketName);
+        if (Globals._NODE.Buckets.TryGetValue(key, out var bucket))
         {
             bucket.TouchAccess();
             return bucket;
@@ -191,7 +192,8 @@ public static class BucketCacheManager
 
     public static M_Bucket? LoadAndCache(string bucketName)
     {
-        if (Globals._NODE.Buckets.TryGetValue(bucketName, out var existing))
+        ulong key = RocksDbBucketStorage.BitstringToUlong(bucketName);
+        if (Globals._NODE.Buckets.TryGetValue(key, out var existing))
         {
             existing.TouchAccess();
             return existing;
@@ -203,7 +205,7 @@ public static class BucketCacheManager
         if (vectors == null || vectors.Count == 0)
             return null;
 
-        var bucket = new M_Bucket(bucketName);
+        var bucket = new M_Bucket(key);
         foreach (var (vector, storageGuid, bucketId, bucketIndex) in vectors)
         {
             bucket.AddData(new M_Data
@@ -217,10 +219,9 @@ public static class BucketCacheManager
         }
         bucket.TouchAccess();
 
-        var cached = Globals._NODE.Buckets.GetOrAdd(bucketName, bucket);
+        var cached = Globals._NODE.Buckets.GetOrAdd(key, bucket);
         cached.TouchAccess();
 
-        // Only track if WE inserted (prevents double-counting on race)
         if (ReferenceEquals(cached, bucket))
         {
             Interlocked.Add(ref _approximateUsageBytes, cached.EstimatedMemoryBytes);
@@ -234,14 +235,15 @@ public static class BucketCacheManager
     {
         CheckHardCeiling();
 
-        return Globals._NODE.Buckets.GetOrAdd(bucketName, key =>
+        ulong key = RocksDbBucketStorage.BitstringToUlong(bucketName);
+        return Globals._NODE.Buckets.GetOrAdd(key, k =>
         {
             if (_bucketStorage != null)
             {
-                var vectors = _bucketStorage.LoadSingleBucketToMemory(key);
+                var vectors = _bucketStorage.LoadSingleBucketToMemory(bucketName);
                 if (vectors != null && vectors.Count > 0)
                 {
-                    var bucket = new M_Bucket(key);
+                    var bucket = new M_Bucket(k);
                     foreach (var (vector, storageGuid, bucketId, bucketIndex) in vectors)
                     {
                         bucket.AddData(new M_Data
@@ -259,7 +261,7 @@ public static class BucketCacheManager
                     return bucket;
                 }
             }
-            var newBucket = new M_Bucket(key);
+            var newBucket = new M_Bucket(k);
             Interlocked.Add(ref _approximateUsageBytes, newBucket.EstimatedMemoryBytes);
             return newBucket;
         });
@@ -434,7 +436,7 @@ public static class BucketCacheManager
             bool isEmergency = trigger == "SYSMEM" || trigger == "hardCeiling";
             int sampleSize = isEmergency ? Math.Min(totalBuckets, 100_000) : Math.Min(totalBuckets, 10_000);
 
-            var candidates = new List<(string Key, long LastAccess, long MemBytes)>(sampleSize);
+            var candidates = new List<(ulong Key, long LastAccess, long MemBytes)>(sampleSize);
 
             if (totalBuckets <= sampleSize)
             {

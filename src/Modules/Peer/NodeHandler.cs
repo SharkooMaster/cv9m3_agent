@@ -7,6 +7,7 @@ using Agent.Modules.Agneta;
 using Agent.Utils;
 using Agent.Utils.Globals;
 using Agent.Utils.Misc;
+using Agent.Services.Storage;
 using Google.Api;
 using Grpc.Core;
 using Xunit.Sdk;
@@ -219,8 +220,8 @@ public static class NodeService
         // No DHT range check — gateway already routed via rendezvous hash.
         // Agent accepts all requests.
 
-        // Try L1 (RAM), then L2 (RocksDB) for cold buckets
-        var bucket = node.Buckets.TryGetValue(_bitstring, out var hotBucket)
+        ulong bucketKey = RocksDbBucketStorage.BitstringToUlong(_bitstring);
+        var bucket = node.Buckets.TryGetValue(bucketKey, out var hotBucket)
             ? hotBucket
             : Agent.Services.Cache.BucketCacheManager.LoadAndCache(_bitstring);
 

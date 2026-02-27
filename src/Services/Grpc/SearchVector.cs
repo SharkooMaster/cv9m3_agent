@@ -9,6 +9,7 @@ using Agent.Services.Cache;
 using Agent.Utils.Globals;
 using Agent.Utils.Misc;
 using Agent.Utils;
+using Agent.Services.Storage;
 using Google.Protobuf;
 using Grpc.Core;
 
@@ -53,18 +54,19 @@ public class SearchVectorService : SearchVector.SearchVectorBase
         if (request.Bitstrings.Count == 0)
             return MakeSaveResult(request.Index);
 
-        // ── Collect candidates from L1 (RAM) + L2 (RocksDB) buckets ──
-        // L1 hit: pure RAM, zero I/O. L2 miss: sync RocksDB read (~0.1-0.3ms per bucket).
-        // Carry storageGuid through so we can fetch the base chunk on match.
-        var candidates = new List<(float[] vector, ulong bucketId, ulong bucketIndex, string? storageGuid)>(128);
+        // ── Collect candidates from L1 (RAM) then L2 (RocksDB) ──
+        // L1 hit: pure RAM, zero I/O. L2 hit: loaded via prefix iterator (fast sequential scan).
+        // Cap total candidates to prevent cosine similarity from growing unbounded
+        // as buckets accumulate vectors over time.
+        const int MaxCandidates = 4096;
+        var candidates = new List<(float[] vector, ulong bucketId, ulong bucketIndex, string? storageGuid)>(256);
 
         foreach (var bs in request.Bitstrings)
         {
-            // L1 fast path
+            ulong bucketKey = RocksDbBucketStorage.BitstringToUlong(bs);
             M_Bucket? bucket;
-            if (!Globals._NODE.Buckets.TryGetValue(bs, out bucket))
+            if (!Globals._NODE.Buckets.TryGetValue(bucketKey, out bucket))
             {
-                // L1 miss → load from L2 (RocksDB). Sync, ~0.1-0.3ms.
                 bucket = BucketCacheManager.LoadAndCache(bs);
                 if (bucket == null || bucket.DataCount == 0) continue;
             }
@@ -77,6 +79,10 @@ public class SearchVectorService : SearchVector.SearchVectorBase
                 if (d?.vector != null && d.vector.Length == vecLen)
                     candidates.Add((d.vector, d.id, d.index, d.storageGuid));
             }
+
+            // Cap total candidates to bound cosine similarity time
+            if (candidates.Count >= MaxCandidates)
+                break;
         }
 
         if (candidates.Count == 0)

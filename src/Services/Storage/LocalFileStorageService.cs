@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Security.Cryptography;
 using System.Text;
+using Agent.Services.Storage;
 using System.Threading.Tasks;
 using Agent.Interfaces.Infs;
 using Agent.Utils.Globals;
@@ -33,7 +34,7 @@ public class LocalFileStorageService : INetworkFileStorageService
     {
         try
         {
-            M_Bucket toReturn = new M_Bucket(bucket_Id);
+            M_Bucket toReturn = new M_Bucket(RocksDbBucketStorage.BitstringToUlong(bucket_Id));
             List<(float[] vector, string storageGuid, long _id, long _index)> vectors = await GetVectorsByBucketAsync(bucket_Id);
 
             // Lazy loading: Store only metadata (vector, storageGuid, IDs) without loading chunks into memory

@@ -3,6 +3,7 @@ using System;
 using System.IO;
 using System.Numerics;
 using System.Security.Cryptography;
+using Agent.Services.Storage;
 using System.Text;
 using System.Threading.Tasks;
 using Agent.Interfaces.Infs;
@@ -61,7 +62,7 @@ public class GcsSqlStorageService : INetworkFileStorageService
     {
         try
         {
-            M_Bucket toReturn = new M_Bucket(bucket_Id);
+            M_Bucket toReturn = new M_Bucket(RocksDbBucketStorage.BitstringToUlong(bucket_Id));
             List<(float[] vector, string storageGuid, long _id, long _index)> vectors = await GetVectorsByBucketAsync(bucket_Id);
 
             foreach ((float[], string, long, long) vec in vectors)

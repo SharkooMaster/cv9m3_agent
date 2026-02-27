@@ -237,6 +237,9 @@ lifetime.ApplicationStarted.Register(() =>
         // This prevents Cross/Gateway from routing to a cold agent.
         Globals.IsReady = true;
         Console.WriteLine("[Agent] ✅ Readiness gate OPEN — agent is ready to serve");
+        Console.WriteLine("[Agent] ⚠️  REPLICATION IS DISABLED — single-copy storage only. " +
+            "If this pod/disk is lost, chunks owned by this agent are NOT recoverable. " +
+            "Use replicated PersistentVolumes or external backup to prevent data loss.");
     });
 });
 
@@ -501,8 +504,15 @@ void ConfigureServices(IServiceCollection services)
         if (storageBackend == "rocksdb")
         {
             var rocksPath = Environment.GetEnvironmentVariable("ROCKSDB_PATH") ?? "/data/chunks/rocksdb";
-            Console.WriteLine($"[Storage] Using RocksDB backend path={rocksPath}");
-            return new RocksDbStorageService(rocksPath, pgbuilder.ConnectionString);
+            // Size RocksDB block caches: 5% of node RAM for buckets, 2.5% for chunks
+            // These are SEPARATE from the L1 app-level caches — they cache raw SST blocks
+            // so that Seek/Get calls hit memory instead of SSD. Critical for L2 read speed.
+            long availMem = GC.GetGCMemoryInfo().TotalAvailableMemoryBytes;
+            long bucketBlockCacheMb = Math.Max(64, availMem * 5 / 100 / (1024 * 1024));
+            long chunkBlockCacheMb = Math.Max(32, availMem * 25 / 1000 / (1024 * 1024));
+            Console.WriteLine($"[Storage] Using RocksDB backend path={rocksPath}, bucket block cache={bucketBlockCacheMb}MB, chunk block cache={chunkBlockCacheMb}MB");
+            return new RocksDbStorageService(rocksPath, pgbuilder.ConnectionString,
+                bucketBlockCacheMb: bucketBlockCacheMb, chunkBlockCacheMb: chunkBlockCacheMb);
         }
 
     var storageDir = Environment.GetEnvironmentVariable("CHUNK_STORAGE_DIR") ?? "/tmp/crossv9_chunks";
