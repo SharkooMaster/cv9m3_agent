@@ -4,20 +4,23 @@ using Agent.Utils.Globals;
 namespace Agent.Services.Cache;
 
 /// <summary>
-/// Manages the L1 (RAM) bucket cache with high-water/low-water background eviction.
+/// Manages the L1 (RAM) bucket cache with system-level memory monitoring.
 ///
 /// L1 (RAM): Globals._NODE.Buckets — bounded by MaxBytes, LRU eviction.
-/// L2 (RocksDB on PVC SSD): All buckets always persisted — unbounded.
+/// L2 (RocksDB on PVC SSD): All buckets always persisted — unbounded, loaded on-demand.
 ///
-/// Eviction model (non-blocking):
-///   - High-water mark (default 90%): when cache usage exceeds this, a dedicated
-///     background thread is signaled to start evicting.
-///   - Low-water mark (default 75%): eviction continues until usage drops to this level,
-///     creating ~15% headroom for burst writes.
-///   - Hard ceiling (default 98%): emergency inline blocking eviction — should rarely fire.
+/// Eviction model:
+///   1. SYSTEM MEMORY GUARD (highest priority):
+///      Reads /proc/meminfo every 2 seconds. If MemAvailable drops below 10% of MemTotal,
+///      aggressively evicts bucket cache AND chunk cache until free RAM is restored.
+///      This catches ALL memory usage — managed heap, RocksDB native, mmap, gRPC buffers.
 ///
-/// Hot path (store/search) is NEVER blocked by eviction except at the hard ceiling.
-/// The background thread evicts in small batches to avoid holding locks too long.
+///   2. Cache-level watermarks (normal operation):
+///      - High-water (70%): background eviction starts.
+///      - Low-water (50%): background eviction target.
+///      - Hard ceiling (90%): inline blocking eviction.
+///
+/// The system memory guard NEVER stops. It runs every 2 seconds regardless of anything else.
 /// </summary>
 public static class BucketCacheManager
 {
@@ -26,23 +29,27 @@ public static class BucketCacheManager
     /// <summary>Max bytes for L1 bucket cache (100% budget).</summary>
     public static long MaxBytes { get; private set; } = 12L * 1024 * 1024 * 1024;
 
-    /// <summary>High-water percentage (0.0–1.0). Background eviction starts when usage > MaxBytes * HighWaterPct.</summary>
     public static double HighWaterPct { get; private set; } = 0.70;
-
-    /// <summary>Low-water percentage (0.0–1.0). Background eviction stops when usage <= MaxBytes * LowWaterPct.</summary>
     public static double LowWaterPct { get; private set; } = 0.50;
-
-    /// <summary>Hard ceiling percentage (0.0–1.0). Inline blocking eviction fires when usage > MaxBytes * HardCeilingPct.</summary>
     public static double HardCeilingPct { get; private set; } = 0.90;
 
-    // Derived byte thresholds (updated on Initialize)
     private static long _highWaterBytes;
     private static long _lowWaterBytes;
     private static long _hardCeilingBytes;
 
-    private static volatile bool _initialized = false;
+    /// <summary>
+    /// Minimum percentage of TOTAL NODE RAM that must remain free at all times.
+    /// If MemAvailable drops below this, emergency eviction fires.
+    /// </summary>
+    private const double MinFreeRamPct = 0.10; // 10% of node RAM MUST stay free
 
-    // Track approximate usage without scanning all buckets every time
+    /// <summary>
+    /// When emergency eviction fires, evict until free RAM reaches this percentage.
+    /// Provides headroom so we don't thrash between evict/fill cycles.
+    /// </summary>
+    private const double TargetFreeRamPct = 0.15; // Evict until 15% is free
+
+    private static volatile bool _initialized = false;
     private static long _approximateUsageBytes = 0;
 
     // ── Background evictor thread ──
@@ -50,17 +57,25 @@ public static class BucketCacheManager
     private static readonly ManualResetEventSlim _evictSignal = new(false);
     private static volatile bool _shutdown = false;
 
-    // Batching: evict this many entries per lock cycle to avoid starving the hot path
-    private const int EvictBatchSize = 200;
+    private const int EvictBatchSize = 500; // Larger batches for faster eviction
+
+    // ── Callback to evict chunk cache (set by Program.cs) ──
+    private static Action? _forceEvictChunkCache;
 
     /// <summary>
-    /// Initialize the cache manager with a reference to the bucket storage (for L2 loads).
-    /// Must be called once at startup before any search/store operations.
+    /// Register a callback that the system memory guard can call to force-evict
+    /// the chunk cache when node memory is critically low.
     /// </summary>
+    public static void RegisterChunkCacheEvictor(Action evictor)
+    {
+        _forceEvictChunkCache = evictor;
+    }
+
     public static void Initialize(
         RocksDbBucketStorage bucketStorage,
         long maxBytes,
-        int evictionIntervalSec, // kept for API compat but unused now
+        int evictionIntervalSec,
+        long totalAvailableMemory = 0,
         double highWaterPct = 0.90,
         double lowWaterPct = 0.75,
         double hardCeilingPct = 0.98)
@@ -75,42 +90,95 @@ public static class BucketCacheManager
         _lowWaterBytes = (long)(maxBytes * lowWaterPct);
         _hardCeilingBytes = (long)(maxBytes * hardCeilingPct);
 
-        // Start the dedicated background evictor thread
         _shutdown = false;
         _evictorThread = new Thread(BackgroundEvictorLoop)
         {
             IsBackground = true,
             Name = "BucketCache-Evictor",
-            Priority = ThreadPriority.BelowNormal
+            Priority = ThreadPriority.AboveNormal // Higher priority — this thread protects against OOM
         };
         _evictorThread.Start();
 
         _initialized = true;
+
+        var (memTotal, memAvailable) = ReadSystemMemory();
         Console.WriteLine(
             $"[BucketCache] Initialized: budget={maxBytes / (1024 * 1024)}MB, " +
             $"highWater={highWaterPct:P0}({_highWaterBytes / (1024 * 1024)}MB), " +
             $"lowWater={lowWaterPct:P0}({_lowWaterBytes / (1024 * 1024)}MB), " +
-            $"hardCeiling={hardCeilingPct:P0}({_hardCeilingBytes / (1024 * 1024)}MB)");
+            $"hardCeiling={hardCeilingPct:P0}({_hardCeilingBytes / (1024 * 1024)}MB), " +
+            $"sysMemTotal={memTotal / (1024 * 1024)}MB, sysMemFree={memAvailable / (1024 * 1024)}MB, " +
+            $"minFreeGuard={MinFreeRamPct:P0}({memTotal * MinFreeRamPct / (1024 * 1024):F0}MB)");
     }
 
-    /// <summary>
-    /// Call on application shutdown to stop the background evictor cleanly.
-    /// </summary>
     public static void Shutdown()
     {
         _shutdown = true;
-        _evictSignal.Set(); // wake up the thread so it exits
+        _evictSignal.Set();
         _evictorThread?.Join(TimeSpan.FromSeconds(5));
     }
 
     // ═══════════════════════════════════════════════════════════════════
-    //  PUBLIC API — used by search/store paths
+    //  SYSTEM MEMORY READING — /proc/meminfo
     // ═══════════════════════════════════════════════════════════════════
 
     /// <summary>
-    /// Try to get a bucket from L1 (RAM). Returns null on cache miss.
-    /// Updates LRU timestamp on hit.
+    /// Reads MemTotal and MemAvailable from /proc/meminfo.
+    /// These are REAL kernel values — they include ALL memory usage on the node:
+    /// managed .NET heap, RocksDB native allocations, mmap'd files, kernel caches, etc.
+    /// Falls back to GC info if /proc/meminfo is not available (non-Linux).
     /// </summary>
+    private static (long MemTotal, long MemAvailable) ReadSystemMemory()
+    {
+        try
+        {
+            if (File.Exists("/proc/meminfo"))
+            {
+                long memTotal = 0, memAvailable = 0;
+                foreach (var line in File.ReadLines("/proc/meminfo"))
+                {
+                    if (line.StartsWith("MemTotal:"))
+                        memTotal = ParseMemInfoLine(line);
+                    else if (line.StartsWith("MemAvailable:"))
+                        memAvailable = ParseMemInfoLine(line);
+
+                    if (memTotal > 0 && memAvailable > 0)
+                        break;
+                }
+                if (memTotal > 0)
+                    return (memTotal, memAvailable);
+            }
+        }
+        catch { /* fall through to GC fallback */ }
+
+        // Fallback for non-Linux (dev machines, etc.)
+        var gcInfo = GC.GetGCMemoryInfo();
+        long total = gcInfo.TotalAvailableMemoryBytes;
+        long used = GC.GetTotalMemory(false);
+        return (total, Math.Max(0, total - used));
+    }
+
+    /// <summary>
+    /// Parses a /proc/meminfo line like "MemTotal:       32456789 kB" → bytes.
+    /// </summary>
+    private static long ParseMemInfoLine(string line)
+    {
+        // Format: "MemTotal:       32456789 kB"
+        var parts = line.Split(':', 2);
+        if (parts.Length < 2) return 0;
+        var valuePart = parts[1].Trim();
+        // Remove "kB" suffix
+        if (valuePart.EndsWith("kB", StringComparison.OrdinalIgnoreCase))
+            valuePart = valuePart[..^2].Trim();
+        if (long.TryParse(valuePart, out long kb))
+            return kb * 1024; // Convert kB to bytes
+        return 0;
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  PUBLIC API
+    // ═══════════════════════════════════════════════════════════════════
+
     public static M_Bucket? TryGet(string bucketName)
     {
         if (Globals._NODE.Buckets.TryGetValue(bucketName, out var bucket))
@@ -121,15 +189,8 @@ public static class BucketCacheManager
         return null;
     }
 
-    /// <summary>
-    /// Load a bucket from L2 (RocksDB) into L1 (RAM).
-    /// Returns the cached bucket, or null if the bucket doesn't exist in L2.
-    /// Thread-safe: uses GetOrAdd to prevent duplicate loads.
-    /// Fully synchronous — safe to call from Parallel.For/search hot paths.
-    /// </summary>
     public static M_Bucket? LoadAndCache(string bucketName)
     {
-        // Fast path: already in L1 (another thread loaded it)
         if (Globals._NODE.Buckets.TryGetValue(bucketName, out var existing))
         {
             existing.TouchAccess();
@@ -138,12 +199,10 @@ public static class BucketCacheManager
 
         if (_bucketStorage == null) return null;
 
-        // Load from L2 (RocksDB) — fully synchronous, no async overhead
         var vectors = _bucketStorage.LoadSingleBucketToMemory(bucketName);
         if (vectors == null || vectors.Count == 0)
             return null;
 
-        // Build the bucket
         var bucket = new M_Bucket(bucketName);
         foreach (var (vector, storageGuid, bucketId, bucketIndex) in vectors)
         {
@@ -153,34 +212,26 @@ public static class BucketCacheManager
                 storageGuid = storageGuid,
                 id = bucketId,
                 index = bucketIndex,
-                chunk = null // Chunks loaded on-demand from chunk cache / RocksDB
+                chunk = null
             });
         }
         bucket.TouchAccess();
 
-        // Add to L1 — GetOrAdd ensures only one copy if another thread raced us
         var cached = Globals._NODE.Buckets.GetOrAdd(bucketName, bucket);
         cached.TouchAccess();
 
-        // Track approximate usage increase
-        Interlocked.Add(ref _approximateUsageBytes, cached.EstimatedMemoryBytes);
-
-        // Signal background evictor if we crossed the high-water mark
-        CheckHighWater();
+        // Only track if WE inserted (prevents double-counting on race)
+        if (ReferenceEquals(cached, bucket))
+        {
+            Interlocked.Add(ref _approximateUsageBytes, cached.EstimatedMemoryBytes);
+            CheckHighWater();
+        }
 
         return cached;
     }
 
-    /// <summary>
-    /// Get a bucket from L1, or load from L2 if not cached.
-    /// Used by the store path to ensure a cold bucket's existing vectors
-    /// are present before adding a new vector.
-    /// Also triggers background eviction if the cache is over high-water,
-    /// or emergency inline eviction at the hard ceiling.
-    /// </summary>
     public static M_Bucket GetOrLoad(string bucketName)
     {
-        // Hard ceiling check — emergency inline eviction (should be very rare)
         CheckHardCeiling();
 
         return Globals._NODE.Buckets.GetOrAdd(bucketName, key =>
@@ -214,19 +265,12 @@ public static class BucketCacheManager
         });
     }
 
-    /// <summary>
-    /// Notify the cache that a bucket grew (e.g. new vector added during store).
-    /// Signals background eviction if over high-water.
-    /// </summary>
     public static void NotifyBucketGrew(long additionalBytes)
     {
         Interlocked.Add(ref _approximateUsageBytes, additionalBytes);
         CheckHighWater();
     }
 
-    /// <summary>
-    /// Estimate total RAM used by all L1 cached buckets.
-    /// </summary>
     public static long EstimateTotalBytes()
     {
         long total = 0;
@@ -236,63 +280,133 @@ public static class BucketCacheManager
     }
 
     // ═══════════════════════════════════════════════════════════════════
-    //  INTERNAL — eviction logic
+    //  EVICTION LOGIC
     // ═══════════════════════════════════════════════════════════════════
 
-    /// <summary>
-    /// Signal the background evictor if approximate usage exceeds the high-water mark.
-    /// Non-blocking — just sets a flag.
-    /// </summary>
     private static void CheckHighWater()
     {
         if (Interlocked.Read(ref _approximateUsageBytes) > _highWaterBytes)
             _evictSignal.Set();
     }
 
-    /// <summary>
-    /// Emergency inline eviction at the hard ceiling (98%).
-    /// Blocks the calling thread until usage is back under the high-water mark.
-    /// This should almost never fire — it's a safety valve.
-    /// </summary>
     private static void CheckHardCeiling()
     {
         if (Interlocked.Read(ref _approximateUsageBytes) <= _hardCeilingBytes)
             return;
 
-        // We're above 98% — do an immediate synchronous eviction to high-water
         long currentUsage = EstimateTotalBytes();
         Interlocked.Exchange(ref _approximateUsageBytes, currentUsage);
         if (currentUsage <= _hardCeilingBytes) return;
 
-        Console.WriteLine($"[BucketCache] ⚠️ HARD CEILING hit ({currentUsage / (1024 * 1024)}MB > {_hardCeilingBytes / (1024 * 1024)}MB). Inline eviction to low-water...");
+        Console.WriteLine($"[BucketCache] ⚠️ HARD CEILING hit ({currentUsage / (1024 * 1024)}MB > {_hardCeilingBytes / (1024 * 1024)}MB). Inline eviction...");
         DoEvictionToTarget(_lowWaterBytes, "hardCeiling");
     }
 
     /// <summary>
-    /// Dedicated background evictor thread.
-    /// Waits for a signal (ManualResetEventSlim), then evicts down to the low-water mark
-    /// in small batches so it doesn't hold any lock for too long.
+    /// Background evictor thread. Runs every 2 seconds.
+    /// Priority 1: System memory guard (reads /proc/meminfo).
+    /// Priority 2: Cache-level watermark eviction.
     /// </summary>
     private static void BackgroundEvictorLoop()
     {
-        Console.WriteLine("[BucketCache] Background evictor thread started.");
+        Console.WriteLine("[BucketCache] Background evictor thread started (2s cycle, /proc/meminfo guard).");
         while (!_shutdown)
         {
-            // Wait for signal (or periodic wakeup every 5s to re-check)
-            _evictSignal.Wait(TimeSpan.FromSeconds(5));
+            // Short 2-second cycle — we must react fast to memory pressure
+            _evictSignal.Wait(TimeSpan.FromSeconds(2));
             _evictSignal.Reset();
 
             if (_shutdown) break;
 
-            // Re-check with accurate usage
-            long currentUsage = EstimateTotalBytes();
-            Interlocked.Exchange(ref _approximateUsageBytes, currentUsage);
+            // ════════════════════════════════════════════════════════
+            //  PRIORITY 1: SYSTEM MEMORY GUARD
+            //  Reads REAL free memory from the kernel. If free < 10%
+            //  of total, NUKE CACHES until free >= 15%.
+            // ════════════════════════════════════════════════════════
+            var (memTotal, memAvailable) = ReadSystemMemory();
+            if (memTotal > 0)
+            {
+                double freePct = (double)memAvailable / memTotal;
+                long minFreeBytes = (long)(memTotal * MinFreeRamPct);
+                long targetFreeBytes = (long)(memTotal * TargetFreeRamPct);
 
-            if (currentUsage <= _highWaterBytes) continue;
+                if (freePct < MinFreeRamPct)
+                {
+                    long deficit = targetFreeBytes - memAvailable; // how much we need to free
+
+                    Console.WriteLine(
+                        $"[BucketCache] 🚨 SYSTEM MEMORY CRITICAL: " +
+                        $"free={memAvailable / (1024 * 1024)}MB ({freePct:P1}) < {MinFreeRamPct:P0} of {memTotal / (1024 * 1024)}MB. " +
+                        $"Must free {deficit / (1024 * 1024)}MB");
+
+                    // Step 1: Evict chunk cache ENTIRELY — it's the least important
+                    try
+                    {
+                        _forceEvictChunkCache?.Invoke();
+                        Console.WriteLine("[BucketCache] 🚨 Chunk cache cleared by system memory guard.");
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"[BucketCache] Chunk cache eviction error: {ex.Message}");
+                    }
+
+                    // Step 2: Evict bucket cache aggressively
+                    long cacheUsage = EstimateTotalBytes();
+                    Interlocked.Exchange(ref _approximateUsageBytes, cacheUsage);
+
+                    // Target: shed enough cache to free the deficit (+ margin)
+                    long newCacheTarget = Math.Max(0, cacheUsage - deficit - (deficit / 2));
+                    Console.WriteLine(
+                        $"[BucketCache] 🚨 Evicting buckets: {cacheUsage / (1024 * 1024)}MB → {newCacheTarget / (1024 * 1024)}MB target");
+
+                    DoEvictionToTarget(newCacheTarget, "SYSMEM");
+
+                    // Step 3: Force GC to release managed memory back to OS
+                    GC.Collect(2, GCCollectionMode.Aggressive, true, true);
+                    GC.WaitForPendingFinalizers();
+                    GC.Collect(2, GCCollectionMode.Aggressive, true, true);
+
+                    // Re-read to verify
+                    var (_, freeAfter) = ReadSystemMemory();
+                    Console.WriteLine(
+                        $"[BucketCache] 🚨 After emergency eviction: free={freeAfter / (1024 * 1024)}MB ({(double)freeAfter / memTotal:P1}), " +
+                        $"bucketCache={Globals._NODE.Buckets.Count} buckets");
+
+                    // If still not enough, loop will fire again in 2 seconds
+                    continue;
+                }
+
+                // Warning zone: free < 15% — start normal eviction proactively
+                if (freePct < TargetFreeRamPct)
+                {
+                    long cacheUsage = EstimateTotalBytes();
+                    Interlocked.Exchange(ref _approximateUsageBytes, cacheUsage);
+                    if (cacheUsage > _lowWaterBytes)
+                    {
+                        Console.WriteLine(
+                            $"[BucketCache] ⚠️ System memory low: free={memAvailable / (1024 * 1024)}MB ({freePct:P1}). " +
+                            $"Proactive eviction to low-water {_lowWaterBytes / (1024 * 1024)}MB");
+                        DoEvictionToTarget(_lowWaterBytes, "proactive");
+
+                        // Also trim chunk cache
+                        try { _forceEvictChunkCache?.Invoke(); }
+                        catch { }
+                    }
+                    continue;
+                }
+            }
+
+            // ════════════════════════════════════════════════════════
+            //  PRIORITY 2: NORMAL CACHE-LEVEL WATERMARK EVICTION
+            // ════════════════════════════════════════════════════════
+            long usage = EstimateTotalBytes();
+            Interlocked.Exchange(ref _approximateUsageBytes, usage);
+
+            if (usage <= _highWaterBytes) continue;
 
             Console.WriteLine(
-                $"[BucketCache] [bg] Eviction triggered: {currentUsage / (1024 * 1024)}MB > high-water {_highWaterBytes / (1024 * 1024)}MB. " +
-                $"Target: {_lowWaterBytes / (1024 * 1024)}MB (low-water)");
+                $"[BucketCache] [bg] Eviction: {usage / (1024 * 1024)}MB > high-water {_highWaterBytes / (1024 * 1024)}MB. " +
+                $"Target: {_lowWaterBytes / (1024 * 1024)}MB. SysFree={memAvailable / (1024 * 1024)}MB");
 
             DoEvictionToTarget(_lowWaterBytes, "bg");
         }
@@ -300,8 +414,8 @@ public static class BucketCacheManager
     }
 
     /// <summary>
-    /// Core eviction: evict LRU buckets until usage is at or below <paramref name="targetBytes"/>.
-    /// Processes in batches of <see cref="EvictBatchSize"/> to avoid starving the hot path.
+    /// Core eviction: evict LRU buckets until usage is at or below targetBytes.
+    /// Uses large batches for fast eviction.
     /// </summary>
     private static void DoEvictionToTarget(long targetBytes, string trigger)
     {
@@ -316,11 +430,13 @@ public static class BucketCacheManager
             int totalBuckets = Globals._NODE.Buckets.Count;
             if (totalBuckets == 0) return;
 
-            // Collect eviction candidates — sample if there are too many buckets
-            int sampleSize = Math.Min(totalBuckets, 10_000);
+            // For emergency triggers, scan ALL buckets (no sampling)
+            bool isEmergency = trigger == "SYSMEM" || trigger == "hardCeiling";
+            int sampleSize = isEmergency ? Math.Min(totalBuckets, 100_000) : Math.Min(totalBuckets, 10_000);
+
             var candidates = new List<(string Key, long LastAccess, long MemBytes)>(sampleSize);
 
-            if (totalBuckets <= 10_000)
+            if (totalBuckets <= sampleSize)
             {
                 foreach (var kv in Globals._NODE.Buckets)
                     candidates.Add((kv.Key, kv.Value.LastAccessedTicks, kv.Value.EstimatedMemoryBytes));
@@ -338,14 +454,14 @@ public static class BucketCacheManager
                 }
             }
 
-            // Sort by LRU (oldest first)
             candidates.Sort((a, b) => a.LastAccess.CompareTo(b.LastAccess));
 
-            // Evict in batches, yielding between batches to let the hot path run
+            // Use larger batch for emergency eviction
+            int batchSize = isEmergency ? 2000 : EvictBatchSize;
             int candidateIdx = 0;
             while (freed < toFree && candidateIdx < candidates.Count)
             {
-                int batchEnd = Math.Min(candidateIdx + EvictBatchSize, candidates.Count);
+                int batchEnd = Math.Min(candidateIdx + batchSize, candidates.Count);
                 for (int i = candidateIdx; i < batchEnd && freed < toFree; i++)
                 {
                     var (key, _, memBytes) = candidates[i];
@@ -357,26 +473,25 @@ public static class BucketCacheManager
                 }
                 candidateIdx = batchEnd;
 
-                // Yield to let hot-path threads acquire any shared resources
-                if (freed < toFree)
+                if (!isEmergency && freed < toFree)
                     Thread.Yield();
             }
 
             if (evictedCount > 0)
             {
                 long newUsage = currentUsage - freed;
-                Interlocked.Exchange(ref _approximateUsageBytes, newUsage);
+                Interlocked.Exchange(ref _approximateUsageBytes, Math.Max(0, newUsage));
                 Console.WriteLine(
-                    $"[BucketCache] [{trigger}] Evicted {evictedCount} cold buckets, freed ~{freed / (1024 * 1024)}MB. " +
-                    $"Usage: {newUsage / (1024 * 1024)}MB / {MaxBytes / (1024 * 1024)}MB ({newUsage * 100 / Math.Max(1, MaxBytes)}%), " +
+                    $"[BucketCache] [{trigger}] Evicted {evictedCount} buckets, freed ~{freed / (1024 * 1024)}MB. " +
+                    $"Usage: {Math.Max(0, newUsage) / (1024 * 1024)}MB / {MaxBytes / (1024 * 1024)}MB, " +
                     $"Remaining: {Globals._NODE.Buckets.Count} buckets");
             }
 
-            // If we couldn't free enough from sampled candidates and there are more buckets,
-            // re-run (background thread will be signaled again on next high-water check)
-            if (freed < toFree && totalBuckets > 10_000)
+            // If emergency and we didn't free enough, signal for immediate re-run
+            if (isEmergency && freed < toFree && Globals._NODE.Buckets.Count > 0)
             {
-                Console.WriteLine($"[BucketCache] [{trigger}] Sampled eviction freed {freed / (1024 * 1024)}MB but needed {toFree / (1024 * 1024)}MB. Will re-check on next cycle.");
+                Console.WriteLine($"[BucketCache] [{trigger}] Need more eviction: freed {freed / (1024 * 1024)}MB of {toFree / (1024 * 1024)}MB needed.");
+                _evictSignal.Set(); // wake up again immediately
             }
         }
         catch (Exception ex)

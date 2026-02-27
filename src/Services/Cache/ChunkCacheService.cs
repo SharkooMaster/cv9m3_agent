@@ -104,6 +104,16 @@ public class ChunkCacheService
         _logger?.LogInformation("Chunk cache cleared");
     }
 
+    /// <summary>
+    /// Force-evict the chunk cache. Called by the system memory guard
+    /// when node memory is critically low.
+    /// </summary>
+    /// <param name="keepPct">Fraction to keep (0.0 = clear all).</param>
+    public void ForceEvict(double keepPct = 0.0)
+    {
+        _chunkCache.ForceEvict(keepPct);
+    }
+
     public void Dispose()
     {
         _chunkCache?.Dispose();

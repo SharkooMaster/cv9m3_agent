@@ -186,6 +186,39 @@ public class MruBlobCache : IDisposable
         }
     }
 
+    /// <summary>
+    /// Force-evict down to a target percentage of max capacity.
+    /// Called by the system memory guard when node memory is critically low.
+    /// </summary>
+    /// <param name="keepPct">Fraction of max capacity to keep (0.0 = clear all, 0.5 = keep 50%).</param>
+    public void ForceEvict(double keepPct = 0.0)
+    {
+        long target = (long)(_maxSizeBytes * Math.Clamp(keepPct, 0.0, 1.0));
+        long currentSize = Interlocked.Read(ref _currentSizeBytes);
+        if (currentSize <= target) return;
+
+        int evicted = 0;
+        lock (_lruLock)
+        {
+            while (Interlocked.Read(ref _currentSizeBytes) > target && _lruList.Count > 0)
+            {
+                var tail = _lruList.Last;
+                if (tail == null) break;
+                _lruList.RemoveLast();
+                _cache.TryRemove(tail.Value.Key, out _);
+                Interlocked.Add(ref _currentSizeBytes, -tail.Value.Data.Length);
+                evicted++;
+            }
+        }
+        if (evicted > 0)
+        {
+            long afterSize = Interlocked.Read(ref _currentSizeBytes);
+            Console.WriteLine(
+                $"[ChunkCache] [SYSMEM] Force-evicted {evicted} entries. " +
+                $"Usage: {afterSize / (1024 * 1024)}MB / {_maxSizeBytes / (1024 * 1024)}MB");
+        }
+    }
+
     // ═══════════════════════════════════════════════════════════════════
     //  BACKGROUND EVICTOR
     // ═══════════════════════════════════════════════════════════════════

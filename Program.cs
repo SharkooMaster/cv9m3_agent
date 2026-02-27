@@ -104,22 +104,28 @@ long totalAvailableMemory = GC.GetGCMemoryInfo().TotalAvailableMemoryBytes;
 Console.WriteLine($"[Agent] Detected available memory: {totalAvailableMemory / (1024 * 1024)}MB ({totalAvailableMemory / (1024L * 1024 * 1024)}GB)");
 
 // ── BUCKET CACHE SIZE: auto-detect or use configured value ──
+// NOTE: On nodes without K8s memory limits, totalAvailableMemory = FULL node RAM.
+// The agent shares the node with gateway, cross, redis, kubelet, etc.
+// We use conservative percentages (25% bucket + 5% chunk = 30% total) to leave
+// plenty of room for other workloads and RocksDB native memory.
+// The system memory guard in BucketCacheManager reads /proc/meminfo every 2s
+// and ensures 10% of node RAM stays free NO MATTER WHAT.
 var bucketCacheRaw = Environment.GetEnvironmentVariable("BUCKET_CACHE_MAX_GB") ?? "0";
 long bucketCacheMaxBytes;
 if (bucketCacheRaw == "0" || bucketCacheRaw.Equals("auto", StringComparison.OrdinalIgnoreCase))
 {
-    bucketCacheMaxBytes = (long)(totalAvailableMemory * 0.55);
-    Console.WriteLine($"[Agent] Bucket cache: AUTO-SIZED to {bucketCacheMaxBytes / (1024 * 1024)}MB (55% of {totalAvailableMemory / (1024 * 1024)}MB)");
+    bucketCacheMaxBytes = (long)(totalAvailableMemory * 0.25);
+    Console.WriteLine($"[Agent] Bucket cache: AUTO-SIZED to {bucketCacheMaxBytes / (1024 * 1024)}MB (25% of {totalAvailableMemory / (1024 * 1024)}MB)");
 }
 else
 {
     var bucketCacheMaxGb = long.Parse(bucketCacheRaw);
     bucketCacheMaxBytes = bucketCacheMaxGb * 1024L * 1024 * 1024;
-    // Safety cap: never exceed 70% of available memory for bucket cache alone
-    long maxSafe = (long)(totalAvailableMemory * 0.70);
+    // Safety cap: never exceed 50% of available memory for bucket cache alone
+    long maxSafe = (long)(totalAvailableMemory * 0.50);
     if (bucketCacheMaxBytes > maxSafe)
     {
-        Console.WriteLine($"[Agent] ⚠️ Bucket cache {bucketCacheMaxBytes / (1024 * 1024)}MB exceeds 70% of available memory ({maxSafe / (1024 * 1024)}MB). Capping to {maxSafe / (1024 * 1024)}MB.");
+        Console.WriteLine($"[Agent] ⚠️ Bucket cache {bucketCacheMaxBytes / (1024 * 1024)}MB exceeds 50% of available memory ({maxSafe / (1024 * 1024)}MB). Capping to {maxSafe / (1024 * 1024)}MB.");
         bucketCacheMaxBytes = maxSafe;
     }
 }
@@ -198,9 +204,11 @@ lifetime.ApplicationStarted.Register(() =>
             var storageSvc = app.Services.GetRequiredService<INetworkFileStorageService>();
             if (storageSvc is Agent.Services.Storage.RocksDbStorageService rocksDbSvc)
             {
-                // Initialize BucketCacheManager with RocksDB access and watermark eviction
+                // Initialize BucketCacheManager with RocksDB access, watermark eviction,
+                // and process-level memory safety valve
                 Agent.Services.Cache.BucketCacheManager.Initialize(
                     rocksDbSvc.BucketStorage, bucketCacheMaxBytes, bucketEvictionSec,
+                    totalAvailableMemory: totalAvailableMemory,
                     highWaterPct: bucketHighWaterPct,
                     lowWaterPct: bucketLowWaterPct,
                     hardCeilingPct: bucketHardCeilingPct);
@@ -251,22 +259,22 @@ var networkFileSystemService = app.Services.GetRequiredService<INetworkFileStora
 NetworkFileStorageHandler.SetInstance(networkFileSystemService);
 
 // Initialize chunk cache service with configurable memory limits
-// If CHUNK_CACHE_SIZE_MB=0 (or "auto"), auto-size to 15% of available memory.
-// Otherwise use the configured value, but cap at 20% of available memory.
+// If CHUNK_CACHE_SIZE_MB=0 (or "auto"), auto-size to 5% of available memory.
+// Otherwise use the configured value, but cap at 10% of available memory.
 var chunkCacheRaw = Environment.GetEnvironmentVariable("CHUNK_CACHE_SIZE_MB") ?? "0";
 long maxCacheSizeBytes;
 if (chunkCacheRaw == "0" || chunkCacheRaw.Equals("auto", StringComparison.OrdinalIgnoreCase))
 {
-    maxCacheSizeBytes = (long)(totalAvailableMemory * 0.15);
-    Console.WriteLine($"[Cache] Chunk cache: AUTO-SIZED to {maxCacheSizeBytes / (1024 * 1024)}MB (15% of {totalAvailableMemory / (1024 * 1024)}MB)");
+    maxCacheSizeBytes = (long)(totalAvailableMemory * 0.05);
+    Console.WriteLine($"[Cache] Chunk cache: AUTO-SIZED to {maxCacheSizeBytes / (1024 * 1024)}MB (5% of {totalAvailableMemory / (1024 * 1024)}MB)");
 }
 else
 {
     maxCacheSizeBytes = long.Parse(chunkCacheRaw) * 1024 * 1024;
-    long maxSafe = (long)(totalAvailableMemory * 0.20);
+    long maxSafe = (long)(totalAvailableMemory * 0.10);
     if (maxCacheSizeBytes > maxSafe)
     {
-        Console.WriteLine($"[Cache] ⚠️ Chunk cache {maxCacheSizeBytes / (1024 * 1024)}MB exceeds 20% of available memory ({maxSafe / (1024 * 1024)}MB). Capping to {maxSafe / (1024 * 1024)}MB.");
+        Console.WriteLine($"[Cache] ⚠️ Chunk cache {maxCacheSizeBytes / (1024 * 1024)}MB exceeds 10% of available memory ({maxSafe / (1024 * 1024)}MB). Capping to {maxSafe / (1024 * 1024)}MB.");
         maxCacheSizeBytes = maxSafe;
     }
 }
@@ -277,6 +285,13 @@ var chunkCacheService = new Agent.Services.Cache.ChunkCacheService(
     cacheTtl: TimeSpan.FromMinutes(cacheTtlMinutes)
 );
 Agent.Modules.Storage.ChunkCacheHandler.SetInstance(chunkCacheService);
+
+// Register the chunk cache evictor with BucketCacheManager's system memory guard.
+// When /proc/meminfo shows free RAM < 10%, BucketCacheManager will call this to nuke the chunk cache.
+Agent.Services.Cache.BucketCacheManager.RegisterChunkCacheEvictor(() =>
+{
+    chunkCacheService.ForceEvict(0.0); // Clear everything
+});
 
 // Log total memory budget
 long totalCacheBudget = bucketCacheMaxBytes + maxCacheSizeBytes;
