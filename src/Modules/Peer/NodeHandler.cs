@@ -243,7 +243,7 @@ public static class NodeService
         return (new List<M_SearchResult>(), false, false);
     }
 
-    public static async Task<(ulong, ulong)> StoreInBucket(M_Node node, string bucket_string, M_Data _data, string HeadRouteID)
+    public static async Task<M_Bucket.InsertResult> StoreInBucket(M_Node node, string bucket_string, M_Data _data, string HeadRouteID)
     {
         // Use BucketCacheManager.GetOrLoad: if the bucket was evicted from L1,
         // this loads its existing vectors from L2 (RocksDB) first, so the new
@@ -251,8 +251,8 @@ public static class NodeService
         var bucket = Agent.Services.Cache.BucketCacheManager.GetOrLoad(bucket_string);
         var result = await bucket.InsertData(_data, 0);
 
-        // Notify cache that a bucket grew — triggers inline eviction if over budget
-        Agent.Services.Cache.BucketCacheManager.NotifyBucketGrew(M_Bucket.EstBytesPerVectorPublic);
+        if (!result.WasDeduplicated)
+            Agent.Services.Cache.BucketCacheManager.NotifyBucketGrew(M_Bucket.EstBytesPerVectorPublic);
         return result;
     }
 

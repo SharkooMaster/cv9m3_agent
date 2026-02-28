@@ -3,8 +3,10 @@ using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using System.Text;
 using Agent.Utils;
+using Agent.Utils.Globals;
 using Agent.Utils.Misc;
 using Agent.Services.Storage;
+using Agent.Modules.Storage;
 
 public class M_Bucket
 {
@@ -20,6 +22,11 @@ public class M_Bucket
 
     // ── Dedup guard: track which chunks (by SHA256 of content) are already stored. ──
     private readonly ConcurrentDictionary<string, (ulong id, ulong index)> _seenChunks = new();
+
+    // ── Per-bucket store semaphore: serializes check-then-store within a bucket. ──
+    // Prevents the TOCTOU race where two threads both pass the dedup check and
+    // both store. Only same-bucket stores contend; different buckets are fully parallel.
+    private readonly SemaphoreSlim _storeSemaphore = new(1, 1);
 
     // ── LRU tracking: updated on every search/store access ──
     private long _lastAccessedTicks = DateTime.UtcNow.Ticks;
@@ -96,54 +103,110 @@ public class M_Bucket
         return sb.ToString();
     }
 
-    public async Task<(ulong, ulong)> InsertData(M_Data _data, ulong _id)
+    /// <summary>
+    /// Result of InsertData: either a fresh store or a dedup match against an existing entry.
+    /// </summary>
+    public readonly struct InsertResult
+    {
+        public ulong BucketId { get; init; }
+        public ulong BucketIndex { get; init; }
+        public bool WasDeduplicated { get; init; }
+        public float Similarity { get; init; }
+        public string? MatchedStorageGuid { get; init; }
+    }
+
+    public async Task<InsertResult> InsertData(M_Data _data, ulong _id)
     {
         if (_data == null) throw new ArgumentNullException(nameof(_data));
 
         TouchAccess();
 
-        // ── Dedup: if identical chunk content is already in this bucket, return its reference. ──
-        if (_data.chunk != null && _data.chunk.Length > 0)
+        if (_data.chunk == null || _data.chunk.Length == 0)
+        {
+            AddData(_data);
+            string fallbackName = RocksDbBucketStorage.UlongToBitstring(ID);
+            (ulong bid, ulong bidx) = await NetworkFileStorageHandler.StoreVector(fallbackName, _data);
+            _data.id = bid;
+            _data.index = bidx;
+            return new InsertResult { BucketId = bid, BucketIndex = bidx };
+        }
+
+        await _storeSemaphore.WaitAsync();
+        try
         {
             var chunkKey = HashChunk(_data.chunk);
+
+            // ── Exact dedup: byte-identical chunk already in this bucket ──
             if (_seenChunks.TryGetValue(chunkKey, out var existing))
             {
-                // CRITICAL: Always populate storageGuid on the M_Data object.
-                // Without this, the caller (StoreVectorService.StoreSingle) reads
-                // _data.storageGuid → null → returns empty StorageGuid in the gRPC
-                // response → Cross writes a ref with non-zero BucketId but all-zeros
-                // storageGuid → decompression can't fetch → "Missing base chunk".
-                // chunkKey IS the SHA256 hex of the chunk data (same as GenerateChunkKey).
                 _data.storageGuid = chunkKey;
                 _data.id = existing.Item1;
                 _data.index = existing.Item2;
-                return existing;
+                return new InsertResult
+                {
+                    BucketId = existing.Item1,
+                    BucketIndex = existing.Item2,
+                    WasDeduplicated = true,
+                    Similarity = 1.0f,
+                    MatchedStorageGuid = chunkKey
+                };
             }
 
+            // ── Similarity dedup: scan existing vectors for a cosine match ──
+            if (_data.vector != null && _data.vector.Length > 0)
+            {
+                float threshold = Globals.StoreSimilarityThreshold;
+                var snapshot = GetDataSnapshot();
+
+                float bestSim = -1f;
+                M_Data? bestMatch = null;
+
+                for (int i = 0; i < snapshot.Length; i++)
+                {
+                    var entry = snapshot[i];
+                    if (entry?.vector == null || entry.vector.Length != _data.vector.Length) continue;
+                    float sim = Misc.CalculateDistance(_data.vector, entry.vector);
+                    if (sim >= threshold && sim > bestSim)
+                    {
+                        bestSim = sim;
+                        bestMatch = entry;
+                    }
+                }
+
+                if (bestMatch != null)
+                {
+                    _data.storageGuid = bestMatch.storageGuid;
+                    _data.id = bestMatch.id;
+                    _data.index = bestMatch.index;
+                    return new InsertResult
+                    {
+                        BucketId = bestMatch.id,
+                        BucketIndex = bestMatch.index,
+                        WasDeduplicated = true,
+                        Similarity = bestSim,
+                        MatchedStorageGuid = bestMatch.storageGuid
+                    };
+                }
+            }
+
+            // ── No match — store fresh ──
             string bucketName = RocksDbBucketStorage.UlongToBitstring(ID);
             (ulong bucketId, ulong bucketIndex) = await NetworkFileStorageHandler.StoreVector(bucketName, _data);
 
             _data.id = bucketId;
             _data.index = bucketIndex;
 
-            // Free chunk bytes from RAM — they're now persisted in RocksDB + chunk cache.
-            // Search never reads _data.chunk; it uses ChunkCacheHandler.GetFromCacheOnly(storageGuid).
-            // Keeping chunk bytes alive here was the #1 source of unbounded RAM growth.
             _data.chunk = null;
 
             AddData(_data);
             _seenChunks.TryAdd(chunkKey, (bucketId, bucketIndex));
 
-            return (bucketId, bucketIndex);
+            return new InsertResult { BucketId = bucketId, BucketIndex = bucketIndex };
         }
-
-        // Fallback: no chunk data — store anyway (shouldn't happen but safety net).
-        AddData(_data);
-        string fallbackName = RocksDbBucketStorage.UlongToBitstring(ID);
-        (ulong bid, ulong bidx) = await NetworkFileStorageHandler.StoreVector(fallbackName, _data);
-        _data.id = bid;
-        _data.index = bidx;
-        return (bid, bidx);
+        finally
+        {
+            _storeSemaphore.Release();
+        }
     }
 
     // SearchData is no longer called in the hot path (SearchVector.Get uses ProcessSingleQuery).

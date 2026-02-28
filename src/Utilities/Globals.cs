@@ -81,4 +81,13 @@ public static class Globals
     public static int SUCCESSOR_LIST_SIZE = 4;
     public static int GRPC_TIMEOUT = 20;
     public static M_Node _NODE = new M_Node();
+
+    /// <summary>
+    /// Minimum cosine similarity for the per-bucket store-time dedup check.
+    /// When a chunk is about to be stored, existing vectors in the target bucket
+    /// are scanned. If a match >= this threshold is found, the chunk is
+    /// deduplicated instead of stored fresh. Must match Cross-side threshold.
+    /// </summary>
+    public static float StoreSimilarityThreshold =
+        float.TryParse(Environment.GetEnvironmentVariable("STORE_SIMILARITY_THRESHOLD"), out var sst) ? sst : 0.60f;
 }

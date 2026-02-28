@@ -1,8 +1,10 @@
 
 using System.Text.Json;
 using Agent.Modules.Peer;
+using Agent.Modules.Storage;
 using Agent.Utils;
 using Agent.Utils.Globals;
+using Google.Protobuf;
 using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
 using Newtonsoft.Json;
@@ -68,6 +70,9 @@ public class StoreVectorService : StoreVector.StoreVectorBase
     /// BatchStore: store ALL NeedToStore chunks for this agent in ONE gRPC call.
     /// Cross groups chunks by target agent (rendezvous hash) and sends one batch per agent.
     /// Eliminates ~8,000 per-chunk round trips per file → ~5 calls total.
+    /// Per-bucket semaphores inside InsertData ensure concurrent stores to the
+    /// same bucket are serialized (prevents dedup TOCTOU races) while stores to
+    /// different buckets remain fully parallel.
     /// </summary>
     public override async Task<BatchStoreVector_Res> BatchStore(BatchStoreVector_Req request, ServerCallContext context)
     {
@@ -75,11 +80,8 @@ public class StoreVectorService : StoreVector.StoreVectorBase
         if (request.Items.Count == 0)
             return result;
 
-        // Process all store requests in parallel — each one hits RAM + RocksDB batch writer
         var results = new StoreVector_Res[request.Items.Count];
 
-        // Cap parallelism to avoid unbounded memory growth during massive batch stores.
-        // 2× CPU cores gives good throughput without starving the threadpool.
         int maxPar = Math.Max(4, Environment.ProcessorCount * 2);
         await Parallel.ForEachAsync(
             Enumerable.Range(0, request.Items.Count),
@@ -92,7 +94,6 @@ public class StoreVectorService : StoreVector.StoreVectorBase
                 }
                 catch
                 {
-                    // Individual store failure: return (0, 0) — Cross handles this gracefully
                     results[i] = new StoreVector_Res { Id = 0, Index = 0 };
                 }
             });
@@ -111,9 +112,6 @@ public class StoreVectorService : StoreVector.StoreVectorBase
         return result;
     }
 
-    /// <summary>
-    /// Core single-chunk store logic, shared by Store and BatchStore.
-    /// </summary>
     private static async Task<StoreVector_Res> StoreSingle(StoreVector_Req request)
     {
         if (request.Chunk == null || request.Chunk.Length == 0)
@@ -125,13 +123,29 @@ public class StoreVectorService : StoreVector.StoreVectorBase
         if (IsInvalidVector(request.Vector, out string invalidReason))
             throw new ArgumentException($"Invalid vector: {invalidReason}", nameof(request));
 
-        M_Data _data = new M_Data();
-        _data.vector = request.Vector.ToArray();
-        _data.chunk = request.Chunk.ToArray();
+        M_Data mdata = new M_Data();
+        mdata.vector = request.Vector.ToArray();
+        mdata.chunk = request.Chunk.ToArray();
 
-        (ulong _id, ulong _index) = await NodeService.StoreInBucket(
-            Globals._NODE, request.Bitstring, _data, request.HeadRouteID);
+        var insertResult = await NodeService.StoreInBucket(
+            Globals._NODE, request.Bitstring, mdata, request.HeadRouteID);
 
-        return new StoreVector_Res { Id = _id, Index = _index, StorageGuid = _data.storageGuid ?? "" };
+        var res = new StoreVector_Res
+        {
+            Id = insertResult.BucketId,
+            Index = insertResult.BucketIndex,
+            StorageGuid = mdata.storageGuid ?? "",
+            WasDeduplicated = insertResult.WasDeduplicated,
+            Similarity = insertResult.Similarity
+        };
+
+        if (insertResult.WasDeduplicated && !string.IsNullOrWhiteSpace(insertResult.MatchedStorageGuid))
+        {
+            var baseBytes = ChunkCacheHandler.GetFromCacheOnly(insertResult.MatchedStorageGuid);
+            if (baseBytes != null && baseBytes.Length > 0)
+                res.BaseChunk = ByteString.CopyFrom(baseBytes);
+        }
+
+        return res;
     }
 }
