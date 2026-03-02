@@ -124,38 +124,47 @@ public class SearchVectorService : SearchVector.SearchVectorBase
             }
         }
 
-        // Level 1 match found — return single best (unchanged behavior)
-        if (bestIdx >= 0)
-        {
-            var c = candidates[bestIdx];
-            ByteString chunkBytes = ByteString.Empty;
-            if (!string.IsNullOrWhiteSpace(c.storageGuid))
-            {
-                var raw = ChunkCacheHandler.GetFromCacheOnly(c.storageGuid);
-                if (raw != null && raw.Length > 0)
-                    chunkBytes = ByteString.CopyFrom(raw);
-            }
+        bool hasL1 = bestIdx >= 0;
 
-            var res = new SearchVector_Result { Save = false };
-            res.Results.Add(new SearchVectorObject
+        // K=1 (standard path): return single L1 match or save-new
+        if (requestedK <= 1)
+        {
+            if (hasL1)
             {
-                BucketId = c.bucketId,
-                BucketKey = (long)c.bucketIndex,
-                Similarity = bestSim,
-                Chunk = chunkBytes,
-                Index = request.Index,
-                StorageGuid = c.storageGuid ?? ""
-            });
-            return res;
+                var c = candidates[bestIdx];
+                ByteString chunkBytes = ByteString.Empty;
+                if (!string.IsNullOrWhiteSpace(c.storageGuid))
+                {
+                    var raw = ChunkCacheHandler.GetFromCacheOnly(c.storageGuid);
+                    if (raw != null && raw.Length > 0)
+                        chunkBytes = ByteString.CopyFrom(raw);
+                }
+                var res = new SearchVector_Result { Save = false };
+                res.Results.Add(new SearchVectorObject
+                {
+                    BucketId = c.bucketId,
+                    BucketKey = (long)c.bucketIndex,
+                    Similarity = bestSim,
+                    Chunk = chunkBytes,
+                    Index = request.Index,
+                    StorageGuid = c.storageGuid ?? ""
+                });
+                return res;
+            }
+            return MakeSaveResult(request.Index);
         }
 
-        // No Level 1 match. If K > 1, return top-K candidates for mosaic consideration.
-        if (requestedK > 1 && scored.Length > 0)
+        // K>1 (high-entropy path): always return top-K candidates.
+        // Save=false means the best result IS an L1 match (Cross should try L1 first).
+        // Save=true means no L1 match (Cross goes straight to mosaic).
+        // Either way, all K candidates are returned so Cross can fall back to mosaic
+        // if L1's bloat guard rejects the diff.
+        if (scored.Length > 0)
         {
             Array.Sort(scored, (a, b) => b.sim.CompareTo(a.sim));
             int returnCount = Math.Min(requestedK, scored.Length);
 
-            var res = new SearchVector_Result { Save = true };
+            var res = new SearchVector_Result { Save = !hasL1 };
             for (int i = 0; i < returnCount; i++)
             {
                 var c = candidates[scored[i].idx];
