@@ -88,91 +88,98 @@ public class SearchVectorService : SearchVector.SearchVectorBase
         if (candidates.Count == 0)
             return MakeSaveResult(request.Index);
 
-        // ── Single cosine similarity pass ──
+        // ── Cosine similarity pass ──
         float threshold = request.MinimumSimilarity;
-        int bestIdx = -1;
-        float bestSim = -1f;
+        int requestedK = Math.Max(1, request.K);
 
+        // Compute similarity for all candidates
+        var scored = new (int idx, float sim)[candidates.Count];
         if (candidates.Count < 512)
         {
             for (int i = 0; i < candidates.Count; i++)
-            {
-                float sim = Misc.CalculateDistance(queryVector, candidates[i].vector);
-                if (sim >= threshold && sim > bestSim)
-                {
-                    bestSim = sim;
-                    bestIdx = i;
-                }
-            }
+                scored[i] = (i, Misc.CalculateDistance(queryVector, candidates[i].vector));
         }
         else
         {
-            int localBestIdx = -1;
-            float localBestSim = -1f;
-            var lockObj = new object();
-
             Parallel.ForEach(
                 Partitioner.Create(0, candidates.Count),
                 new ParallelOptions { MaxDegreeOfParallelism = Math.Max(4, Environment.ProcessorCount) },
-                () => (-1, -1f),
-                (range, _, local) =>
+                (range, _) =>
                 {
                     for (int i = range.Item1; i < range.Item2; i++)
-                    {
-                        float sim = Misc.CalculateDistance(queryVector, candidates[i].vector);
-                        if (sim >= threshold && sim > local.Item2)
-                            local = (i, sim);
-                    }
-                    return local;
-                },
-                local =>
-                {
-                    if (local.Item1 < 0) return;
-                    lock (lockObj)
-                    {
-                        if (local.Item2 > localBestSim)
-                        {
-                            localBestSim = local.Item2;
-                            localBestIdx = local.Item1;
-                        }
-                    }
+                        scored[i] = (i, Misc.CalculateDistance(queryVector, candidates[i].vector));
                 }
             );
-            bestIdx = localBestIdx;
-            bestSim = localBestSim;
         }
 
-        if (bestIdx < 0)
-            return MakeSaveResult(request.Index);
-
-        // ── Return metadata + base chunk bytes ──
-        // Rendezvous hashing guarantees we own this bucket, so the chunk is
-        // in our MRU cache (O(1) sync read). This eliminates ~1000 separate
-        // GetChunkByReference gRPC calls per file.
-        var c = candidates[bestIdx];
-        ByteString chunkBytes = ByteString.Empty;
-        if (!string.IsNullOrWhiteSpace(c.storageGuid))
+        // Find the single best above threshold (Level 1)
+        int bestIdx = -1;
+        float bestSim = -1f;
+        for (int i = 0; i < scored.Length; i++)
         {
-            // O(1) sync read from MRU cache — no I/O, no blocking
-            var raw = ChunkCacheHandler.GetFromCacheOnly(c.storageGuid);
-            if (raw != null && raw.Length > 0)
+            if (scored[i].sim >= threshold && scored[i].sim > bestSim)
             {
-                chunkBytes = ByteString.CopyFrom(raw);
+                bestSim = scored[i].sim;
+                bestIdx = scored[i].idx;
             }
-            // If cache miss (rare — chunk evicted from 512MB MRU), Cross falls back to lazy fetch
         }
 
-        var res = new SearchVector_Result { Save = false };
-        res.Results.Add(new SearchVectorObject
+        // Level 1 match found — return single best (unchanged behavior)
+        if (bestIdx >= 0)
         {
-            BucketId = c.bucketId,
-            BucketKey = (long)c.bucketIndex,
-            Similarity = bestSim,
-            Chunk = chunkBytes,
-            Index = request.Index,
-            StorageGuid = c.storageGuid ?? ""
-        });
-        return res;
+            var c = candidates[bestIdx];
+            ByteString chunkBytes = ByteString.Empty;
+            if (!string.IsNullOrWhiteSpace(c.storageGuid))
+            {
+                var raw = ChunkCacheHandler.GetFromCacheOnly(c.storageGuid);
+                if (raw != null && raw.Length > 0)
+                    chunkBytes = ByteString.CopyFrom(raw);
+            }
+
+            var res = new SearchVector_Result { Save = false };
+            res.Results.Add(new SearchVectorObject
+            {
+                BucketId = c.bucketId,
+                BucketKey = (long)c.bucketIndex,
+                Similarity = bestSim,
+                Chunk = chunkBytes,
+                Index = request.Index,
+                StorageGuid = c.storageGuid ?? ""
+            });
+            return res;
+        }
+
+        // No Level 1 match. If K > 1, return top-K candidates for mosaic consideration.
+        if (requestedK > 1 && scored.Length > 0)
+        {
+            Array.Sort(scored, (a, b) => b.sim.CompareTo(a.sim));
+            int returnCount = Math.Min(requestedK, scored.Length);
+
+            var res = new SearchVector_Result { Save = true };
+            for (int i = 0; i < returnCount; i++)
+            {
+                var c = candidates[scored[i].idx];
+                ByteString chunkBytes = ByteString.Empty;
+                if (!string.IsNullOrWhiteSpace(c.storageGuid))
+                {
+                    var raw = ChunkCacheHandler.GetFromCacheOnly(c.storageGuid);
+                    if (raw != null && raw.Length > 0)
+                        chunkBytes = ByteString.CopyFrom(raw);
+                }
+                res.Results.Add(new SearchVectorObject
+                {
+                    BucketId = c.bucketId,
+                    BucketKey = (long)c.bucketIndex,
+                    Similarity = scored[i].sim,
+                    Chunk = chunkBytes,
+                    Index = request.Index,
+                    StorageGuid = c.storageGuid ?? ""
+                });
+            }
+            return res;
+        }
+
+        return MakeSaveResult(request.Index);
     }
 
     /// <summary>
