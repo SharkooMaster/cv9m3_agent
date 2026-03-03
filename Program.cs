@@ -327,6 +327,7 @@ app.MapGrpcService<SearchVectorService>();
 app.MapGrpcService<StoreVectorService>();
 app.MapGrpcService<ChunkReferenceServiceImpl>();
 app.MapGrpcService<Agent.Services.Grpc.StorageStatsService>();
+app.MapGrpcService<SearchLanesService>();
 
 app.MapGet("/", () =>{ return "Hello world"; });
 app.MapGet("/health", () => "true"); // Liveness: always alive once Kestrel is up

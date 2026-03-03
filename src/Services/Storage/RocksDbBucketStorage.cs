@@ -32,11 +32,20 @@ public sealed class RocksDbBucketStorage : IDisposable
     // bnext:{bucketId}             -> ulong next vector index
     // bsg:{bucketId}:{storageGuid} -> ulong existing vector index (dedup)
     // bv:{bucketId}:{index}        -> binary record: [int dim][float * dim][string storageGuid][int chunkSize]
+    //
+    // Lane bucket schema (Level 2 sub-chunk index):
+    // lv:{laneHash}:{index}        -> binary record: [ulong bucketId][ulong bucketIndex][byte lanePos][32 bytes storageGuid_raw]
+    // lnext:{laneHash}             -> ulong next lane entry index
     private const string BucketNameToIdPrefix = "bn:";
     private const string BucketIdToNamePrefix = "bi:";
     private const string BucketNextPrefix = "bnext:";
     private const string BucketStorageGuidPrefix = "bsg:";
     private const string BucketVectorPrefix = "bv:";
+    private const string LaneVectorPrefix = "lv:";
+    private const string LaneNextPrefix = "lnext:";
+
+    // In-memory lane counters (same pattern as _nextIndexInMemory)
+    private static readonly ConcurrentDictionary<ushort, ulong> _laneNextIndex = new();
 
     public RocksDbBucketStorage(string basePath, long blockCacheSizeMb = 128)
     {
@@ -140,12 +149,22 @@ public sealed class RocksDbBucketStorage : IDisposable
                         _dedupInMemory[dedupSuffix] = BitConverter.ToUInt64(valueBytes, 0);
                     }
                 }
+                else if (key.StartsWith(LaneNextPrefix, StringComparison.Ordinal))
+                {
+                    var valueBytes = iterator.Value();
+                    if (valueBytes != null && valueBytes.Length == sizeof(ulong))
+                    {
+                        var hashStr = key.Substring(LaneNextPrefix.Length);
+                        if (ushort.TryParse(hashStr, out var laneHash))
+                            _laneNextIndex[laneHash] = BitConverter.ToUInt64(valueBytes, 0);
+                    }
+                }
 
                 iterator.Next();
             }
         }
 
-        Console.WriteLine($"[RocksDB Buckets] Loaded {_bucketNameToId.Count} buckets, {_nextIndexInMemory.Count} counters, {_dedupInMemory.Count} dedup entries into memory");
+        Console.WriteLine($"[RocksDB Buckets] Loaded {_bucketNameToId.Count} buckets, {_nextIndexInMemory.Count} counters, {_dedupInMemory.Count} dedup entries, {_laneNextIndex.Count} lane counters into memory");
     }
 
     /// <summary>
@@ -472,4 +491,92 @@ public sealed class RocksDbBucketStorage : IDisposable
     }
 
     private readonly record struct VectorRecord(float[] Vector, string StorageGuid, int ChunkSize);
+
+    // ══════════════════════════════════════════════════════════════
+    //  LANE BUCKET STORAGE (Level 2 sub-chunk index)
+    // ══════════════════════════════════════════════════════════════
+
+    /// <summary>
+    /// Store 64 lane entries for a freshly stored chunk.
+    /// Each lane's mini-LSH bitstring is used as the bucket key.
+    /// Uses the existing write batcher — atomically committed with the main vector record.
+    /// </summary>
+    public void StoreLaneEntries(ushort[] laneHashes, ulong mainBucketId, ulong mainBucketIndex, string storageGuid)
+    {
+        byte[] guidRaw;
+        if (!string.IsNullOrEmpty(storageGuid) && storageGuid.Length == 64)
+        {
+            guidRaw = Convert.FromHexString(storageGuid);
+        }
+        else
+        {
+            guidRaw = new byte[32];
+        }
+
+        for (int lane = 0; lane < laneHashes.Length; lane++)
+        {
+            ushort hash = laneHashes[lane];
+            ulong idx = _laneNextIndex.GetOrAdd(hash, 0UL);
+            _laneNextIndex[hash] = idx + 1;
+
+            // Value: [8 bucketId][8 bucketIndex][1 lanePos][32 storageGuid_raw] = 49 bytes
+            var value = new byte[49];
+            BitConverter.TryWriteBytes(value.AsSpan(0, 8), mainBucketId);
+            BitConverter.TryWriteBytes(value.AsSpan(8, 8), mainBucketIndex);
+            value[16] = (byte)lane;
+            Buffer.BlockCopy(guidRaw, 0, value, 17, 32);
+
+            var keyBytes = Encoding.UTF8.GetBytes($"{LaneVectorPrefix}{hash}:{idx}");
+            _writeBatcher.Put(keyBytes, value);
+
+            // Persist the lane counter
+            var nextKeyBytes = Encoding.UTF8.GetBytes($"{LaneNextPrefix}{hash}");
+            _writeBatcher.Put(nextKeyBytes, BitConverter.GetBytes(idx + 1));
+        }
+    }
+
+    /// <summary>
+    /// Search a single lane bucket by mini-LSH hash. Returns up to maxResults entries.
+    /// Uses a RocksDB prefix iterator — O(1) seek + sequential scan.
+    /// </summary>
+    public List<(ulong BucketId, ulong BucketIndex, byte LanePos, string StorageGuid)> SearchLaneBucket(ushort laneHash, int maxResults = 50)
+    {
+        var results = new List<(ulong, ulong, byte, string)>();
+        var prefix = Encoding.UTF8.GetBytes($"{LaneVectorPrefix}{laneHash}:");
+
+        using var iterator = _rocksDb.NewIterator();
+        iterator.Seek(prefix);
+
+        while (iterator.Valid() && results.Count < maxResults)
+        {
+            var keyBytes = iterator.Key();
+            if (keyBytes.Length < prefix.Length || !keyBytes.AsSpan(0, prefix.Length).SequenceEqual(prefix))
+                break;
+
+            var val = iterator.Value();
+            if (val != null && val.Length >= 49)
+            {
+                ulong bucketId = BitConverter.ToUInt64(val, 0);
+                ulong bucketIndex = BitConverter.ToUInt64(val, 8);
+                byte lanePos = val[16];
+                string guid = Convert.ToHexString(val, 17, 32).ToLowerInvariant();
+                results.Add((bucketId, bucketIndex, lanePos, guid));
+            }
+
+            iterator.Next();
+        }
+
+        return results;
+    }
+
+    /// <summary>
+    /// Get lane storage statistics from in-memory counters.
+    /// </summary>
+    public (long totalLaneBuckets, long totalLaneEntries) GetLaneStats()
+    {
+        long totalEntries = 0;
+        foreach (var kv in _laneNextIndex)
+            totalEntries += (long)kv.Value;
+        return (_laneNextIndex.Count, totalEntries);
+    }
 }

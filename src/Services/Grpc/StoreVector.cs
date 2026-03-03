@@ -2,8 +2,10 @@
 using System.Text.Json;
 using Agent.Modules.Peer;
 using Agent.Modules.Storage;
+using Agent.Services.Cache;
 using Agent.Utils;
 using Agent.Utils.Globals;
+using Agent.Utils.Misc;
 using Google.Protobuf;
 using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
@@ -144,6 +146,28 @@ public class StoreVectorService : StoreVector.StoreVectorBase
             var baseBytes = ChunkCacheHandler.GetFromCacheOnly(insertResult.MatchedStorageGuid);
             if (baseBytes != null && baseBytes.Length > 0)
                 res.BaseChunk = ByteString.CopyFrom(baseBytes);
+        }
+
+        // ── Lane index: compute and store 64 mini-LSH entries for sub-chunk search ──
+        if (!insertResult.WasDeduplicated && Globals.EnableLaneIndex)
+        {
+            try
+            {
+                var bucketStorage = BucketCacheManager.GetBucketStorage();
+                if (bucketStorage != null)
+                {
+                    int subSize = Globals.MosaicSubChunkSize;
+                    var laneHashes = Misc.ComputeLaneBitstrings(
+                        request.Chunk.ToArray(), subSize, 64, Globals.LaneHashBits);
+                    bucketStorage.StoreLaneEntries(
+                        laneHashes, insertResult.BucketId, insertResult.BucketIndex,
+                        mdata.storageGuid ?? "");
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[StoreVector] Lane indexing failed (non-fatal): {ex.Message}");
+            }
         }
 
         return res;

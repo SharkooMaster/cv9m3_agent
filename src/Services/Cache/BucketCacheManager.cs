@@ -179,6 +179,11 @@ public static class BucketCacheManager
     //  PUBLIC API
     // ═══════════════════════════════════════════════════════════════════
 
+    /// <summary>
+    /// Expose the underlying RocksDB bucket storage for lane search operations.
+    /// </summary>
+    public static RocksDbBucketStorage? GetBucketStorage() => _bucketStorage;
+
     public static M_Bucket? TryGet(string bucketName)
     {
         ulong key = RocksDbBucketStorage.BitstringToUlong(bucketName);

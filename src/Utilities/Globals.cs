@@ -90,4 +90,17 @@ public static class Globals
     /// </summary>
     public static float StoreSimilarityThreshold =
         float.TryParse(Environment.GetEnvironmentVariable("STORE_SIMILARITY_THRESHOLD"), out var sst) ? sst : 0.60f;
+
+    // ── Lane bucket index (Level 2 sub-chunk search) ──
+    public static int LaneHashBits =
+        int.TryParse(Environment.GetEnvironmentVariable("LANE_HASH_BITS"), out var lhb) ? lhb : 16;
+
+    public static int LaneSearchMaxPerQuery =
+        int.TryParse(Environment.GetEnvironmentVariable("LANE_SEARCH_MAX"), out var lsm) ? lsm : 50;
+
+    public static bool EnableLaneIndex =
+        string.Equals(Environment.GetEnvironmentVariable("ENABLE_LANE_INDEX"), "true",
+            StringComparison.OrdinalIgnoreCase);
+
+    public static int MosaicSubChunkSize => chunkSize / 64;
 }
