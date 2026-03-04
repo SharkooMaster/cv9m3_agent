@@ -162,7 +162,7 @@ public class StoreVectorService : StoreVector.StoreVectorBase
                         chunkBytes, subSize, 64, Globals.LaneHashBits);
                     bucketStorage.StoreLaneEntries(
                         laneHashes, insertResult.BucketId, insertResult.BucketIndex,
-                        mdata.storageGuid ?? "", chunkBytes);
+                        mdata.storageGuid ?? "");
                 }
             }
             catch (Exception ex)
