@@ -157,11 +157,12 @@ public class StoreVectorService : StoreVector.StoreVectorBase
                 if (bucketStorage != null)
                 {
                     int subSize = Globals.MosaicSubChunkSize;
+                    var chunkBytes = request.Chunk.ToArray();
                     var laneHashes = Misc.ComputeLaneBitstrings(
-                        request.Chunk.ToArray(), subSize, 64, Globals.LaneHashBits);
+                        chunkBytes, subSize, 64, Globals.LaneHashBits);
                     bucketStorage.StoreLaneEntries(
                         laneHashes, insertResult.BucketId, insertResult.BucketIndex,
-                        mdata.storageGuid ?? "");
+                        mdata.storageGuid ?? "", chunkBytes);
                 }
             }
             catch (Exception ex)

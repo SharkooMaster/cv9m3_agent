@@ -536,12 +536,13 @@ public sealed class RocksDbBucketStorage : IDisposable
     }
 
     /// <summary>
-    /// Search a single lane bucket by mini-LSH hash. Returns up to maxResults entries.
+    /// Search a single lane bucket by mini-LSH hash. Returns up to maxResults entries
+    /// including the embedded sub-chunk bytes (no chunk loading needed).
     /// Uses a RocksDB prefix iterator — O(1) seek + sequential scan.
     /// </summary>
-    public List<(ulong BucketId, ulong BucketIndex, byte LanePos, string StorageGuid)> SearchLaneBucket(ushort laneHash, int maxResults = 50)
+    public List<(ulong BucketId, ulong BucketIndex, byte LanePos, string StorageGuid, byte[] LaneBytes)> SearchLaneBucket(ushort laneHash, int maxResults = 50)
     {
-        var results = new List<(ulong, ulong, byte, string)>();
+        var results = new List<(ulong, ulong, byte, string, byte[])>();
         var prefix = Encoding.UTF8.GetBytes($"{LaneVectorPrefix}{laneHash}:");
 
         using var iterator = _rocksDb.NewIterator();
@@ -560,7 +561,19 @@ public sealed class RocksDbBucketStorage : IDisposable
                 ulong bucketIndex = BitConverter.ToUInt64(val, 8);
                 byte lanePos = val[16];
                 string guid = Convert.ToHexString(val, 17, 32).ToLowerInvariant();
-                results.Add((bucketId, bucketIndex, lanePos, guid));
+
+                byte[] laneBytes;
+                if (val.Length > 49)
+                {
+                    laneBytes = new byte[val.Length - 49];
+                    Buffer.BlockCopy(val, 49, laneBytes, 0, laneBytes.Length);
+                }
+                else
+                {
+                    laneBytes = Array.Empty<byte>();
+                }
+
+                results.Add((bucketId, bucketIndex, lanePos, guid, laneBytes));
             }
 
             iterator.Next();
