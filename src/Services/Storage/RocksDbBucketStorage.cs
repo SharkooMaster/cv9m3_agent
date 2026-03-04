@@ -323,7 +323,7 @@ public sealed class RocksDbBucketStorage : IDisposable
     /// prefetches SST blocks during iteration (cache-friendly sequential I/O).
     /// Fully synchronous — no async overhead for the hot path.
     /// </summary>
-    public List<(float[] vector, string storageGuid, ulong bucketId, ulong bucketIndex)>? LoadSingleBucketToMemory(string bucketName)
+    public List<(float[] vector, string storageGuid, ulong bucketId, ulong bucketIndex, float normSquared)>? LoadSingleBucketToMemory(string bucketName)
     {
         ulong bucketId;
         lock (_bucketIdLock)
@@ -332,10 +332,8 @@ public sealed class RocksDbBucketStorage : IDisposable
                 return null;
         }
 
-        // Prefix iterator: seek to "bv:{bucketId}:" and scan forward.
-        // One seek + sequential reads = vastly faster than N random Get() calls.
         var prefix = Encoding.UTF8.GetBytes($"{BucketVectorPrefix}{bucketId}:");
-        var vectors = new List<(float[], string, ulong, ulong)>();
+        var vectors = new List<(float[], string, ulong, ulong, float)>();
 
         using var iterator = _rocksDb.NewIterator();
         iterator.Seek(prefix);
@@ -343,11 +341,9 @@ public sealed class RocksDbBucketStorage : IDisposable
         while (iterator.Valid())
         {
             var keyBytes = iterator.Key();
-            // Stop when we leave the prefix (keys are sorted, so next bucket's keys come after)
             if (keyBytes.Length < prefix.Length || !keyBytes.AsSpan(0, prefix.Length).SequenceEqual(prefix))
                 break;
 
-            // Extract the index from the key suffix (after "bv:{bucketId}:")
             var indexStr = Encoding.UTF8.GetString(keyBytes, prefix.Length, keyBytes.Length - prefix.Length);
             if (!ulong.TryParse(indexStr, out var bucketIndex))
             {
@@ -357,7 +353,7 @@ public sealed class RocksDbBucketStorage : IDisposable
 
             var recordBytes = iterator.Value();
             if (recordBytes != null && recordBytes.Length > 0 && TryDeserializeVectorRecord(recordBytes, out var rec))
-                vectors.Add((rec.Vector, rec.StorageGuid, bucketId, bucketIndex));
+                vectors.Add((rec.Vector, rec.StorageGuid, bucketId, bucketIndex, rec.NormSquared));
 
             iterator.Next();
         }
@@ -371,9 +367,9 @@ public sealed class RocksDbBucketStorage : IDisposable
     /// Uses a single full-range iterator scan — O(N) sequential I/O, much faster than
     /// per-bucket random reads especially with millions of vectors.
     /// </summary>
-    public Dictionary<string, List<(float[] vector, string storageGuid, ulong bucketId, ulong bucketIndex)>> LoadAllBucketsToMemory()
+    public Dictionary<string, List<(float[] vector, string storageGuid, ulong bucketId, ulong bucketIndex, float normSquared)>> LoadAllBucketsToMemory()
     {
-        var result = new Dictionary<string, List<(float[] vector, string storageGuid, ulong bucketId, ulong bucketIndex)>>();
+        var result = new Dictionary<string, List<(float[] vector, string storageGuid, ulong bucketId, ulong bucketIndex, float normSquared)>>();
 
         // Single iterator scan over all "bv:" keys — sequential I/O, very fast
         var globalPrefix = Encoding.UTF8.GetBytes(BucketVectorPrefix);
@@ -416,10 +412,10 @@ public sealed class RocksDbBucketStorage : IDisposable
                 {
                     if (!result.TryGetValue(bucketName, out var list))
                     {
-                        list = new List<(float[], string, ulong, ulong)>();
+                        list = new List<(float[], string, ulong, ulong, float)>();
                         result[bucketName] = list;
                     }
-                    list.Add((rec.Vector, rec.StorageGuid, bucketId, bucketIndex));
+                    list.Add((rec.Vector, rec.StorageGuid, bucketId, bucketIndex, rec.NormSquared));
                 }
             }
 
@@ -456,6 +452,7 @@ public sealed class RocksDbBucketStorage : IDisposable
             writer.Write(vector[i]);
         writer.Write(storageGuid ?? string.Empty);
         writer.Write(chunkSize);
+        writer.Write(Agent.Utils.Misc.Misc.ComputeNormSquared(vector));
         writer.Flush();
         return ms.ToArray();
     }
@@ -481,7 +478,14 @@ public sealed class RocksDbBucketStorage : IDisposable
             if (string.IsNullOrWhiteSpace(storageGuid))
                 return false;
 
-            rec = new VectorRecord(vector, storageGuid, chunkSize);
+            // Backward compat: old records don't have normSquared — compute on load
+            float normSq;
+            if (ms.Position < ms.Length - 3) // at least 4 bytes remain for the float
+                normSq = reader.ReadSingle();
+            else
+                normSq = Agent.Utils.Misc.Misc.ComputeNormSquared(vector);
+
+            rec = new VectorRecord(vector, storageGuid, chunkSize, normSq);
             return true;
         }
         catch
@@ -490,7 +494,7 @@ public sealed class RocksDbBucketStorage : IDisposable
         }
     }
 
-    private readonly record struct VectorRecord(float[] Vector, string StorageGuid, int ChunkSize);
+    private readonly record struct VectorRecord(float[] Vector, string StorageGuid, int ChunkSize, float NormSquared);
 
     // ══════════════════════════════════════════════════════════════
     //  LANE BUCKET STORAGE (Level 2 sub-chunk index)

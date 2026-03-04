@@ -211,7 +211,7 @@ public static class BucketCacheManager
             return null;
 
         var bucket = new M_Bucket(key);
-        foreach (var (vector, storageGuid, bucketId, bucketIndex) in vectors)
+        foreach (var (vector, storageGuid, bucketId, bucketIndex, normSquared) in vectors)
         {
             bucket.AddData(new M_Data
             {
@@ -219,6 +219,7 @@ public static class BucketCacheManager
                 storageGuid = storageGuid,
                 id = bucketId,
                 index = bucketIndex,
+                normSquared = normSquared,
                 chunk = null
             });
         }
@@ -249,7 +250,7 @@ public static class BucketCacheManager
                 if (vectors != null && vectors.Count > 0)
                 {
                     var bucket = new M_Bucket(k);
-                    foreach (var (vector, storageGuid, bucketId, bucketIndex) in vectors)
+                    foreach (var (vector, storageGuid, bucketId, bucketIndex, normSquared) in vectors)
                     {
                         bucket.AddData(new M_Data
                         {
@@ -257,6 +258,7 @@ public static class BucketCacheManager
                             storageGuid = storageGuid,
                             id = bucketId,
                             index = bucketIndex,
+                            normSquared = normSquared,
                             chunk = null
                         });
                     }

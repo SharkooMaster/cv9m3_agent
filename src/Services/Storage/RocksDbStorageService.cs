@@ -113,16 +113,16 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
 
         foreach (var (bucketName, vectors) in sorted)
         {
-            long bucketBytes = vectors.Count * 470L; // EstBytesPerVector
+            long bucketBytes = vectors.Count * 470L;
             if (maxCacheBytes > 0 && estimatedBytes + bucketBytes > maxCacheBytes && estimatedBytes > 0)
             {
                 skippedBuckets++;
-                continue; // Over budget — leave on disk (L2), loaded on-demand
+                continue;
             }
 
             ulong bucketKey = RocksDbBucketStorage.BitstringToUlong(bucketName);
             var bucket = Globals._NODE.Buckets.GetOrAdd(bucketKey, _ => new M_Bucket(bucketKey));
-            foreach (var (vector, storageGuid, bucketId, bucketIndex) in vectors)
+            foreach (var (vector, storageGuid, bucketId, bucketIndex, normSquared) in vectors)
             {
                 bucket.data.Add(new M_Data
                 {
@@ -130,7 +130,8 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
                     storageGuid = storageGuid,
                     id = bucketId,
                     index = bucketIndex,
-                    chunk = null // Chunks loaded on-demand from chunk cache / RocksDB
+                    normSquared = normSquared,
+                    chunk = null
                 });
             }
             bucket.TouchAccess();

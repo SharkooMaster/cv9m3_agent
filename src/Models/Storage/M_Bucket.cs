@@ -80,6 +80,8 @@ public class M_Bucket
     /// </summary>
     public void AddData(M_Data item)
     {
+        if (item.normSquared == 0f && item.vector != null && item.vector.Length > 0)
+            item.normSquared = Misc.ComputeNormSquared(item.vector);
         lock (_dataLock)
         {
             _data.Add(item);
@@ -152,44 +154,7 @@ public class M_Bucket
                 };
             }
 
-            // ── Similarity dedup: scan existing vectors for a cosine match ──
-            if (_data.vector != null && _data.vector.Length > 0)
-            {
-                float threshold = Globals.StoreSimilarityThreshold;
-                var snapshot = GetDataSnapshot();
-
-                float bestSim = -1f;
-                M_Data? bestMatch = null;
-
-                for (int i = 0; i < snapshot.Length; i++)
-                {
-                    var entry = snapshot[i];
-                    if (entry?.vector == null || entry.vector.Length != _data.vector.Length) continue;
-                    float sim = Misc.CalculateDistance(_data.vector, entry.vector);
-                    if (sim >= threshold && sim > bestSim)
-                    {
-                        bestSim = sim;
-                        bestMatch = entry;
-                    }
-                }
-
-                if (bestMatch != null)
-                {
-                    _data.storageGuid = bestMatch.storageGuid;
-                    _data.id = bestMatch.id;
-                    _data.index = bestMatch.index;
-                    return new InsertResult
-                    {
-                        BucketId = bestMatch.id,
-                        BucketIndex = bestMatch.index,
-                        WasDeduplicated = true,
-                        Similarity = bestSim,
-                        MatchedStorageGuid = bestMatch.storageGuid
-                    };
-                }
-            }
-
-            // ── No match — store fresh ──
+            // ── Store fresh — similarity scan skipped (already done in search phase) ──
             string bucketName = RocksDbBucketStorage.UlongToBitstring(ID);
             (ulong bucketId, ulong bucketIndex) = await NetworkFileStorageHandler.StoreVector(bucketName, _data);
 

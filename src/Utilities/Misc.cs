@@ -126,79 +126,143 @@ public static class Misc
 
     public static float CalculateDistance(float[] vec1, float[] vec2)
     {
-        if (vec1 == null || vec2 == null)
-            throw new ArgumentNullException("Vectors must not be null.");
+        return CalculateDistanceWithNorm(vec1, ComputeNormSquared(vec1), vec2, ComputeNormSquared(vec2));
+    }
 
-        if (vec1.Length != vec2.Length)
-            throw new ArgumentException("Vectors must have the same dimensions.");
-
-        // SIMD OPTIMIZATION: Use Vector<float> for hardware-accelerated operations
-        // Vector<float>.Count is typically 8 on AVX2 systems, 4 on SSE systems
+    /// <summary>Cosine similarity with pre-computed squared norms. Skips redundant norm computation.</summary>
+    public static float CalculateDistanceWithNorm(float[] vec1, float vec1NormSq, float[] vec2, float vec2NormSq)
+    {
+        int len = vec1.Length;
         int vectorSize = Vector<float>.Count;
         double dotProduct = 0.0;
-        double normVec1 = 0.0;
-        double normVec2 = 0.0;
 
-        // OPTIMIZATION: Improved SIMD for faster cosine similarity calculation
-        // Use SIMD for the main loop with better horizontal sum
         int i = 0;
-        if (vectorSize > 1 && vec1.Length >= vectorSize)
+        if (vectorSize > 1 && len >= vectorSize)
         {
             Vector<float> dotSum = Vector<float>.Zero;
-            Vector<float> norm1Sum = Vector<float>.Zero;
-            Vector<float> norm2Sum = Vector<float>.Zero;
-            
-            for (; i <= vec1.Length - vectorSize; i += vectorSize)
-            {
-                var v1 = new Vector<float>(vec1, i);
-                var v2 = new Vector<float>(vec2, i);
-                
-                // Vector operations are hardware-accelerated
-                dotSum += v1 * v2;
-                norm1Sum += v1 * v1;
-                norm2Sum += v2 * v2;
-            }
-            
-            // OPTIMIZATION: More efficient horizontal sum using SIMD operations
-            // Instead of copying to arrays, accumulate directly from vectors
+            for (; i <= len - vectorSize; i += vectorSize)
+                dotSum += new Vector<float>(vec1, i) * new Vector<float>(vec2, i);
             dotProduct = HorizontalSum(dotSum);
-            normVec1 = HorizontalSum(norm1Sum);
-            normVec2 = HorizontalSum(norm2Sum);
         }
 
-        // Handle remainder sequentially
-        for (; i < vec1.Length; i++)
-        {
+        for (; i < len; i++)
             dotProduct += vec1[i] * vec2[i];
-            normVec1 += vec1[i] * vec1[i];
-            normVec2 += vec2[i] * vec2[i];
-        }
 
-        // Calculate cosine similarity.
-        // Important edge-case handling:
-        // - if both vectors are zero-norm and identical, treat as exact match (1.0)
-        // - if only one side is zero-norm, no directional similarity (0.0)
-        double eps = 1e-12;
-        bool vec1Zero = normVec1 <= eps;
-        bool vec2Zero = normVec2 <= eps;
-        if (vec1Zero && vec2Zero)
+        const double eps = 1e-12;
+        bool v1Zero = vec1NormSq <= eps;
+        bool v2Zero = vec2NormSq <= eps;
+        if (v1Zero && v2Zero)
         {
-            // Exact element-wise equality check keeps semantics deterministic.
-            for (int j = 0; j < vec1.Length; j++)
-            {
-                if (vec1[j] != vec2[j])
-                    return 0.0f;
-            }
+            for (int j = 0; j < len; j++)
+                if (vec1[j] != vec2[j]) return 0.0f;
             return 1.0f;
         }
-        if (vec1Zero || vec2Zero)
-            return 0.0f;
+        if (v1Zero || v2Zero) return 0.0f;
 
-        double denominator = Math.Sqrt(normVec1) * Math.Sqrt(normVec2);
-        if (denominator <= eps)
-            return 0.0f;
-        
-        return (float)(dotProduct / denominator);
+        double denominator = Math.Sqrt(vec1NormSq) * Math.Sqrt(vec2NormSq);
+        return denominator <= eps ? 0.0f : (float)(dotProduct / denominator);
+    }
+
+    /// <summary>Compute squared L2 norm using SIMD. Cache this value per vector to avoid recomputing.</summary>
+    public static float ComputeNormSquared(float[] vec)
+    {
+        int vectorSize = Vector<float>.Count;
+        double norm = 0.0;
+        int i = 0;
+        if (vectorSize > 1 && vec.Length >= vectorSize)
+        {
+            Vector<float> normSum = Vector<float>.Zero;
+            for (; i <= vec.Length - vectorSize; i += vectorSize)
+            {
+                var v = new Vector<float>(vec, i);
+                normSum += v * v;
+            }
+            norm = HorizontalSum(normSum);
+        }
+        for (; i < vec.Length; i++)
+            norm += vec[i] * vec[i];
+        return (float)norm;
+    }
+
+    /// <summary>
+    /// Batch cosine similarity: compute similarity of one query against multiple candidates.
+    /// Processes candidates in groups of 4 for better ILP and cache utilization.
+    /// </summary>
+    public static void BatchCosineSimilarity(
+        float[] query, float queryNormSq,
+        float[][] candidates, float[] candidateNormsSq,
+        float[] results, int count)
+    {
+        int vecLen = query.Length;
+        int vectorSize = Vector<float>.Count;
+        bool useSIMD = vectorSize > 1 && vecLen >= vectorSize;
+        const double eps = 1e-12;
+        double qNorm = queryNormSq;
+
+        if (qNorm <= eps)
+        {
+            for (int c = 0; c < count; c++)
+                results[c] = 0.0f;
+            return;
+        }
+
+        int c4 = count - (count % 4);
+
+        // Process 4 candidates at a time for better ILP
+        for (int c = 0; c < c4; c += 4)
+        {
+            double dot0 = 0, dot1 = 0, dot2 = 0, dot3 = 0;
+            var cand0 = candidates[c]; var cand1 = candidates[c + 1];
+            var cand2 = candidates[c + 2]; var cand3 = candidates[c + 3];
+
+            int i = 0;
+            if (useSIMD)
+            {
+                Vector<float> d0 = Vector<float>.Zero, d1 = Vector<float>.Zero;
+                Vector<float> d2 = Vector<float>.Zero, d3 = Vector<float>.Zero;
+                for (; i <= vecLen - vectorSize; i += vectorSize)
+                {
+                    var q = new Vector<float>(query, i);
+                    d0 += q * new Vector<float>(cand0, i);
+                    d1 += q * new Vector<float>(cand1, i);
+                    d2 += q * new Vector<float>(cand2, i);
+                    d3 += q * new Vector<float>(cand3, i);
+                }
+                dot0 = HorizontalSum(d0); dot1 = HorizontalSum(d1);
+                dot2 = HorizontalSum(d2); dot3 = HorizontalSum(d3);
+            }
+            for (; i < vecLen; i++)
+            {
+                float qi = query[i];
+                dot0 += qi * cand0[i]; dot1 += qi * cand1[i];
+                dot2 += qi * cand2[i]; dot3 += qi * cand3[i];
+            }
+
+            double sqrtQ = Math.Sqrt(qNorm);
+            results[c]   = candidateNormsSq[c]   <= eps ? 0f : (float)(dot0 / (sqrtQ * Math.Sqrt(candidateNormsSq[c])));
+            results[c+1] = candidateNormsSq[c+1] <= eps ? 0f : (float)(dot1 / (sqrtQ * Math.Sqrt(candidateNormsSq[c+1])));
+            results[c+2] = candidateNormsSq[c+2] <= eps ? 0f : (float)(dot2 / (sqrtQ * Math.Sqrt(candidateNormsSq[c+2])));
+            results[c+3] = candidateNormsSq[c+3] <= eps ? 0f : (float)(dot3 / (sqrtQ * Math.Sqrt(candidateNormsSq[c+3])));
+        }
+
+        // Remainder
+        for (int c = c4; c < count; c++)
+        {
+            double dot = 0;
+            var cand = candidates[c];
+            int i = 0;
+            if (useSIMD)
+            {
+                Vector<float> dSum = Vector<float>.Zero;
+                for (; i <= vecLen - vectorSize; i += vectorSize)
+                    dSum += new Vector<float>(query, i) * new Vector<float>(cand, i);
+                dot = HorizontalSum(dSum);
+            }
+            for (; i < vecLen; i++)
+                dot += query[i] * cand[i];
+
+            results[c] = candidateNormsSq[c] <= eps ? 0f : (float)(dot / (Math.Sqrt(qNorm) * Math.Sqrt(candidateNormsSq[c])));
+        }
     }
 
     public static long GetAvailableMemory()

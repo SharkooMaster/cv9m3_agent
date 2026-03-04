@@ -55,73 +55,106 @@ public class SearchVectorService : SearchVector.SearchVectorBase
         if (request.Bitstrings.Count == 0)
             return MakeSaveResult(request.Index);
 
-        // ── Collect candidates from L1 (RAM) then L2 (RocksDB) ──
-        // L1 hit: pure RAM, zero I/O. L2 hit: loaded via prefix iterator (fast sequential scan).
-        // Cap total candidates to prevent cosine similarity from growing unbounded
-        // as buckets accumulate vectors over time.
+        // ── Collect candidates from L1 (RAM) then L2 (RocksDB) — parallel across buckets ──
         const int MaxCandidates = 4096;
-        var candidates = new List<(float[] vector, ulong bucketId, ulong bucketIndex, string? storageGuid)>(256);
+        var candidateBag = new ConcurrentBag<(float[] vector, ulong bucketId, ulong bucketIndex, string? storageGuid, float normSq)>();
+        int candidateCount = 0;
 
-        foreach (var bs in request.Bitstrings)
-        {
-            ulong bucketKey = RocksDbBucketStorage.BitstringToUlong(bs);
-            M_Bucket? bucket;
-            if (!Globals._NODE.Buckets.TryGetValue(bucketKey, out bucket))
+        Parallel.ForEach(
+            request.Bitstrings,
+            new ParallelOptions { MaxDegreeOfParallelism = Math.Max(4, Environment.ProcessorCount) },
+            (bs, state) =>
             {
-                bucket = BucketCacheManager.LoadAndCache(bs);
-                if (bucket == null || bucket.DataCount == 0) continue;
-            }
-            bucket.TouchAccess();
+                if (Volatile.Read(ref candidateCount) >= MaxCandidates)
+                {
+                    state.Break();
+                    return;
+                }
 
-            var items = bucket.GetDataSnapshot();
-            for (int j = 0; j < items.Length; j++)
-            {
-                var d = items[j];
-                if (d?.vector != null && d.vector.Length == vecLen)
-                    candidates.Add((d.vector, d.id, d.index, d.storageGuid));
-            }
+                ulong bucketKey = RocksDbBucketStorage.BitstringToUlong(bs);
+                M_Bucket? bucket;
+                if (!Globals._NODE.Buckets.TryGetValue(bucketKey, out bucket))
+                {
+                    bucket = BucketCacheManager.LoadAndCache(bs);
+                    if (bucket == null || bucket.DataCount == 0) return;
+                }
+                bucket.TouchAccess();
 
-            // Cap total candidates to bound cosine similarity time
-            if (candidates.Count >= MaxCandidates)
-                break;
-        }
+                var items = bucket.GetDataSnapshot();
+                for (int j = 0; j < items.Length; j++)
+                {
+                    var d = items[j];
+                    if (d?.vector != null && d.vector.Length == vecLen)
+                    {
+                        candidateBag.Add((d.vector, d.id, d.index, d.storageGuid, d.normSquared));
+                        Interlocked.Increment(ref candidateCount);
+                    }
+                }
+            });
 
+        var candidates = candidateBag.ToList();
         if (candidates.Count == 0)
             return MakeSaveResult(request.Index);
 
-        // ── Cosine similarity pass ──
+        // ── Cosine similarity pass (batch SIMD with pre-computed norms) ──
         float threshold = request.MinimumSimilarity;
         int requestedK = Math.Max(1, request.K);
+        int count = candidates.Count;
+        float queryNormSq = Misc.ComputeNormSquared(queryVector);
 
-        // Compute similarity for all candidates
-        var scored = new (int idx, float sim)[candidates.Count];
-        if (candidates.Count < 512)
+        var similarities = new float[count];
+
+        if (count >= 16)
         {
-            for (int i = 0; i < candidates.Count; i++)
-                scored[i] = (i, Misc.CalculateDistance(queryVector, candidates[i].vector));
+            // Extract arrays for batch processing
+            var candVecs = new float[count][];
+            var candNorms = new float[count];
+            for (int i = 0; i < count; i++)
+            {
+                candVecs[i] = candidates[i].vector;
+                candNorms[i] = candidates[i].normSq;
+            }
+
+            // Parallelize large batches across CPU cores
+            if (count >= 512)
+            {
+                int coreCount = Math.Max(4, Environment.ProcessorCount);
+                int chunkSize = (count + coreCount - 1) / coreCount;
+                Parallel.ForEach(
+                    Partitioner.Create(0, count, chunkSize),
+                    new ParallelOptions { MaxDegreeOfParallelism = coreCount },
+                    (range, _) =>
+                    {
+                        int len = range.Item2 - range.Item1;
+                        var subVecs = new float[len][];
+                        var subNorms = new float[len];
+                        Array.Copy(candVecs, range.Item1, subVecs, 0, len);
+                        Array.Copy(candNorms, range.Item1, subNorms, 0, len);
+                        var subResults = new float[len];
+                        Misc.BatchCosineSimilarity(queryVector, queryNormSq, subVecs, subNorms, subResults, len);
+                        Array.Copy(subResults, 0, similarities, range.Item1, len);
+                    });
+            }
+            else
+            {
+                Misc.BatchCosineSimilarity(queryVector, queryNormSq, candVecs, candNorms, similarities, count);
+            }
         }
         else
         {
-            Parallel.ForEach(
-                Partitioner.Create(0, candidates.Count),
-                new ParallelOptions { MaxDegreeOfParallelism = Math.Max(4, Environment.ProcessorCount) },
-                (range, _) =>
-                {
-                    for (int i = range.Item1; i < range.Item2; i++)
-                        scored[i] = (i, Misc.CalculateDistance(queryVector, candidates[i].vector));
-                }
-            );
+            for (int i = 0; i < count; i++)
+                similarities[i] = Misc.CalculateDistanceWithNorm(queryVector, queryNormSq, candidates[i].vector, candidates[i].normSq);
         }
 
         // Find the single best above threshold (Level 1)
         int bestIdx = -1;
         float bestSim = -1f;
-        for (int i = 0; i < scored.Length; i++)
+        for (int i = 0; i < count; i++)
         {
-            if (scored[i].sim >= threshold && scored[i].sim > bestSim)
+            if (similarities[i] >= threshold && similarities[i] > bestSim)
             {
-                bestSim = scored[i].sim;
-                bestIdx = scored[i].idx;
+                bestSim = similarities[i];
+                bestIdx = i;
             }
         }
 
@@ -155,20 +188,21 @@ public class SearchVectorService : SearchVector.SearchVectorBase
             return MakeSaveResult(request.Index);
         }
 
-        // K>1 (high-entropy path): always return top-K candidates.
-        // Save=false means the best result IS an L1 match (Cross should try L1 first).
-        // Save=true means no L1 match (Cross goes straight to mosaic).
-        // Either way, all K candidates are returned so Cross can fall back to mosaic
-        // if L1's bloat guard rejects the diff.
-        if (scored.Length > 0)
+        // K>1 (high-entropy path): return top-K candidates sorted by similarity.
+        if (count > 0)
         {
-            Array.Sort(scored, (a, b) => b.sim.CompareTo(a.sim));
-            int returnCount = Math.Min(requestedK, scored.Length);
+            var indices = new int[count];
+            for (int i = 0; i < count; i++) indices[i] = i;
+            Array.Sort(similarities, indices);
+            // Sort put ascending — reverse to get descending
+            Array.Reverse(similarities);
+            Array.Reverse(indices);
 
+            int returnCount = Math.Min(requestedK, count);
             var res = new SearchVector_Result { Save = !hasL1 };
             for (int i = 0; i < returnCount; i++)
             {
-                var c = candidates[scored[i].idx];
+                var c = candidates[indices[i]];
                 ByteString chunkBytes = ByteString.Empty;
                 if (!string.IsNullOrWhiteSpace(c.storageGuid))
                 {
@@ -180,7 +214,7 @@ public class SearchVectorService : SearchVector.SearchVectorBase
                 {
                     BucketId = c.bucketId,
                     BucketKey = (long)c.bucketIndex,
-                    Similarity = scored[i].sim,
+                    Similarity = similarities[i],
                     Chunk = chunkBytes,
                     Index = request.Index,
                     StorageGuid = c.storageGuid ?? ""
