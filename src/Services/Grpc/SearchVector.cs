@@ -20,25 +20,26 @@ public class SearchVectorService : SearchVector.SearchVectorBase
     // Gateway groups queries by agent (rendezvous hash) and sends a single
     // batch per agent. This eliminates ~595 round trips per file.
     // ──────────────────────────────────────────────────────────────────
-    public override Task<BatchSearchVector_Result> BatchGet(BatchSearchVector_Req request, ServerCallContext context)
+    public override async Task<BatchSearchVector_Result> BatchGet(BatchSearchVector_Req request, ServerCallContext context)
     {
         var result = new BatchSearchVector_Result();
         var queries = request.Queries;
         if (queries.Count == 0)
-            return Task.FromResult(result);
+            return result;
 
-        // Process all queries in parallel on this agent — pure RAM, no I/O
-        // Cap parallelism to prevent threadpool starvation under heavy concurrent BatchGet requests.
         int maxPar = Math.Max(4, Environment.ProcessorCount * 2);
         var results = new SearchVector_Result[queries.Count];
 
-        Parallel.For(0, queries.Count, new ParallelOptions { MaxDegreeOfParallelism = maxPar }, i =>
-        {
-            results[i] = ProcessSingleQuery(queries[i]);
-        });
+        await Parallel.ForEachAsync(
+            Enumerable.Range(0, queries.Count),
+            new ParallelOptions { MaxDegreeOfParallelism = maxPar },
+            async (i, _) =>
+            {
+                results[i] = await ProcessSingleQuery(queries[i]);
+            });
 
         result.Results.AddRange(results);
-        return Task.FromResult(result);
+        return result;
     }
 
     /// <summary>
@@ -46,7 +47,7 @@ public class SearchVectorService : SearchVector.SearchVectorBase
     /// Returns (bucketId, bucketIndex, similarity, chunk bytes) — eliminates the lazy fetch phase.
     /// Rendezvous hashing guarantees this agent owns the bucket, so the chunk is in our MRU cache.
     /// </summary>
-    private static SearchVector_Result ProcessSingleQuery(SearchVector_Req request)
+    private static async Task<SearchVector_Result> ProcessSingleQuery(SearchVector_Req request)
     {
         var queryVector = request.Vector.ToArray();
         int vecLen = queryVector.Length;
@@ -135,7 +136,7 @@ public class SearchVectorService : SearchVector.SearchVectorBase
                 ByteString chunkBytes = ByteString.Empty;
                 if (!string.IsNullOrWhiteSpace(c.storageGuid))
                 {
-                    var raw = ChunkCacheHandler.GetFromCacheOnly(c.storageGuid);
+                    var raw = await ChunkCacheHandler.GetChunkAsync(c.storageGuid);
                     if (raw != null && raw.Length > 0)
                         chunkBytes = ByteString.CopyFrom(raw);
                 }
@@ -171,7 +172,7 @@ public class SearchVectorService : SearchVector.SearchVectorBase
                 ByteString chunkBytes = ByteString.Empty;
                 if (!string.IsNullOrWhiteSpace(c.storageGuid))
                 {
-                    var raw = ChunkCacheHandler.GetFromCacheOnly(c.storageGuid);
+                    var raw = await ChunkCacheHandler.GetChunkAsync(c.storageGuid);
                     if (raw != null && raw.Length > 0)
                         chunkBytes = ByteString.CopyFrom(raw);
                 }
@@ -195,9 +196,9 @@ public class SearchVectorService : SearchVector.SearchVectorBase
     /// Legacy single-query endpoint. Delegates to ProcessSingleQuery.
     /// Kept for backward compatibility but BatchGet is preferred.
     /// </summary>
-    public override Task<SearchVector_Result> Get(SearchVector_Req request, ServerCallContext context)
+    public override async Task<SearchVector_Result> Get(SearchVector_Req request, ServerCallContext context)
     {
-        return Task.FromResult(ProcessSingleQuery(request));
+        return await ProcessSingleQuery(request);
     }
 
     private static SearchVector_Result MakeSaveResult(int index)

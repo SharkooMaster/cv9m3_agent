@@ -9,15 +9,15 @@ using Grpc.Core;
 
 public class SearchLanesService : SearchLanes.SearchLanesBase
 {
-    public override Task<BatchSearchLanesRes> BatchSearch(BatchSearchLanesReq request, ServerCallContext context)
+    public override async Task<BatchSearchLanesRes> BatchSearch(BatchSearchLanesReq request, ServerCallContext context)
     {
         var result = new BatchSearchLanesRes();
         if (request.Queries.Count == 0)
-            return Task.FromResult(result);
+            return result;
 
         var bucketStorage = BucketCacheManager.GetBucketStorage();
         if (bucketStorage == null)
-            return Task.FromResult(result);
+            return result;
 
         int subSize = Globals.chunkSize / 64;
         int maxPerQuery = Globals.LaneSearchMaxPerQuery;
@@ -25,41 +25,43 @@ public class SearchLanesService : SearchLanes.SearchLanesBase
         var queryResults = new LaneQueryResult[request.Queries.Count];
         int maxPar = Math.Max(4, Environment.ProcessorCount * 2);
 
-        Parallel.For(0, request.Queries.Count, new ParallelOptions { MaxDegreeOfParallelism = maxPar }, i =>
-        {
-            var q = request.Queries[i];
-            var qr = new LaneQueryResult { QueryIndex = q.QueryIndex };
-
-            var entries = bucketStorage.SearchLaneBucket((ushort)q.LaneHash, maxPerQuery);
-
-            foreach (var (bucketId, bucketIndex, lanePos, storageGuid) in entries)
+        await Parallel.ForEachAsync(
+            Enumerable.Range(0, request.Queries.Count),
+            new ParallelOptions { MaxDegreeOfParallelism = maxPar },
+            async (i, _) =>
             {
-                if (string.IsNullOrEmpty(storageGuid)) continue;
+                var q = request.Queries[i];
+                var qr = new LaneQueryResult { QueryIndex = q.QueryIndex };
 
-                // Try to get the chunk bytes from cache to extract the donor lane
-                var chunkBytes = ChunkCacheHandler.GetFromCacheOnly(storageGuid);
-                if (chunkBytes == null || chunkBytes.Length == 0) continue;
+                var entries = bucketStorage.SearchLaneBucket((ushort)q.LaneHash, maxPerQuery);
 
-                int donorOffset = lanePos * subSize;
-                int donorLen = Math.Min(subSize, chunkBytes.Length - donorOffset);
-                if (donorLen <= 0) continue;
-
-                var donorLane = new byte[donorLen];
-                Buffer.BlockCopy(chunkBytes, donorOffset, donorLane, 0, donorLen);
-
-                qr.Matches.Add(new LaneMatch
+                foreach (var (bucketId, bucketIndex, lanePos, storageGuid) in entries)
                 {
-                    BucketId = bucketId,
-                    StorageGuid = storageGuid,
-                    LanePosition = (uint)lanePos,
-                    DonorLaneBytes = ByteString.CopyFrom(donorLane)
-                });
-            }
+                    if (string.IsNullOrEmpty(storageGuid)) continue;
 
-            queryResults[i] = qr;
-        });
+                    var chunkBytes = await ChunkCacheHandler.GetChunkAsync(storageGuid);
+                    if (chunkBytes == null || chunkBytes.Length == 0) continue;
+
+                    int donorOffset = lanePos * subSize;
+                    int donorLen = Math.Min(subSize, chunkBytes.Length - donorOffset);
+                    if (donorLen <= 0) continue;
+
+                    var donorLane = new byte[donorLen];
+                    Buffer.BlockCopy(chunkBytes, donorOffset, donorLane, 0, donorLen);
+
+                    qr.Matches.Add(new LaneMatch
+                    {
+                        BucketId = bucketId,
+                        StorageGuid = storageGuid,
+                        LanePosition = (uint)lanePos,
+                        DonorLaneBytes = ByteString.CopyFrom(donorLane)
+                    });
+                }
+
+                queryResults[i] = qr;
+            });
 
         result.Results.AddRange(queryResults);
-        return Task.FromResult(result);
+        return result;
     }
 }
