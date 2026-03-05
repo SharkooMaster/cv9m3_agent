@@ -55,44 +55,33 @@ public class SearchVectorService : SearchVector.SearchVectorBase
         if (request.Bitstrings.Count == 0)
             return MakeSaveResult(request.Index);
 
-        // ── Collect candidates from L1 (RAM) then L2 (RocksDB) — parallel across buckets ──
+        // ── Collect candidates from L1 (RAM) then L2 (RocksDB) ──
         const int MaxCandidates = 4096;
-        var candidateBag = new ConcurrentBag<(float[] vector, ulong bucketId, ulong bucketIndex, string? storageGuid, float normSq)>();
-        int candidateCount = 0;
+        var candidates = new List<(float[] vector, ulong bucketId, ulong bucketIndex, string? storageGuid, float normSq)>(256);
 
-        Parallel.ForEach(
-            request.Bitstrings,
-            new ParallelOptions { MaxDegreeOfParallelism = Math.Max(4, Environment.ProcessorCount) },
-            (bs, state) =>
+        foreach (var bs in request.Bitstrings)
+        {
+            ulong bucketKey = RocksDbBucketStorage.BitstringToUlong(bs);
+            M_Bucket? bucket;
+            if (!Globals._NODE.Buckets.TryGetValue(bucketKey, out bucket))
             {
-                if (Volatile.Read(ref candidateCount) >= MaxCandidates)
-                {
-                    state.Break();
-                    return;
-                }
+                bucket = BucketCacheManager.LoadAndCache(bs);
+                if (bucket == null || bucket.DataCount == 0) continue;
+            }
+            bucket.TouchAccess();
 
-                ulong bucketKey = RocksDbBucketStorage.BitstringToUlong(bs);
-                M_Bucket? bucket;
-                if (!Globals._NODE.Buckets.TryGetValue(bucketKey, out bucket))
-                {
-                    bucket = BucketCacheManager.LoadAndCache(bs);
-                    if (bucket == null || bucket.DataCount == 0) return;
-                }
-                bucket.TouchAccess();
+            var items = bucket.GetDataSnapshot();
+            for (int j = 0; j < items.Length; j++)
+            {
+                var d = items[j];
+                if (d?.vector != null && d.vector.Length == vecLen)
+                    candidates.Add((d.vector, d.id, d.index, d.storageGuid, d.normSquared));
+            }
 
-                var items = bucket.GetDataSnapshot();
-                for (int j = 0; j < items.Length; j++)
-                {
-                    var d = items[j];
-                    if (d?.vector != null && d.vector.Length == vecLen)
-                    {
-                        candidateBag.Add((d.vector, d.id, d.index, d.storageGuid, d.normSquared));
-                        Interlocked.Increment(ref candidateCount);
-                    }
-                }
-            });
+            if (candidates.Count >= MaxCandidates)
+                break;
+        }
 
-        var candidates = candidateBag.ToList();
         if (candidates.Count == 0)
             return MakeSaveResult(request.Index);
 
@@ -115,8 +104,8 @@ public class SearchVectorService : SearchVector.SearchVectorBase
                 candNorms[i] = candidates[i].normSq;
             }
 
-            // Parallelize large batches across CPU cores
-            if (count >= 512)
+            // Parallelize across CPU cores — threshold lowered to use idle cores
+            if (count >= 128)
             {
                 int coreCount = Math.Max(4, Environment.ProcessorCount);
                 int chunkSize = (count + coreCount - 1) / coreCount;

@@ -154,7 +154,92 @@ public class M_Bucket
                 };
             }
 
-            // ── Store fresh — similarity scan skipped (already done in search phase) ──
+            // ── Similarity dedup: catches within-file matches stored between search and store ──
+            if (_data.vector != null && _data.vector.Length > 0)
+            {
+                float threshold = Globals.StoreSimilarityThreshold;
+                var snapshot = GetDataSnapshot();
+                float queryNormSq = _data.normSquared > 0f
+                    ? _data.normSquared
+                    : Misc.ComputeNormSquared(_data.vector);
+
+                float bestSim = -1f;
+                M_Data? bestMatch = null;
+
+                // Build dense arrays of valid candidates for batch SIMD
+                var validEntries = new M_Data[snapshot.Length];
+                var candVecs = new float[snapshot.Length][];
+                var candNorms = new float[snapshot.Length];
+                int validCount = 0;
+                for (int i = 0; i < snapshot.Length; i++)
+                {
+                    var entry = snapshot[i];
+                    if (entry?.vector != null && entry.vector.Length == _data.vector.Length)
+                    {
+                        validEntries[validCount] = entry;
+                        candVecs[validCount] = entry.vector;
+                        candNorms[validCount] = entry.normSquared > 0f
+                            ? entry.normSquared
+                            : Misc.ComputeNormSquared(entry.vector);
+                        validCount++;
+                    }
+                }
+
+                if (validCount > 0)
+                {
+                    var sims = new float[validCount];
+
+                    if (validCount >= 256)
+                    {
+                        int coreCount = Math.Max(2, Environment.ProcessorCount / 2);
+                        int chunk = (validCount + coreCount - 1) / coreCount;
+                        Parallel.ForEach(
+                            Partitioner.Create(0, validCount, chunk),
+                            new ParallelOptions { MaxDegreeOfParallelism = coreCount },
+                            (range, _) =>
+                            {
+                                int len = range.Item2 - range.Item1;
+                                var subVecs = new float[len][];
+                                var subNorms = new float[len];
+                                Array.Copy(candVecs, range.Item1, subVecs, 0, len);
+                                Array.Copy(candNorms, range.Item1, subNorms, 0, len);
+                                var subResults = new float[len];
+                                Misc.BatchCosineSimilarity(_data.vector, queryNormSq, subVecs, subNorms, subResults, len);
+                                Array.Copy(subResults, 0, sims, range.Item1, len);
+                            });
+                    }
+                    else
+                    {
+                        Misc.BatchCosineSimilarity(_data.vector, queryNormSq, candVecs, candNorms, sims, validCount);
+                    }
+
+                    for (int i = 0; i < validCount; i++)
+                    {
+                        if (sims[i] >= threshold && sims[i] > bestSim)
+                        {
+                            bestSim = sims[i];
+                            bestMatch = validEntries[i];
+                        }
+                    }
+                }
+
+                if (bestMatch != null)
+                {
+                    _data.storageGuid = bestMatch.storageGuid;
+                    _data.id = bestMatch.id;
+                    _data.index = bestMatch.index;
+                    return new InsertResult
+                    {
+                        BucketId = bestMatch.id,
+                        BucketIndex = bestMatch.index,
+                        WasDeduplicated = true,
+                        Similarity = bestSim,
+                        MatchedStorageGuid = bestMatch.storageGuid
+                    };
+                }
+            }
+
+            // ── No match — store fresh ──
             string bucketName = RocksDbBucketStorage.UlongToBitstring(ID);
             (ulong bucketId, ulong bucketIndex) = await NetworkFileStorageHandler.StoreVector(bucketName, _data);
 
@@ -180,6 +265,7 @@ public class M_Bucket
     {
         var results = new List<M_SearchResult>();
         var snapshot = GetDataSnapshot();
+        float queryNormSq = Misc.ComputeNormSquared(_vector);
 
         float bestSim = -1f;
         M_Data? bestData = null;
@@ -188,7 +274,8 @@ public class M_Bucket
         {
             var row = snapshot[idx];
             if (row?.vector == null || row.vector.Length != _vector.Length) continue;
-            float sim = Misc.CalculateDistance(_vector, row.vector);
+            float cNorm = row.normSquared > 0f ? row.normSquared : Misc.ComputeNormSquared(row.vector);
+            float sim = Misc.CalculateDistanceWithNorm(_vector, queryNormSq, row.vector, cNorm);
             if (sim >= _minimum_similarity && sim > bestSim)
             {
                 bestSim = sim;
