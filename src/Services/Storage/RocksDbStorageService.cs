@@ -18,7 +18,7 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
     private readonly RocksDb _rocksDb; // For chunk storage
     private readonly RocksDbWriteBatcher _chunkWriteBatcher; // Batches chunk writes in background
     private readonly RocksDbBucketStorage _bucketStorage; // For buckets/vectors
-    private readonly RedisChunkOwnershipService _ownershipService; // For chunk_owners
+    private readonly RedisChunkOwnershipService? _ownershipService; // For chunk_owners (null when Redis is disabled)
     private readonly string _myPodName;
     private static readonly ConcurrentDictionary<string, long> _missingBucketCache = new();
     private static readonly ConcurrentDictionary<string, DateTime> _agentListCache = new();
@@ -69,18 +69,22 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
 
         Console.WriteLine($"[Storage] RocksDB chunk block cache: {chunkBlockCacheMb}MB, bucket block cache: {bucketBlockCacheMb}MB");
         
-        // Initialize Redis for chunk ownership
+        // Initialize Redis for chunk ownership (optional — skip if REDIS_HOST is not set)
         var redisHost = Environment.GetEnvironmentVariable("REDIS_HOST");
-        if (string.IsNullOrWhiteSpace(redisHost))
-            throw new InvalidOperationException("REDIS_HOST environment variable is required");
-        var redisPort = int.Parse(Environment.GetEnvironmentVariable("REDIS_PORT") ?? "6379");
-        _ownershipService = new RedisChunkOwnershipService(redisHost, redisPort);
+        if (!string.IsNullOrWhiteSpace(redisHost))
+        {
+            var redisPort = int.Parse(Environment.GetEnvironmentVariable("REDIS_PORT") ?? "6379");
+            _ownershipService = new RedisChunkOwnershipService(redisHost, redisPort);
+            Console.WriteLine($"[Storage] Redis chunk ownership enabled at {redisHost}:{redisPort}");
+        }
+        else
+        {
+            _ownershipService = null;
+            Console.WriteLine("[Storage] Redis disabled — chunk ownership via DNS/rendezvous only");
+        }
         
-        // Use pod IP for chunk_owners so other agents can connect via gRPC
         _myPodName = Environment.GetEnvironmentVariable("MY_POD_IP") ?? Environment.GetEnvironmentVariable("MY_POD_NAME") ?? "unknown";
-        
         Console.WriteLine($"[Storage] Using RocksDB backend path={rocksDbPath}, pod={_myPodName}");
-        Console.WriteLine($"[Storage] Buckets/vectors stored in RocksDB, chunk_owners in Redis");
     }
 
     /// <summary>
@@ -634,8 +638,8 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
         }
         catch { /* DNS resolve failed — fall through to Redis fallback */ }
 
-        // Fallback: query Redis for known agents
-        if (agents.Count == 0)
+        // Fallback: query Redis for known agents (skipped when Redis is disabled)
+        if (agents.Count == 0 && _ownershipService != null)
         {
             try
             {
