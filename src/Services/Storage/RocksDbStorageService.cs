@@ -62,7 +62,7 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
 
         // Initialize write batcher for chunks (batches writes in background, non-blocking)
         // High-throughput: Larger batches, more frequent flushes
-        _chunkWriteBatcher = new RocksDbWriteBatcher(_rocksDb, batchSize: 500, flushIntervalMs: 50);
+        _chunkWriteBatcher = new RocksDbWriteBatcher(_rocksDb, batchSize: 5_000, flushIntervalMs: 5_000);
 
         // Initialize bucket/vector storage (separate RocksDB instance, with its own bloom+cache)
         _bucketStorage = new RocksDbBucketStorage(rocksDbPath, blockCacheSizeMb: bucketBlockCacheMb);

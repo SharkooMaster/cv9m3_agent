@@ -89,7 +89,7 @@ public sealed class RocksDbBucketStorage : IDisposable
 
         // Initialize write batcher (batches writes in background)
         // High-throughput: Larger batches for better performance
-        _writeBatcher = new RocksDbWriteBatcher(_rocksDb, batchSize: 200, flushIntervalMs: 50);
+        _writeBatcher = new RocksDbWriteBatcher(_rocksDb, batchSize: 10_000, flushIntervalMs: 5_000);
 
         // Load existing bucket IDs on startup
         LoadBucketIds();
