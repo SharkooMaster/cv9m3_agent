@@ -70,8 +70,24 @@ public class M_Bucket
     {
         lock (_dataLock)
         {
-            // List<T>.ToArray() is a single memcpy — much faster than ConcurrentBag snapshot
             return _data.ToArray();
+        }
+    }
+
+    /// <summary>
+    /// Returns a snapshot of the most recent N data items.
+    /// Used by the store-side similarity scan to avoid O(bucket_size) on large buckets.
+    /// </summary>
+    public M_Data[] GetRecentDataSnapshot(int maxItems)
+    {
+        lock (_dataLock)
+        {
+            if (_data.Count <= maxItems)
+                return _data.ToArray();
+            int start = _data.Count - maxItems;
+            var result = new M_Data[maxItems];
+            _data.CopyTo(start, result, 0, maxItems);
+            return result;
         }
     }
 
@@ -155,10 +171,13 @@ public class M_Bucket
             }
 
             // ── Similarity dedup: catches within-file matches stored between search and store ──
+            // Cap to last 1024 vectors: this scan only needs to catch recent within-file
+            // duplicates that arrived between search and store. Scanning the entire bucket
+            // (10k+ vectors) is the main cause of throughput degradation on large datasets.
             if (_data.vector != null && _data.vector.Length > 0)
             {
                 float threshold = Globals.StoreSimilarityThreshold;
-                var snapshot = GetDataSnapshot();
+                var snapshot = GetRecentDataSnapshot(1024);
                 float queryNormSq = _data.normSquared > 0f
                     ? _data.normSquared
                     : Misc.ComputeNormSquared(_data.vector);

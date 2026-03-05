@@ -43,11 +43,20 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
 
         var chunkCfOpts = new ColumnFamilyOptions()
             .SetBlockBasedTableFactory(chunkTableOpts)
-            .SetWriteBufferSize(64 * 1024 * 1024)   // 64MB memtable
-            .SetMaxWriteBufferNumber(3)
+            .SetWriteBufferSize(64 * 1024 * 1024)                          // 64MB memtable
+            .SetMaxWriteBufferNumber(4)                                     // 4 memtables before stall
+            .SetLevel0FileNumCompactionTrigger(4)                           // Compact after 4 L0 files
+            .SetLevel0SlowdownWritesTrigger(20)                             // Soft throttle at 20
+            .SetLevel0StopWritesTrigger(48)                                 // Hard stall at 48 (vs default 36)
+            .SetMaxBytesForLevelBase(512 * 1024 * 1024)                    // 512MB L1 — reduces write amp for large datasets
             .SetCompression(Compression.Zstd);
 
-        var rocksOptions = new DbOptions().SetCreateIfMissing(true);
+        int bgThreads = Math.Max(4, Environment.ProcessorCount / 2);
+        var rocksOptions = new DbOptions()
+            .SetCreateIfMissing(true)
+            .IncreaseParallelism(bgThreads)
+            .SetMaxBackgroundCompactions(bgThreads)
+            .SetMaxBackgroundFlushes(Math.Max(2, bgThreads / 2));
         var chunkCfs = new ColumnFamilies { { "default", chunkCfOpts } };
         _rocksDb = RocksDb.Open(rocksOptions, rocksDbPath, chunkCfs);
 

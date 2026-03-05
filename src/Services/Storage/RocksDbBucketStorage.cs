@@ -70,12 +70,19 @@ public sealed class RocksDbBucketStorage : IDisposable
             .SetBlockBasedTableFactory(tableOpts)
             .SetMemtablePrefixBloomSizeRatio(0.1)                           // Memtable bloom for recent writes
             .SetWriteBufferSize(64 * 1024 * 1024)                           // 64MB memtable (vs 4MB default)
-            .SetMaxWriteBufferNumber(3)                                     // 3 memtables before stall
+            .SetMaxWriteBufferNumber(4)                                     // 4 memtables before stall (more headroom)
             .SetLevel0FileNumCompactionTrigger(4)                           // Compact after 4 L0 files
+            .SetLevel0SlowdownWritesTrigger(20)                             // Soft throttle at 20 L0 files (default)
+            .SetLevel0StopWritesTrigger(48)                                 // Hard stall at 48 (vs default 36)
+            .SetMaxBytesForLevelBase(512 * 1024 * 1024)                    // 512MB L1 (vs default 256MB) — reduces write amp
             .SetCompression(Compression.Zstd);
 
+        int bgThreads = Math.Max(4, Environment.ProcessorCount / 2);
         var dbOpts = new DbOptions()
-            .SetCreateIfMissing(true);
+            .SetCreateIfMissing(true)
+            .IncreaseParallelism(bgThreads)
+            .SetMaxBackgroundCompactions(bgThreads)
+            .SetMaxBackgroundFlushes(Math.Max(2, bgThreads / 2));
 
         var columnFamilies = new ColumnFamilies { { "default", cfOpts } };
         _rocksDb = RocksDb.Open(dbOpts, _bucketDbPath, columnFamilies);

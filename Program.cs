@@ -224,6 +224,16 @@ lifetime.ApplicationStarted.Register(() =>
                     try { rocksDbSvc.PersistStatsCounters(); }
                     catch (Exception ex2) { Console.WriteLine($"[Agent] Stats persist failed: {ex2.Message}"); }
                 }, null, TimeSpan.FromSeconds(60), TimeSpan.FromSeconds(60));
+
+                // Compact LOH every 5 minutes to prevent memory fragmentation on long runs.
+                // Without this, the LOH accumulates holes from large temporary arrays (float[], byte[])
+                // that can't be reused, causing RSS to grow while actual live data stays flat.
+                var lohCompactTimer = new System.Threading.Timer(_ =>
+                {
+                    System.Runtime.GCSettings.LargeObjectHeapCompactionMode =
+                        System.Runtime.GCLargeObjectHeapCompactionMode.CompactOnce;
+                    GC.Collect(2, GCCollectionMode.Optimized, blocking: false);
+                }, null, TimeSpan.FromMinutes(5), TimeSpan.FromMinutes(5));
             }
         }
         catch (Exception ex)
