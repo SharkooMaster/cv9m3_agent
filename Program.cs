@@ -114,8 +114,12 @@ var bucketCacheRaw = Environment.GetEnvironmentVariable("BUCKET_CACHE_MAX_GB") ?
 long bucketCacheMaxBytes;
 if (bucketCacheRaw == "0" || bucketCacheRaw.Equals("auto", StringComparison.OrdinalIgnoreCase))
 {
-    bucketCacheMaxBytes = (long)(totalAvailableMemory * 0.25);
-    Console.WriteLine($"[Agent] Bucket cache: AUTO-SIZED to {bucketCacheMaxBytes / (1024 * 1024)}MB (25% of {totalAvailableMemory / (1024 * 1024)}MB)");
+    // 10% of RAM for app-level M_Bucket cache (write-active buckets only).
+    // Cold bucket searches now go through SearchBucketDirect on RocksDB's native block cache
+    // (25% of RAM), so the app-level cache only needs to hold recently-written buckets
+    // for the store-side similarity scan in InsertData.
+    bucketCacheMaxBytes = (long)(totalAvailableMemory * 0.10);
+    Console.WriteLine($"[Agent] Bucket cache: AUTO-SIZED to {bucketCacheMaxBytes / (1024 * 1024)}MB (10% of {totalAvailableMemory / (1024 * 1024)}MB)");
 }
 else
 {
@@ -515,12 +519,14 @@ void ConfigureServices(IServiceCollection services)
         if (storageBackend == "rocksdb")
         {
             var rocksPath = Environment.GetEnvironmentVariable("ROCKSDB_PATH") ?? "/data/chunks/rocksdb";
-            // Size RocksDB block caches: 5% of node RAM for buckets, 2.5% for chunks
-            // These are SEPARATE from the L1 app-level caches — they cache raw SST blocks
-            // so that Seek/Get calls hit memory instead of SSD. Critical for L2 read speed.
+            // RocksDB block caches use NATIVE memory (no GC pressure).
+            // Bucket block cache is the PRIMARY cache for search — holds SST blocks containing
+            // vector records. 25% of RAM = ~8GB on 32GB nodes, enough for ~27M vectors.
+            // Cold bucket searches go through SearchBucketDirect which reads from this cache
+            // instead of materializing M_Bucket objects in the managed heap.
             long availMem = GC.GetGCMemoryInfo().TotalAvailableMemoryBytes;
-            long bucketBlockCacheMb = Math.Max(64, availMem * 5 / 100 / (1024 * 1024));
-            long chunkBlockCacheMb = Math.Max(32, availMem * 25 / 1000 / (1024 * 1024));
+            long bucketBlockCacheMb = Math.Max(256, availMem * 25 / 100 / (1024 * 1024));
+            long chunkBlockCacheMb = Math.Max(64, availMem * 5 / 100 / (1024 * 1024));
             Console.WriteLine($"[Storage] Using RocksDB backend path={rocksPath}, bucket block cache={bucketBlockCacheMb}MB, chunk block cache={chunkBlockCacheMb}MB");
             return new RocksDbStorageService(rocksPath, pgbuilder.ConnectionString,
                 bucketBlockCacheMb: bucketBlockCacheMb, chunkBlockCacheMb: chunkBlockCacheMb);

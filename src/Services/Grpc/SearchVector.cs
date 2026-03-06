@@ -43,9 +43,10 @@ public class SearchVectorService : SearchVector.SearchVectorBase
     }
 
     /// <summary>
-    /// Single-query search: pure RAM for cosine sim, O(1) cache read for matched chunk.
-    /// Returns (bucketId, bucketIndex, similarity, chunk bytes) — eliminates the lazy fetch phase.
-    /// Rendezvous hashing guarantees this agent owns the bucket, so the chunk is in our MRU cache.
+    /// Single-query search: hot buckets from RAM, cold buckets via direct RocksDB iterator.
+    /// Hot path: in-memory SIMD scan (unchanged behavior for active buckets).
+    /// Cold path: SearchBucketsDirect — prefix bloom skips irrelevant SSTs, inline cosine
+    ///            similarity on the iterator, zero M_Data/M_Bucket allocation.
     /// </summary>
     private static async Task<SearchVector_Result> ProcessSingleQuery(SearchVector_Req request)
     {
@@ -55,160 +56,182 @@ public class SearchVectorService : SearchVector.SearchVectorBase
         if (request.Bitstrings.Count == 0)
             return MakeSaveResult(request.Index);
 
-        // ── Collect candidates from L1 (RAM) then L2 (RocksDB) ──
+        float threshold = request.MinimumSimilarity;
+        int requestedK = Math.Max(1, request.K);
+        float queryNormSq = Misc.ComputeNormSquared(queryVector);
+
+        // ── Phase 1: Collect candidates from hot (RAM) buckets ──
         const int MaxCandidates = 4096;
         var candidates = new List<(float[] vector, ulong bucketId, ulong bucketIndex, string? storageGuid, float normSq)>(256);
+        var coldBucketIds = new List<ulong>();
 
         foreach (var bs in request.Bitstrings)
         {
             ulong bucketKey = RocksDbBucketStorage.BitstringToUlong(bs);
-            M_Bucket? bucket;
-            if (!Globals._NODE.Buckets.TryGetValue(bucketKey, out bucket))
-            {
-                bucket = BucketCacheManager.LoadAndCache(bs);
-                if (bucket == null || bucket.DataCount == 0) continue;
-            }
-            bucket.TouchAccess();
 
-            var items = bucket.GetDataSnapshot();
-            for (int j = 0; j < items.Length; j++)
+            if (Globals._NODE.Buckets.TryGetValue(bucketKey, out var bucket))
             {
-                var d = items[j];
-                if (d?.vector != null && d.vector.Length == vecLen)
-                    candidates.Add((d.vector, d.id, d.index, d.storageGuid, d.normSquared));
+                bucket.TouchAccess();
+                var items = bucket.GetDataSnapshot();
+                for (int j = 0; j < items.Length; j++)
+                {
+                    var d = items[j];
+                    if (d?.vector != null && d.vector.Length == vecLen)
+                        candidates.Add((d.vector, d.id, d.index, d.storageGuid, d.normSquared));
+                }
+            }
+            else
+            {
+                coldBucketIds.Add(bucketKey);
             }
 
             if (candidates.Count >= MaxCandidates)
                 break;
         }
 
-        if (candidates.Count == 0)
-            return MakeSaveResult(request.Index);
+        // ── Phase 2: Find best from hot candidates using batch SIMD ──
+        float bestSim = -1f;
+        ulong bestBucketId = 0, bestBucketIndex = 0;
+        string? bestGuid = null;
+        bool foundInRam = false;
 
-        // ── Cosine similarity pass (batch SIMD with pre-computed norms) ──
-        float threshold = request.MinimumSimilarity;
-        int requestedK = Math.Max(1, request.K);
         int count = candidates.Count;
-        float queryNormSq = Misc.ComputeNormSquared(queryVector);
-
-        var similarities = new float[count];
-
-        if (count >= 16)
+        if (count > 0)
         {
-            // Extract arrays for batch processing
-            var candVecs = new float[count][];
-            var candNorms = new float[count];
-            for (int i = 0; i < count; i++)
-            {
-                candVecs[i] = candidates[i].vector;
-                candNorms[i] = candidates[i].normSq;
-            }
+            var similarities = new float[count];
 
-            // Parallelize across CPU cores — threshold lowered to use idle cores
-            if (count >= 128)
+            if (count >= 16)
             {
-                int coreCount = Math.Max(4, Environment.ProcessorCount);
-                int chunkSize = (count + coreCount - 1) / coreCount;
-                Parallel.ForEach(
-                    Partitioner.Create(0, count, chunkSize),
-                    new ParallelOptions { MaxDegreeOfParallelism = coreCount },
-                    (range, _) =>
-                    {
-                        int len = range.Item2 - range.Item1;
-                        var subVecs = new float[len][];
-                        var subNorms = new float[len];
-                        Array.Copy(candVecs, range.Item1, subVecs, 0, len);
-                        Array.Copy(candNorms, range.Item1, subNorms, 0, len);
-                        var subResults = new float[len];
-                        Misc.BatchCosineSimilarity(queryVector, queryNormSq, subVecs, subNorms, subResults, len);
-                        Array.Copy(subResults, 0, similarities, range.Item1, len);
-                    });
+                var candVecs = new float[count][];
+                var candNorms = new float[count];
+                for (int i = 0; i < count; i++)
+                {
+                    candVecs[i] = candidates[i].vector;
+                    candNorms[i] = candidates[i].normSq;
+                }
+
+                if (count >= 128)
+                {
+                    int coreCount = Math.Max(4, Environment.ProcessorCount);
+                    int chunkSize = (count + coreCount - 1) / coreCount;
+                    Parallel.ForEach(
+                        Partitioner.Create(0, count, chunkSize),
+                        new ParallelOptions { MaxDegreeOfParallelism = coreCount },
+                        (range, _) =>
+                        {
+                            int len = range.Item2 - range.Item1;
+                            var subVecs = new float[len][];
+                            var subNorms = new float[len];
+                            Array.Copy(candVecs, range.Item1, subVecs, 0, len);
+                            Array.Copy(candNorms, range.Item1, subNorms, 0, len);
+                            var subResults = new float[len];
+                            Misc.BatchCosineSimilarity(queryVector, queryNormSq, subVecs, subNorms, subResults, len);
+                            Array.Copy(subResults, 0, similarities, range.Item1, len);
+                        });
+                }
+                else
+                {
+                    Misc.BatchCosineSimilarity(queryVector, queryNormSq, candVecs, candNorms, similarities, count);
+                }
             }
             else
             {
-                Misc.BatchCosineSimilarity(queryVector, queryNormSq, candVecs, candNorms, similarities, count);
+                for (int i = 0; i < count; i++)
+                    similarities[i] = Misc.CalculateDistanceWithNorm(queryVector, queryNormSq, candidates[i].vector, candidates[i].normSq);
             }
-        }
-        else
-        {
+
             for (int i = 0; i < count; i++)
-                similarities[i] = Misc.CalculateDistanceWithNorm(queryVector, queryNormSq, candidates[i].vector, candidates[i].normSq);
-        }
-
-        // Find the single best above threshold (Level 1)
-        int bestIdx = -1;
-        float bestSim = -1f;
-        for (int i = 0; i < count; i++)
-        {
-            if (similarities[i] >= threshold && similarities[i] > bestSim)
             {
-                bestSim = similarities[i];
-                bestIdx = i;
-            }
-        }
-
-        bool hasL1 = bestIdx >= 0;
-
-        // K=1 (standard path): return single L1 match or save-new
-        if (requestedK <= 1)
-        {
-            if (hasL1)
-            {
-                var c = candidates[bestIdx];
-                ByteString chunkBytes = ByteString.Empty;
-                if (!string.IsNullOrWhiteSpace(c.storageGuid))
+                if (similarities[i] >= threshold && similarities[i] > bestSim)
                 {
-                    var raw = await ChunkCacheHandler.GetChunkAsync(c.storageGuid);
-                    if (raw != null && raw.Length > 0)
-                        chunkBytes = ByteString.CopyFrom(raw);
+                    bestSim = similarities[i];
+                    var c = candidates[i];
+                    bestBucketId = c.bucketId;
+                    bestBucketIndex = c.bucketIndex;
+                    bestGuid = c.storageGuid;
+                    foundInRam = true;
                 }
-                var res = new SearchVector_Result { Save = false };
-                res.Results.Add(new SearchVectorObject
-                {
-                    BucketId = c.bucketId,
-                    BucketKey = (long)c.bucketIndex,
-                    Similarity = bestSim,
-                    Chunk = chunkBytes,
-                    Index = request.Index,
-                    StorageGuid = c.storageGuid ?? ""
-                });
-                return res;
             }
-            return MakeSaveResult(request.Index);
+
+            // K>1 path (high-entropy): return top-K from RAM candidates
+            if (requestedK > 1)
+            {
+                var indices = new int[count];
+                for (int i = 0; i < count; i++) indices[i] = i;
+                Array.Sort(similarities, indices);
+                Array.Reverse(similarities);
+                Array.Reverse(indices);
+
+                int returnCount = Math.Min(requestedK, count);
+                var res = new SearchVector_Result { Save = bestSim < threshold };
+                for (int i = 0; i < returnCount; i++)
+                {
+                    if (similarities[i] < threshold) break;
+                    var c = candidates[indices[i]];
+                    ByteString chunkBytes = ByteString.Empty;
+                    if (!string.IsNullOrWhiteSpace(c.storageGuid))
+                    {
+                        var raw = await ChunkCacheHandler.GetChunkAsync(c.storageGuid);
+                        if (raw != null && raw.Length > 0)
+                            chunkBytes = ByteString.CopyFrom(raw);
+                    }
+                    res.Results.Add(new SearchVectorObject
+                    {
+                        BucketId = c.bucketId,
+                        BucketKey = (long)c.bucketIndex,
+                        Similarity = similarities[i],
+                        Chunk = chunkBytes,
+                        Index = request.Index,
+                        StorageGuid = c.storageGuid ?? ""
+                    });
+                }
+                if (res.Results.Count > 0) return res;
+                return MakeSaveResult(request.Index);
+            }
         }
 
-        // K>1 (high-entropy path): return top-K candidates sorted by similarity.
-        if (count > 0)
+        // ── Phase 3: Search cold (evicted) buckets directly on RocksDB ──
+        if (coldBucketIds.Count > 0)
         {
-            var indices = new int[count];
-            for (int i = 0; i < count; i++) indices[i] = i;
-            Array.Sort(similarities, indices);
-            // Sort put ascending — reverse to get descending
-            Array.Reverse(similarities);
-            Array.Reverse(indices);
-
-            int returnCount = Math.Min(requestedK, count);
-            var res = new SearchVector_Result { Save = !hasL1 };
-            for (int i = 0; i < returnCount; i++)
+            int remainingBudget = MaxCandidates - count;
+            if (remainingBudget > 0)
             {
-                var c = candidates[indices[i]];
-                ByteString chunkBytes = ByteString.Empty;
-                if (!string.IsNullOrWhiteSpace(c.storageGuid))
+                var bucketStorage = BucketCacheManager.GetBucketStorage();
+                if (bucketStorage != null)
                 {
-                    var raw = await ChunkCacheHandler.GetChunkAsync(c.storageGuid);
-                    if (raw != null && raw.Length > 0)
-                        chunkBytes = ByteString.CopyFrom(raw);
+                    var (coldBucketId, coldIndex, coldGuid, coldSim) =
+                        bucketStorage.SearchBucketsDirect(
+                            coldBucketIds, queryVector, queryNormSq, threshold, remainingBudget);
+
+                    if (coldSim > bestSim && coldSim >= threshold)
+                    {
+                        bestSim = coldSim;
+                        bestBucketId = coldBucketId;
+                        bestBucketIndex = coldIndex;
+                        bestGuid = coldGuid;
+                    }
                 }
-                res.Results.Add(new SearchVectorObject
-                {
-                    BucketId = c.bucketId,
-                    BucketKey = (long)c.bucketIndex,
-                    Similarity = similarities[i],
-                    Chunk = chunkBytes,
-                    Index = request.Index,
-                    StorageGuid = c.storageGuid ?? ""
-                });
             }
+        }
+
+        // ── Return best match or save-new ──
+        if (bestSim >= threshold && bestGuid != null)
+        {
+            ByteString chunkBytes = ByteString.Empty;
+            var raw = await ChunkCacheHandler.GetChunkAsync(bestGuid);
+            if (raw != null && raw.Length > 0)
+                chunkBytes = ByteString.CopyFrom(raw);
+
+            var res = new SearchVector_Result { Save = false };
+            res.Results.Add(new SearchVectorObject
+            {
+                BucketId = bestBucketId,
+                BucketKey = (long)bestBucketIndex,
+                Similarity = bestSim,
+                Chunk = chunkBytes,
+                Index = request.Index,
+                StorageGuid = bestGuid
+            });
             return res;
         }
 

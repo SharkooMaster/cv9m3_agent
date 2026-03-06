@@ -1,4 +1,7 @@
+using System.Buffers.Binary;
 using System.Collections.Concurrent;
+using System.Numerics;
+using System.Runtime.InteropServices;
 using System.Text;
 using RocksDbSharp;
 
@@ -44,6 +47,13 @@ public sealed class RocksDbBucketStorage : IDisposable
     private const string LaneVectorPrefix = "lv:";
     private const string LaneNextPrefix = "lnext:";
 
+    // Binary key format for bucket vectors (replaces string "bv:{id}:{idx}")
+    // [0x01][8-byte BE bucketId][8-byte BE index] = 17 bytes total, 9-byte prefix
+    private const byte BinaryVectorTag = 0x01;
+    private const int BinaryKeyLen = 17;
+    private const int BinaryPrefixLen = 9;
+    private static readonly byte[] MigrationMarkerKey = Encoding.UTF8.GetBytes("__bv_binary_v1__");
+
     // In-memory lane counters (same pattern as _nextIndexInMemory)
     private static readonly ConcurrentDictionary<ushort, ulong> _laneNextIndex = new();
 
@@ -63,11 +73,12 @@ public sealed class RocksDbBucketStorage : IDisposable
             .SetBlockSize(16 * 1024)                                        // 16KB blocks (vs 4KB default)
             .SetCacheIndexAndFilterBlocks(true)                             // Keep index+bloom in block cache
             .SetPinL0FilterAndIndexBlocksInCache(true)                      // Pin L0 — fastest path stays hot
-            .SetWholeKeyFiltering(true)                                     // Bloom on full keys for Get()
+            .SetWholeKeyFiltering(false)                                    // Prefix bloom for Seek(), not whole-key
             .SetFormatVersion(4);                                           // Latest SST format
 
         var cfOpts = new ColumnFamilyOptions()
             .SetBlockBasedTableFactory(tableOpts)
+            .SetPrefixExtractor(SliceTransform.CreateFixedPrefix(BinaryPrefixLen)) // 9-byte prefix bloom
             .SetMemtablePrefixBloomSizeRatio(0.1)                           // Memtable bloom for recent writes
             .SetWriteBufferSize(64 * 1024 * 1024)                           // 64MB memtable (vs 4MB default)
             .SetMaxWriteBufferNumber(4)                                     // 4 memtables before stall (more headroom)
@@ -75,7 +86,7 @@ public sealed class RocksDbBucketStorage : IDisposable
             .SetLevel0SlowdownWritesTrigger(20)                             // Soft throttle at 20 L0 files (default)
             .SetLevel0StopWritesTrigger(48)                                 // Hard stall at 48 (vs default 36)
             .SetMaxBytesForLevelBase(512 * 1024 * 1024)                    // 512MB L1 (vs default 256MB) — reduces write amp
-            .SetCompression(Compression.Zstd);
+            .SetCompression(Compression.Lz4);
 
         int bgThreads = Math.Max(4, Environment.ProcessorCount / 2);
         var dbOpts = new DbOptions()
@@ -94,7 +105,10 @@ public sealed class RocksDbBucketStorage : IDisposable
         // Load existing bucket IDs on startup
         LoadBucketIds();
 
-        Console.WriteLine($"[RocksDB Buckets] Initialized at {_bucketDbPath} with bloom filter + {blockCacheSizeMb}MB block cache + LZ4");
+        // One-time migration: convert string bv: keys to binary format for prefix bloom
+        MigrateToBinaryKeys();
+
+        Console.WriteLine($"[RocksDB Buckets] Initialized at {_bucketDbPath} with prefix bloom + {blockCacheSizeMb}MB block cache + LZ4");
     }
 
     /// <summary>
@@ -115,14 +129,21 @@ public sealed class RocksDbBucketStorage : IDisposable
 
     private void LoadBucketIds()
     {
-        using var iterator = _rocksDb.NewIterator();
-        iterator.SeekToFirst();
+        // Total-order seek is required because a prefix extractor is set on this CF.
+        // Without it, SeekToFirst would only iterate within the first prefix.
+        var readOpts = new ReadOptions().SetTotalOrderSeek(true);
+        using var iterator = _rocksDb.NewIterator(readOptions: readOpts);
+
+        // Seek past binary vector keys (0x01...) directly to metadata keys (0x02+)
+        iterator.Seek(new byte[] { BinaryVectorTag + 1 });
 
         lock (_bucketIdLock)
         {
             while (iterator.Valid())
             {
                 var keyBytes = iterator.Key();
+                if (keyBytes == null || keyBytes.Length == 0) { iterator.Next(); continue; }
+
                 var key = Encoding.UTF8.GetString(keyBytes);
 
                 if (key.StartsWith(BucketNameToIdPrefix, StringComparison.Ordinal))
@@ -137,7 +158,6 @@ public sealed class RocksDbBucketStorage : IDisposable
                 }
                 else if (key.StartsWith(BucketNextPrefix, StringComparison.Ordinal))
                 {
-                    // Load next-index counters into memory so we never read stale values from RocksDB
                     var valueBytes = iterator.Value();
                     if (valueBytes != null && valueBytes.Length == sizeof(ulong))
                     {
@@ -148,11 +168,10 @@ public sealed class RocksDbBucketStorage : IDisposable
                 }
                 else if (key.StartsWith(BucketStorageGuidPrefix, StringComparison.Ordinal))
                 {
-                    // Load dedup map into memory so we never miss a recently-stored entry
                     var valueBytes = iterator.Value();
                     if (valueBytes != null && valueBytes.Length == sizeof(ulong))
                     {
-                        var dedupSuffix = key.Substring(BucketStorageGuidPrefix.Length); // "{bucketId}:{storageGuid}"
+                        var dedupSuffix = key.Substring(BucketStorageGuidPrefix.Length);
                         _dedupInMemory[dedupSuffix] = BitConverter.ToUInt64(valueBytes, 0);
                     }
                 }
@@ -226,6 +245,103 @@ public sealed class RocksDbBucketStorage : IDisposable
         return new string(chars);
     }
 
+    // ══════════════════════════════════════════════════════════════
+    //  BINARY KEY HELPERS
+    // ══════════════════════════════════════════════════════════════
+
+    private static byte[] MakeBinaryVectorKey(ulong bucketId, ulong index)
+    {
+        var key = new byte[BinaryKeyLen];
+        key[0] = BinaryVectorTag;
+        BinaryPrimitives.WriteUInt64BigEndian(key.AsSpan(1), bucketId);
+        BinaryPrimitives.WriteUInt64BigEndian(key.AsSpan(9), index);
+        return key;
+    }
+
+    private static byte[] MakeBinaryVectorPrefix(ulong bucketId)
+    {
+        var key = new byte[BinaryPrefixLen];
+        key[0] = BinaryVectorTag;
+        BinaryPrimitives.WriteUInt64BigEndian(key.AsSpan(1), bucketId);
+        return key;
+    }
+
+    private static bool TryParseBinaryVectorKey(byte[] key, out ulong bucketId, out ulong index)
+    {
+        bucketId = 0; index = 0;
+        if (key == null || key.Length < BinaryKeyLen || key[0] != BinaryVectorTag)
+            return false;
+        bucketId = BinaryPrimitives.ReadUInt64BigEndian(key.AsSpan(1));
+        index = BinaryPrimitives.ReadUInt64BigEndian(key.AsSpan(9));
+        return true;
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    //  ONE-TIME MIGRATION: string bv: keys → binary keys
+    // ══════════════════════════════════════════════════════════════
+
+    private void MigrateToBinaryKeys()
+    {
+        var marker = _rocksDb.Get(MigrationMarkerKey);
+        if (marker != null && marker.Length > 0)
+            return; // Already migrated
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var readOpts = new ReadOptions().SetTotalOrderSeek(true);
+        var oldPrefix = Encoding.UTF8.GetBytes(BucketVectorPrefix);
+
+        long migrated = 0;
+        long batchCount = 0;
+        const int BatchLimit = 50_000;
+
+        using var iterator = _rocksDb.NewIterator(readOptions: readOpts);
+        iterator.Seek(oldPrefix);
+
+        var batch = new WriteBatch();
+        while (iterator.Valid())
+        {
+            var keyBytes = iterator.Key();
+            if (keyBytes == null || keyBytes.Length < oldPrefix.Length ||
+                !keyBytes.AsSpan(0, oldPrefix.Length).SequenceEqual(oldPrefix))
+                break;
+
+            // Parse old string key: "bv:{bucketId}:{index}"
+            var keySuffix = Encoding.UTF8.GetString(keyBytes, oldPrefix.Length, keyBytes.Length - oldPrefix.Length);
+            var colonIdx = keySuffix.IndexOf(':');
+            if (colonIdx >= 0 &&
+                ulong.TryParse(keySuffix.AsSpan(0, colonIdx), out var bucketId) &&
+                ulong.TryParse(keySuffix.AsSpan(colonIdx + 1), out var index))
+            {
+                var newKey = MakeBinaryVectorKey(bucketId, index);
+                var val = iterator.Value();
+                batch.Put(newKey, val);
+                batch.Delete(keyBytes);
+                migrated++;
+            }
+
+            iterator.Next();
+
+            if (migrated % BatchLimit == 0 && migrated > 0)
+            {
+                _rocksDb.Write(batch);
+                batch.Dispose();
+                batch = new WriteBatch();
+                batchCount++;
+            }
+        }
+
+        // Final batch + migration marker
+        batch.Put(MigrationMarkerKey, new byte[] { 1 });
+        _rocksDb.Write(batch);
+        batch.Dispose();
+
+        sw.Stop();
+        if (migrated > 0)
+            Console.WriteLine($"[RocksDB Buckets] Migrated {migrated:N0} vector keys to binary format in {sw.ElapsedMilliseconds}ms ({batchCount + 1} batches)");
+        else
+            Console.WriteLine("[RocksDB Buckets] Binary key migration marker set (no old keys found)");
+    }
+
     /// <summary>
     /// Store a vector in a bucket. Returns (bucketId, bucketIndex).
     /// Thread-safe: uses per-bucket locking to allow concurrent writes to different buckets.
@@ -256,7 +372,7 @@ public sealed class RocksDbBucketStorage : IDisposable
 
             // Persist to RocksDB via batcher (background, eventual consistency for durability)
             var recordBytes = SerializeVectorRecord(vector, storageGuid, chunkSize);
-            var vectorKeyBytes = Encoding.UTF8.GetBytes($"{BucketVectorPrefix}{bucketId}:{bucketIndex}");
+            var vectorKeyBytes = MakeBinaryVectorKey(bucketId, bucketIndex);
             var nextKeyBytes = Encoding.UTF8.GetBytes($"{BucketNextPrefix}{bucketId}");
 
             _writeBatcher.Put(vectorKeyBytes, recordBytes);
@@ -273,25 +389,23 @@ public sealed class RocksDbBucketStorage : IDisposable
     public List<(float[] vector, string storageGuid, ulong bucketId, ulong bucketIndex, string bucketName)> GetVectorsByBuckets(List<string> bucketNames)
     {
         var results = new List<(float[] vector, string storageGuid, ulong bucketId, ulong bucketIndex, string bucketName)>();
+        var readOpts = new ReadOptions()
+            .SetPrefixSameAsStart(true)
+            .SetFillCache(true);
 
         foreach (var bucketName in bucketNames)
         {
             if (!_bucketNameToId.TryGetValue(bucketName, out var bucketId) || bucketId == 0)
                 continue;
 
-            // Prefix iterator: 1 seek + sequential scan (fast) instead of N random Get() calls (slow)
-            var prefix = Encoding.UTF8.GetBytes($"{BucketVectorPrefix}{bucketId}:");
-            using var iterator = _rocksDb.NewIterator();
+            var prefix = MakeBinaryVectorPrefix(bucketId);
+            using var iterator = _rocksDb.NewIterator(readOptions: readOpts);
             iterator.Seek(prefix);
 
             while (iterator.Valid())
             {
                 var keyBytes = iterator.Key();
-                if (keyBytes.Length < prefix.Length || !keyBytes.AsSpan(0, prefix.Length).SequenceEqual(prefix))
-                    break;
-
-                var indexStr = Encoding.UTF8.GetString(keyBytes, prefix.Length, keyBytes.Length - prefix.Length);
-                if (!ulong.TryParse(indexStr, out var bucketIndex))
+                if (!TryParseBinaryVectorKey(keyBytes, out _, out var bucketIndex))
                 {
                     iterator.Next();
                     continue;
@@ -314,7 +428,7 @@ public sealed class RocksDbBucketStorage : IDisposable
     /// </summary>
     public string? GetStorageGuidByReference(ulong bucketId, ulong bucketIndex)
     {
-        var key = Encoding.UTF8.GetBytes($"{BucketVectorPrefix}{bucketId}:{bucketIndex}");
+        var key = MakeBinaryVectorKey(bucketId, bucketIndex);
         var recordBytes = _rocksDb.Get(key);
         if (recordBytes == null || recordBytes.Length == 0)
             return null;
@@ -339,20 +453,19 @@ public sealed class RocksDbBucketStorage : IDisposable
                 return null;
         }
 
-        var prefix = Encoding.UTF8.GetBytes($"{BucketVectorPrefix}{bucketId}:");
+        var prefix = MakeBinaryVectorPrefix(bucketId);
         var vectors = new List<(float[], string, ulong, ulong, float)>();
+        var readOpts = new ReadOptions()
+            .SetPrefixSameAsStart(true)
+            .SetFillCache(true);
 
-        using var iterator = _rocksDb.NewIterator();
+        using var iterator = _rocksDb.NewIterator(readOptions: readOpts);
         iterator.Seek(prefix);
 
         while (iterator.Valid())
         {
             var keyBytes = iterator.Key();
-            if (keyBytes.Length < prefix.Length || !keyBytes.AsSpan(0, prefix.Length).SequenceEqual(prefix))
-                break;
-
-            var indexStr = Encoding.UTF8.GetString(keyBytes, prefix.Length, keyBytes.Length - prefix.Length);
-            if (!ulong.TryParse(indexStr, out var bucketIndex))
+            if (!TryParseBinaryVectorKey(keyBytes, out _, out var bucketIndex))
             {
                 iterator.Next();
                 continue;
@@ -378,12 +491,11 @@ public sealed class RocksDbBucketStorage : IDisposable
     {
         var result = new Dictionary<string, List<(float[] vector, string storageGuid, ulong bucketId, ulong bucketIndex, float normSquared)>>();
 
-        // Single iterator scan over all "bv:" keys — sequential I/O, very fast
-        var globalPrefix = Encoding.UTF8.GetBytes(BucketVectorPrefix);
-        using var iterator = _rocksDb.NewIterator();
-        iterator.Seek(globalPrefix);
+        // Total-order seek: scan ALL binary vector keys (0x01 prefix)
+        var readOpts = new ReadOptions().SetTotalOrderSeek(true);
+        using var iterator = _rocksDb.NewIterator(readOptions: readOpts);
+        iterator.Seek(new byte[] { BinaryVectorTag });
 
-        // Reverse map: bucketId → bucketName (needed for result keys)
         Dictionary<ulong, string> idToName;
         lock (_bucketIdLock)
         {
@@ -393,20 +505,10 @@ public sealed class RocksDbBucketStorage : IDisposable
         while (iterator.Valid())
         {
             var keyBytes = iterator.Key();
-            if (keyBytes.Length < globalPrefix.Length || !keyBytes.AsSpan(0, globalPrefix.Length).SequenceEqual(globalPrefix))
+            if (keyBytes == null || keyBytes.Length < BinaryKeyLen || keyBytes[0] != BinaryVectorTag)
                 break;
 
-            // Key format: "bv:{bucketId}:{index}"
-            var keySuffix = Encoding.UTF8.GetString(keyBytes, globalPrefix.Length, keyBytes.Length - globalPrefix.Length);
-            var colonIdx = keySuffix.IndexOf(':');
-            if (colonIdx < 0)
-            {
-                iterator.Next();
-                continue;
-            }
-
-            if (!ulong.TryParse(keySuffix.AsSpan(0, colonIdx), out var bucketId) ||
-                !ulong.TryParse(keySuffix.AsSpan(colonIdx + 1), out var bucketIndex))
+            if (!TryParseBinaryVectorKey(keyBytes, out var bucketId, out var bucketIndex))
             {
                 iterator.Next();
                 continue;
@@ -502,6 +604,260 @@ public sealed class RocksDbBucketStorage : IDisposable
     }
 
     private readonly record struct VectorRecord(float[] Vector, string StorageGuid, int ChunkSize, float NormSquared);
+
+    // ══════════════════════════════════════════════════════════════
+    //  DIRECT ROCKSDB SEARCH (zero M_Data allocation)
+    // ══════════════════════════════════════════════════════════════
+
+    /// <summary>
+    /// Search a bucket directly from RocksDB without materializing M_Bucket/M_Data objects.
+    /// Uses prefix bloom filter for O(1) SST skip, then iterates entries inline with SIMD
+    /// cosine similarity. Only allocates byte[] per-entry (from iterator.Value()) and one
+    /// string for the best match's storageGuid.
+    /// Returns (bucketIndex, storageGuid, similarity) or (0, null, -1) if no match above threshold.
+    /// </summary>
+    public (ulong bucketIndex, string? storageGuid, float similarity) SearchBucketDirect(
+        ulong bucketId, float[] queryVector, float queryNormSq, float threshold)
+    {
+        var prefix = MakeBinaryVectorPrefix(bucketId);
+        var readOpts = new ReadOptions()
+            .SetPrefixSameAsStart(true)
+            .SetFillCache(true)
+            .SetVerifyChecksums(false);
+
+        int vecLen = queryVector.Length;
+        int vectorBytesLen = vecLen * sizeof(float);
+        int minValueLen = 4 + vectorBytesLen; // dim + vector floats
+
+        float bestSim = -1f;
+        byte[]? bestKeyBytes = null;
+        byte[]? bestValBytes = null;
+
+        using var iter = _rocksDb.NewIterator(readOptions: readOpts);
+        iter.Seek(prefix);
+
+        while (iter.Valid())
+        {
+            var valBytes = iter.Value();
+            if (valBytes == null || valBytes.Length < minValueLen)
+            {
+                iter.Next();
+                continue;
+            }
+
+            // Inline deserialization: read dim, then cast vector bytes to Span<float>
+            int dim = BitConverter.ToInt32(valBytes, 0);
+            if (dim != vecLen || valBytes.Length < 4 + dim * sizeof(float))
+            {
+                iter.Next();
+                continue;
+            }
+
+            var candidateSpan = MemoryMarshal.Cast<byte, float>(
+                valBytes.AsSpan(4, dim * sizeof(float)));
+
+            // Extract normSquared from end of record (after variable-length storageGuid)
+            float normSq = ExtractNormSquared(valBytes, dim);
+
+            float sim = CosineSimilarityInline(queryVector, queryNormSq, candidateSpan, normSq);
+            if (sim >= threshold && sim > bestSim)
+            {
+                bestSim = sim;
+                bestKeyBytes = iter.Key();
+                bestValBytes = valBytes;
+            }
+
+            iter.Next();
+        }
+
+        if (bestKeyBytes == null || bestValBytes == null)
+            return (0, null, -1f);
+
+        ulong bestIndex = BinaryPrimitives.ReadUInt64BigEndian(bestKeyBytes.AsSpan(9));
+        string? bestGuid = ExtractStorageGuid(bestValBytes, vecLen);
+        return (bestIndex, bestGuid, bestSim);
+    }
+
+    /// <summary>
+    /// Search multiple buckets directly from RocksDB. Collects up to maxCandidates vectors
+    /// across all buckets and returns the single best match above threshold.
+    /// Used by SearchVector.ProcessSingleQuery for cold (evicted) buckets.
+    /// </summary>
+    public (ulong bucketId, ulong bucketIndex, string? storageGuid, float similarity) SearchBucketsDirect(
+        IReadOnlyList<ulong> bucketIds, float[] queryVector, float queryNormSq, float threshold, int maxCandidates = 4096)
+    {
+        int vecLen = queryVector.Length;
+        int vectorBytesLen = vecLen * sizeof(float);
+        int minValueLen = 4 + vectorBytesLen;
+
+        float bestSim = -1f;
+        ulong bestBucketId = 0;
+        byte[]? bestKeyBytes = null;
+        byte[]? bestValBytes = null;
+        int totalScanned = 0;
+
+        var readOpts = new ReadOptions()
+            .SetPrefixSameAsStart(true)
+            .SetFillCache(true)
+            .SetVerifyChecksums(false);
+
+        for (int b = 0; b < bucketIds.Count && totalScanned < maxCandidates; b++)
+        {
+            ulong bucketId = bucketIds[b];
+            var prefix = MakeBinaryVectorPrefix(bucketId);
+
+            using var iter = _rocksDb.NewIterator(readOptions: readOpts);
+            iter.Seek(prefix);
+
+            while (iter.Valid() && totalScanned < maxCandidates)
+            {
+                var valBytes = iter.Value();
+                if (valBytes == null || valBytes.Length < minValueLen)
+                {
+                    iter.Next();
+                    continue;
+                }
+
+                int dim = BitConverter.ToInt32(valBytes, 0);
+                if (dim != vecLen || valBytes.Length < 4 + dim * sizeof(float))
+                {
+                    iter.Next();
+                    continue;
+                }
+
+                var candidateSpan = MemoryMarshal.Cast<byte, float>(
+                    valBytes.AsSpan(4, dim * sizeof(float)));
+                float normSq = ExtractNormSquared(valBytes, dim);
+                float sim = CosineSimilarityInline(queryVector, queryNormSq, candidateSpan, normSq);
+                totalScanned++;
+
+                if (sim >= threshold && sim > bestSim)
+                {
+                    bestSim = sim;
+                    bestBucketId = bucketId;
+                    bestKeyBytes = iter.Key();
+                    bestValBytes = valBytes;
+                }
+
+                iter.Next();
+            }
+        }
+
+        if (bestKeyBytes == null || bestValBytes == null)
+            return (0, 0, null, -1f);
+
+        ulong bestIndex = BinaryPrimitives.ReadUInt64BigEndian(bestKeyBytes.AsSpan(9));
+        string? bestGuid = ExtractStorageGuid(bestValBytes, vecLen);
+        return (bestBucketId, bestIndex, bestGuid, bestSim);
+    }
+
+    /// <summary>
+    /// Extract normSquared from the tail of a serialized vector record.
+    /// Format: [4B dim][dim*4B vector][7-bit-enc strLen][strLen bytes guid][4B chunkSize][4B normSq]
+    /// </summary>
+    private static float ExtractNormSquared(byte[] valBytes, int dim)
+    {
+        int strLenOffset = 4 + dim * sizeof(float);
+        if (strLenOffset >= valBytes.Length) return 0f;
+
+        // Read BinaryWriter-style 7-bit encoded string length
+        int strLen = 0, shift = 0, strLenSize = 0;
+        for (int i = strLenOffset; i < valBytes.Length && i < strLenOffset + 5; i++)
+        {
+            byte b = valBytes[i];
+            strLen |= (b & 0x7F) << shift;
+            strLenSize++;
+            if (b < 128) break;
+            shift += 7;
+        }
+
+        int normSqOffset = strLenOffset + strLenSize + strLen + 4; // skip guid + chunkSize
+        if (normSqOffset + 4 <= valBytes.Length)
+            return BitConverter.ToSingle(valBytes, normSqOffset);
+
+        // Fallback: compute from vector bytes
+        var vecSpan = MemoryMarshal.Cast<byte, float>(valBytes.AsSpan(4, dim * sizeof(float)));
+        return ComputeNormSquaredSpan(vecSpan);
+    }
+
+    /// <summary>
+    /// Extract storageGuid string from a serialized vector record.
+    /// </summary>
+    private static string? ExtractStorageGuid(byte[] valBytes, int dim)
+    {
+        int strLenOffset = 4 + dim * sizeof(float);
+        if (strLenOffset >= valBytes.Length) return null;
+
+        int strLen = 0, shift = 0, strLenSize = 0;
+        for (int i = strLenOffset; i < valBytes.Length && i < strLenOffset + 5; i++)
+        {
+            byte b = valBytes[i];
+            strLen |= (b & 0x7F) << shift;
+            strLenSize++;
+            if (b < 128) break;
+            shift += 7;
+        }
+
+        int strStart = strLenOffset + strLenSize;
+        if (strStart + strLen > valBytes.Length || strLen <= 0) return null;
+        return Encoding.UTF8.GetString(valBytes, strStart, strLen);
+    }
+
+    /// <summary>
+    /// SIMD cosine similarity between a float[] query and a ReadOnlySpan&lt;float&gt; candidate.
+    /// Uses hardware-accelerated Vector&lt;float&gt; for the dot product.
+    /// </summary>
+    private static float CosineSimilarityInline(
+        float[] queryVec, float queryNormSq,
+        ReadOnlySpan<float> candidateSpan, float candidateNormSq)
+    {
+        int len = queryVec.Length;
+        int vecSize = Vector<float>.Count;
+        double dot = 0.0;
+        int i = 0;
+
+        if (vecSize > 1 && len >= vecSize)
+        {
+            Vector<float> dotSum = Vector<float>.Zero;
+            for (; i <= len - vecSize; i += vecSize)
+                dotSum += new Vector<float>(queryVec, i) * new Vector<float>(candidateSpan.Slice(i));
+            for (int j = 0; j < vecSize; j++) dot += dotSum[j];
+        }
+
+        for (; i < len; i++)
+            dot += queryVec[i] * candidateSpan[i];
+
+        const double eps = 1e-12;
+        if (queryNormSq <= eps || candidateNormSq <= eps) return 0f;
+        double denom = Math.Sqrt(queryNormSq) * Math.Sqrt(candidateNormSq);
+        return denom <= eps ? 0f : (float)(dot / denom);
+    }
+
+    /// <summary>
+    /// Compute squared L2 norm from a ReadOnlySpan&lt;float&gt; using SIMD.
+    /// Fallback for records that don't have pre-computed normSquared.
+    /// </summary>
+    private static float ComputeNormSquaredSpan(ReadOnlySpan<float> vec)
+    {
+        int vecSize = Vector<float>.Count;
+        double norm = 0.0;
+        int i = 0;
+
+        if (vecSize > 1 && vec.Length >= vecSize)
+        {
+            Vector<float> normSum = Vector<float>.Zero;
+            for (; i <= vec.Length - vecSize; i += vecSize)
+            {
+                var v = new Vector<float>(vec.Slice(i));
+                normSum += v * v;
+            }
+            for (int j = 0; j < vecSize; j++) norm += normSum[j];
+        }
+
+        for (; i < vec.Length; i++)
+            norm += vec[i] * vec[i];
+        return (float)norm;
+    }
 
     // ══════════════════════════════════════════════════════════════
     //  LANE BUCKET STORAGE (Level 2 sub-chunk index)
