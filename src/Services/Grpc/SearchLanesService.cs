@@ -35,6 +35,7 @@ public class SearchLanesService : SearchLanes.SearchLanesBase
                 qr.Matches.Add(new LaneMatch
                 {
                     BucketId = bucketId,
+                    BucketKey = bucketIndex,
                     StorageGuid = storageGuid,
                     LanePosition = (uint)lanePos,
                     DonorLaneBytes = ByteString.CopyFrom(laneBytes)
