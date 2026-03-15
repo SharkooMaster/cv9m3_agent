@@ -17,17 +17,54 @@ public sealed class RocksDbBucketStorage : IDisposable
     private readonly RocksDbWriteBatcher _writeBatcher;
     private readonly string _bucketDbPath;
     private static readonly object _bucketIdLock = new object();
-    private static readonly Dictionary<string, ulong> _bucketNameToId = new();
-    private static readonly ConcurrentDictionary<string, object> _bucketLocks = new();
-    private static readonly ConcurrentDictionary<ulong, string> _bucketIdToName = new();
+
+    // Striped locks: 1024 lock objects instead of one per bucket.
+    // Two buckets may share a stripe (brief contention, not correctness issue).
+    // Eliminates the ConcurrentDictionary<string, object> that held 10M+ string keys.
+    private static readonly object[] _bucketStripes = new object[1024];
+    static RocksDbBucketStorage()
+    {
+        for (int i = 0; i < _bucketStripes.Length; i++)
+            _bucketStripes[i] = new object();
+    }
+    private static object GetBucketLock(ulong bucketId) =>
+        _bucketStripes[bucketId % (ulong)_bucketStripes.Length];
 
     // ── IN-MEMORY counters & dedup: fixes write-batcher read-after-write race ──
     // The write batcher flushes to RocksDB every 50ms. Two rapid StoreVector calls
     // for the same bucket would both read the same stale `next` counter from RocksDB
     // → duplicate bucketIndex → wrong base chunk during decompression → CORRUPTION.
     // Fix: track counters and dedup entries in memory (protected by per-bucket lock).
+    //
+    // _nextIndexInMemory doubles as the "known bucket" set: if a bucketId has an entry
+    // here, the bucket exists. Eliminates the old _bucketNameToId / _bucketIdToName
+    // dictionaries (saved ~5GB managed heap at 10M+ buckets).
     private static readonly ConcurrentDictionary<ulong, ulong> _nextIndexInMemory = new();
-    private static readonly ConcurrentDictionary<string, ulong> _dedupInMemory = new();
+
+    // Dedup map: keyed by a 40-byte value-type struct instead of a ~184-byte heap string.
+    // At 10M entries this saves ~1.7GB of managed heap.
+    private static readonly ConcurrentDictionary<DedupKey, ulong> _dedupInMemory = new();
+
+    private readonly record struct DedupKey(ulong BucketId, ulong G0, ulong G1, ulong G2, ulong G3);
+
+    private static DedupKey MakeDedupKey(ulong bucketId, ReadOnlySpan<char> hexGuid)
+    {
+        if (hexGuid.Length != 64) return new DedupKey(bucketId, 0, 0, 0, 0);
+        Span<byte> bytes = stackalloc byte[32];
+        for (int i = 0; i < 32; i++)
+            bytes[i] = (byte)((HexVal(hexGuid[i * 2]) << 4) | HexVal(hexGuid[i * 2 + 1]));
+        return new DedupKey(
+            bucketId,
+            BinaryPrimitives.ReadUInt64LittleEndian(bytes),
+            BinaryPrimitives.ReadUInt64LittleEndian(bytes.Slice(8)),
+            BinaryPrimitives.ReadUInt64LittleEndian(bytes.Slice(16)),
+            BinaryPrimitives.ReadUInt64LittleEndian(bytes.Slice(24)));
+    }
+
+    private static int HexVal(char c) =>
+        c >= '0' && c <= '9' ? c - '0' :
+        c >= 'a' && c <= 'f' ? c - 'a' + 10 :
+        c >= 'A' && c <= 'F' ? c - 'A' + 10 : 0;
 
     // New append-friendly schema:
     // bn:{bucketName}              -> ulong bucketId
@@ -138,6 +175,8 @@ public sealed class RocksDbBucketStorage : IDisposable
         // Seek past binary vector keys (0x01...) directly to metadata keys (0x02+)
         iterator.Seek(new byte[] { BinaryVectorTag + 1 });
 
+        long bucketNameCount = 0;
+
         lock (_bucketIdLock)
         {
             while (iterator.Valid())
@@ -149,12 +188,12 @@ public sealed class RocksDbBucketStorage : IDisposable
 
                 if (key.StartsWith(BucketNameToIdPrefix, StringComparison.Ordinal))
                 {
-                    var bucketName = key.Substring(BucketNameToIdPrefix.Length);
+                    var bucketName = key.AsSpan(BucketNameToIdPrefix.Length);
                     var bucketId = BitstringToUlong(bucketName);
                     if (bucketId > 0)
                     {
-                        _bucketNameToId[bucketName] = bucketId;
-                        _bucketIdToName[bucketId] = bucketName;
+                        _nextIndexInMemory.TryAdd(bucketId, 0UL);
+                        bucketNameCount++;
                     }
                 }
                 else if (key.StartsWith(BucketNextPrefix, StringComparison.Ordinal))
@@ -162,7 +201,7 @@ public sealed class RocksDbBucketStorage : IDisposable
                     var valueBytes = iterator.Value();
                     if (valueBytes != null && valueBytes.Length == sizeof(ulong))
                     {
-                        var idStr = key.Substring(BucketNextPrefix.Length);
+                        var idStr = key.AsSpan(BucketNextPrefix.Length);
                         if (ulong.TryParse(idStr, out var bucketId))
                             _nextIndexInMemory[bucketId] = BitConverter.ToUInt64(valueBytes, 0);
                     }
@@ -172,8 +211,19 @@ public sealed class RocksDbBucketStorage : IDisposable
                     var valueBytes = iterator.Value();
                     if (valueBytes != null && valueBytes.Length == sizeof(ulong))
                     {
-                        var dedupSuffix = key.Substring(BucketStorageGuidPrefix.Length);
-                        _dedupInMemory[dedupSuffix] = BitConverter.ToUInt64(valueBytes, 0);
+                        var suffix = key.AsSpan(BucketStorageGuidPrefix.Length);
+                        int colonIdx = suffix.IndexOf(':');
+                        if (colonIdx >= 0 &&
+                            ulong.TryParse(suffix.Slice(0, colonIdx), out var dedupBucketId) &&
+                            suffix.Length > colonIdx + 1)
+                        {
+                            var guidHex = suffix.Slice(colonIdx + 1);
+                            if (guidHex.Length == 64)
+                            {
+                                var dk = MakeDedupKey(dedupBucketId, guidHex);
+                                _dedupInMemory[dk] = BitConverter.ToUInt64(valueBytes, 0);
+                            }
+                        }
                     }
                 }
                 else if (key.StartsWith(LaneNextPrefix, StringComparison.Ordinal))
@@ -181,7 +231,7 @@ public sealed class RocksDbBucketStorage : IDisposable
                     var valueBytes = iterator.Value();
                     if (valueBytes != null && valueBytes.Length == sizeof(ulong))
                     {
-                        var hashStr = key.Substring(LaneNextPrefix.Length);
+                        var hashStr = key.AsSpan(LaneNextPrefix.Length);
                         if (ushort.TryParse(hashStr, out var laneHash))
                             _laneNextIndex[laneHash] = BitConverter.ToUInt64(valueBytes, 0);
                     }
@@ -191,7 +241,7 @@ public sealed class RocksDbBucketStorage : IDisposable
             }
         }
 
-        Console.WriteLine($"[RocksDB Buckets] Loaded {_bucketNameToId.Count} buckets, {_nextIndexInMemory.Count} counters, {_dedupInMemory.Count} dedup entries, {_laneNextIndex.Count} lane counters into memory");
+        Console.WriteLine($"[RocksDB Buckets] Loaded {bucketNameCount} buckets, {_nextIndexInMemory.Count} counters, {_dedupInMemory.Count} dedup entries, {_laneNextIndex.Count} lane counters into memory");
     }
 
     /// <summary>
@@ -202,16 +252,16 @@ public sealed class RocksDbBucketStorage : IDisposable
     /// </summary>
     private ulong GetOrCreateBucketId(string bucketName)
     {
+        var id = BitstringToUlong(bucketName);
+
+        if (_nextIndexInMemory.ContainsKey(id))
+            return id;
+
         lock (_bucketIdLock)
         {
-            if (_bucketNameToId.TryGetValue(bucketName, out var id))
+            if (_nextIndexInMemory.ContainsKey(id))
                 return id;
 
-            id = BitstringToUlong(bucketName);
-            _bucketNameToId[bucketName] = id;
-            _bucketIdToName[id] = bucketName;
-
-            // Seed the in-memory next counter for this brand-new bucket
             _nextIndexInMemory.TryAdd(id, 0UL);
 
             _writeBatcher.Put(Encoding.UTF8.GetBytes($"{BucketNameToIdPrefix}{bucketName}"), BitConverter.GetBytes(id));
@@ -226,7 +276,10 @@ public sealed class RocksDbBucketStorage : IDisposable
     /// Convert a 64-char '0'/'1' bitstring into a ulong. 1:1 bijection — no collisions.
     /// Bit 0 of the string maps to bit 0 of the ulong, etc.
     /// </summary>
-    internal static ulong BitstringToUlong(string bitstring)
+    internal static ulong BitstringToUlong(string bitstring) =>
+        BitstringToUlong(bitstring.AsSpan());
+
+    internal static ulong BitstringToUlong(ReadOnlySpan<char> bitstring)
     {
         ulong result = 0;
         int len = Math.Min(64, bitstring.Length);
@@ -345,19 +398,17 @@ public sealed class RocksDbBucketStorage : IDisposable
 
     /// <summary>
     /// Store a vector in a bucket. Returns (bucketId, bucketIndex).
-    /// Thread-safe: uses per-bucket locking to allow concurrent writes to different buckets.
+    /// Thread-safe: uses striped locking to allow concurrent writes to different buckets.
     /// </summary>
     public (ulong bucketId, ulong bucketIndex) StoreVector(string bucketName, float[] vector, string storageGuid, int chunkSize)
     {
-        var bucketLock = _bucketLocks.GetOrAdd(bucketName, _ => new object());
+        var bucketId = GetOrCreateBucketId(bucketName);
 
-        lock (bucketLock)
+        lock (GetBucketLock(bucketId))
         {
-            var bucketId = GetOrCreateBucketId(bucketName);
-
             // ── Dedup check: use IN-MEMORY map (never stale, unlike RocksDB batcher) ──
-            var dedupSuffix = $"{bucketId}:{storageGuid}";
-            if (_dedupInMemory.TryGetValue(dedupSuffix, out var existingIndex))
+            var dk = MakeDedupKey(bucketId, storageGuid);
+            if (_dedupInMemory.TryGetValue(dk, out var existingIndex))
             {
                 return (bucketId, existingIndex);
             }
@@ -369,12 +420,13 @@ public sealed class RocksDbBucketStorage : IDisposable
             _nextIndexInMemory[bucketId] = bucketIndex + 1;
 
             // Track in dedup map IMMEDIATELY
-            _dedupInMemory[dedupSuffix] = bucketIndex;
+            _dedupInMemory[dk] = bucketIndex;
 
             // Persist to RocksDB via batcher (background, eventual consistency for durability)
             var recordBytes = SerializeVectorRecord(vector, storageGuid, chunkSize);
             var vectorKeyBytes = MakeBinaryVectorKey(bucketId, bucketIndex);
             var nextKeyBytes = Encoding.UTF8.GetBytes($"{BucketNextPrefix}{bucketId}");
+            var dedupSuffix = $"{bucketId}:{storageGuid}";
 
             _writeBatcher.Put(vectorKeyBytes, recordBytes);
             _writeBatcher.Put(Encoding.UTF8.GetBytes($"{BucketStorageGuidPrefix}{dedupSuffix}"), BitConverter.GetBytes(bucketIndex));
@@ -397,7 +449,8 @@ public sealed class RocksDbBucketStorage : IDisposable
 
         foreach (var bucketName in bucketNames)
         {
-            if (!_bucketNameToId.TryGetValue(bucketName, out var bucketId) || bucketId == 0)
+            var bucketId = BitstringToUlong(bucketName);
+            if (bucketId == 0 || !_nextIndexInMemory.ContainsKey(bucketId))
                 continue;
 
             var prefix = MakeBinaryVectorPrefix(bucketId);
@@ -448,12 +501,9 @@ public sealed class RocksDbBucketStorage : IDisposable
     /// </summary>
     public List<(float[] vector, string storageGuid, ulong bucketId, ulong bucketIndex, float normSquared)>? LoadSingleBucketToMemory(string bucketName)
     {
-        ulong bucketId;
-        lock (_bucketIdLock)
-        {
-            if (!_bucketNameToId.TryGetValue(bucketName, out bucketId) || bucketId == 0)
-                return null;
-        }
+        var bucketId = BitstringToUlong(bucketName);
+        if (bucketId == 0 || !_nextIndexInMemory.ContainsKey(bucketId))
+            return null;
 
         var prefix = MakeBinaryVectorPrefix(bucketId);
         var vectors = new List<(float[], string, ulong, ulong, float)>();
@@ -499,12 +549,6 @@ public sealed class RocksDbBucketStorage : IDisposable
         using var iterator = _rocksDb.NewIterator(readOptions: readOpts);
         iterator.Seek(new byte[] { BinaryVectorTag });
 
-        Dictionary<ulong, string> idToName;
-        lock (_bucketIdLock)
-        {
-            idToName = new Dictionary<ulong, string>(_bucketIdToName);
-        }
-
         while (iterator.Valid())
         {
             var keyBytes = iterator.Key();
@@ -520,8 +564,9 @@ public sealed class RocksDbBucketStorage : IDisposable
             var recordBytes = iterator.Value();
             if (recordBytes != null && recordBytes.Length > 0 && TryDeserializeVectorRecord(recordBytes, out var rec))
             {
-                if (idToName.TryGetValue(bucketId, out var bucketName))
+                if (_nextIndexInMemory.ContainsKey(bucketId))
                 {
+                    var bucketName = UlongToBitstring(bucketId);
                     if (!result.TryGetValue(bucketName, out var list))
                     {
                         list = new List<(float[], string, ulong, ulong, float)>();
@@ -542,11 +587,7 @@ public sealed class RocksDbBucketStorage : IDisposable
     /// </summary>
     public (long totalBuckets, long totalVectors) GetBucketAndVectorStats()
     {
-        long totalBuckets;
-        lock (_bucketIdLock)
-        {
-            totalBuckets = _bucketNameToId.Count;
-        }
+        long totalBuckets = _nextIndexInMemory.Count;
 
         long totalVectors = 0;
         foreach (var kv in _nextIndexInMemory)

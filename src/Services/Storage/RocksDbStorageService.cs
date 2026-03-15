@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Sockets;
@@ -174,8 +175,29 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
 
     // Dedup guard for stats: tracks storageGuids we've already counted.
     // Prevents double-counting when the same chunk content is stored via different buckets.
-    // Key = storageGuid (SHA256 hex), Value = chunk size in bytes.
-    private readonly ConcurrentDictionary<string, int> _knownChunkSizes = new();
+    // Uses a 32-byte value-type key (4 ulongs from SHA256 hex) instead of a ~152-byte
+    // heap string to save ~140 bytes per entry (hundreds of MB at scale).
+    private readonly ConcurrentDictionary<GuidKey, int> _knownChunkSizes = new();
+
+    private readonly record struct GuidKey(ulong G0, ulong G1, ulong G2, ulong G3);
+
+    private static GuidKey MakeGuidKey(ReadOnlySpan<char> hexGuid)
+    {
+        if (hexGuid.Length != 64) return default;
+        Span<byte> bytes = stackalloc byte[32];
+        for (int i = 0; i < 32; i++)
+            bytes[i] = (byte)((HexVal(hexGuid[i * 2]) << 4) | HexVal(hexGuid[i * 2 + 1]));
+        return new GuidKey(
+            BinaryPrimitives.ReadUInt64LittleEndian(bytes),
+            BinaryPrimitives.ReadUInt64LittleEndian(bytes.Slice(8)),
+            BinaryPrimitives.ReadUInt64LittleEndian(bytes.Slice(16)),
+            BinaryPrimitives.ReadUInt64LittleEndian(bytes.Slice(24)));
+    }
+
+    private static int HexVal(char c) =>
+        c >= '0' && c <= '9' ? c - '0' :
+        c >= 'a' && c <= 'f' ? c - 'a' + 10 :
+        c >= 'A' && c <= 'F' ? c - 'A' + 10 : 0;
 
     // Persisted counter keys in RocksDB (prefixed to avoid collision with real chunk keys)
     private static readonly byte[] StatsChunksKey = Encoding.UTF8.GetBytes("__crossv9_stats_unique_chunks__");
@@ -209,8 +231,8 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
                 if (keySpan != null && keySpan.Length == 64) // SHA256 hex = 64 chars
                 {
                     var keyStr = Encoding.UTF8.GetString(keySpan);
-                    if (!keyStr.StartsWith("__")) // Skip our internal keys
-                        _knownChunkSizes.TryAdd(keyStr, 0); // Size=0 is fine, we only need the key
+                    if (!keyStr.StartsWith("__"))
+                        _knownChunkSizes.TryAdd(MakeGuidKey(keyStr), 0);
                     scannedKeys++;
                 }
                 iterator.Next();
@@ -241,7 +263,7 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
                     chunks++;
                     int valLen = valSpan?.Length ?? 0;
                     bytes += valLen;
-                    _knownChunkSizes.TryAdd(keyStr, valLen);
+                    _knownChunkSizes.TryAdd(MakeGuidKey(keyStr), valLen);
                 }
                 iterator.Next();
             }
@@ -276,14 +298,14 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
     /// </summary>
     internal bool TrackChunkForStats(string storageGuid, int chunkSizeBytes)
     {
-        if (_knownChunkSizes.TryAdd(storageGuid, chunkSizeBytes))
+        var gk = MakeGuidKey(storageGuid);
+        if (_knownChunkSizes.TryAdd(gk, chunkSizeBytes))
         {
-            // Genuinely new — increment live counters
             Interlocked.Increment(ref _liveUniqueChunks);
             Interlocked.Add(ref _liveChunkBytes, chunkSizeBytes);
             return true;
         }
-        return false; // Already counted
+        return false;
     }
 
     /// <summary>

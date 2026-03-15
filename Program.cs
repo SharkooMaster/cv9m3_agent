@@ -97,27 +97,21 @@ builder.Services.AddHostedService<AgentRuntimeService>();
 var app = builder.Build();
 
 // ── AUTO-DETECT AVAILABLE MEMORY (top-level, shared by startup handler and chunk cache init) ──
-// GC.GetGCMemoryInfo().TotalAvailableMemoryBytes respects cgroup limits (K8s pod limit)
-// and falls back to physical RAM when no limit is set. This allows per-node sizing
-// automatically — 16 GB nodes get smaller caches, 64 GB nodes get larger ones.
+// GC.GetGCMemoryInfo().TotalAvailableMemoryBytes respects:
+//   1. DOTNET_GCHeapHardLimit env var (managed heap cap)
+//   2. cgroup memory limit (K8s pod limit)
+//   3. physical RAM (fallback)
+// IMPORTANT: This value constrains the MANAGED heap only. RocksDB block caches
+// are native (C++ malloc) and sit OUTSIDE this budget. The sizing below must
+// account for both managed and native memory within the container's total.
 long totalAvailableMemory = GC.GetGCMemoryInfo().TotalAvailableMemoryBytes;
 Console.WriteLine($"[Agent] Detected available memory: {totalAvailableMemory / (1024 * 1024)}MB ({totalAvailableMemory / (1024L * 1024 * 1024)}GB)");
 
 // ── BUCKET CACHE SIZE: auto-detect or use configured value ──
-// NOTE: On nodes without K8s memory limits, totalAvailableMemory = FULL node RAM.
-// The agent shares the node with gateway, cross, redis, kubelet, etc.
-// We use conservative percentages (25% bucket + 5% chunk = 30% total) to leave
-// plenty of room for other workloads and RocksDB native memory.
-// The system memory guard in BucketCacheManager reads /proc/meminfo every 2s
-// and ensures 10% of node RAM stays free NO MATTER WHAT.
 var bucketCacheRaw = Environment.GetEnvironmentVariable("BUCKET_CACHE_MAX_GB") ?? "0";
 long bucketCacheMaxBytes;
 if (bucketCacheRaw == "0" || bucketCacheRaw.Equals("auto", StringComparison.OrdinalIgnoreCase))
 {
-    // 10% of RAM for app-level M_Bucket cache (write-active buckets only).
-    // Cold bucket searches now go through SearchBucketDirect on RocksDB's native block cache
-    // (25% of RAM), so the app-level cache only needs to hold recently-written buckets
-    // for the store-side similarity scan in InsertData.
     bucketCacheMaxBytes = (long)(totalAvailableMemory * 0.10);
     Console.WriteLine($"[Agent] Bucket cache: AUTO-SIZED to {bucketCacheMaxBytes / (1024 * 1024)}MB (10% of {totalAvailableMemory / (1024 * 1024)}MB)");
 }
@@ -125,7 +119,6 @@ else
 {
     var bucketCacheMaxGb = long.Parse(bucketCacheRaw);
     bucketCacheMaxBytes = bucketCacheMaxGb * 1024L * 1024 * 1024;
-    // Safety cap: never exceed 50% of available memory for bucket cache alone
     long maxSafe = (long)(totalAvailableMemory * 0.50);
     if (bucketCacheMaxBytes > maxSafe)
     {
@@ -254,7 +247,7 @@ lifetime.ApplicationStarted.Register(() =>
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[Agent] WarmUpBuckets failed: {ex.Message}");
+            Console.WriteLine($"[Agent] Startup cache init failed: {ex.GetType().Name}: {ex.Message}");
         }
 
         // ── READINESS GATE: Signal that this agent is ready to serve ──
@@ -323,11 +316,11 @@ if (Agent.Services.Cache.BucketCacheManager.L1Enabled)
     });
 }
 
-// Log total memory budget
-long totalCacheBudget = bucketCacheMaxBytes + maxCacheSizeBytes;
-long headroom = totalAvailableMemory - totalCacheBudget;
+// Log total memory budget (including native RocksDB allocations)
+long totalManagedBudget = bucketCacheMaxBytes + maxCacheSizeBytes;
+long managedHeadroom = totalAvailableMemory - totalManagedBudget;
 Console.WriteLine($"[Cache] Initialized chunk cache: maxSize={maxCacheSizeBytes / (1024 * 1024)}MB, TTL={cacheTtlMinutes}min");
-Console.WriteLine($"[Agent] Memory budget: buckets={bucketCacheMaxBytes / (1024 * 1024)}MB + chunks={maxCacheSizeBytes / (1024 * 1024)}MB = {totalCacheBudget / (1024 * 1024)}MB total, headroom={headroom / (1024 * 1024)}MB ({headroom * 100 / totalAvailableMemory}%)");
+Console.WriteLine($"[Agent] Memory budget: managed(buckets={bucketCacheMaxBytes / (1024 * 1024)}MB + chunks={maxCacheSizeBytes / (1024 * 1024)}MB = {totalManagedBudget / (1024 * 1024)}MB), managed headroom={managedHeadroom / (1024 * 1024)}MB ({managedHeadroom * 100 / totalAvailableMemory}%) [RocksDB native is additional]");
 
 if (app.Environment.IsDevelopment())
 {
@@ -532,17 +525,16 @@ void ConfigureServices(IServiceCollection services)
         if (storageBackend == "rocksdb")
         {
             var rocksPath = Environment.GetEnvironmentVariable("ROCKSDB_PATH") ?? "/data/chunks/rocksdb";
-            // RocksDB block caches use NATIVE memory (no GC pressure).
-            // Bucket block cache is the PRIMARY cache for search — holds SST blocks containing
-            // vector records. 25% of RAM = ~8GB on 32GB nodes, enough for ~27M vectors.
-            // Cold bucket searches go through SearchBucketDirect which reads from this cache
-            // instead of materializing M_Bucket objects in the managed heap.
+            // RocksDB block caches are NATIVE memory (C++ malloc, outside .NET GC heap).
+            // totalAvailableMemory only covers the managed heap. Native memory is ADDITIONAL.
+            // We cap total native block caches to 25% of available memory so that
+            // managed heap (metadata, chunk cache, runtime) + native doesn't exceed the
+            // container's actual memory. Memtables add ~512MB native on top of this.
             long availMem = GC.GetGCMemoryInfo().TotalAvailableMemoryBytes;
-            long bucketBlockCacheMb = Agent.Services.Cache.BucketCacheManager.L1Enabled
-                ? Math.Max(256, availMem * 25 / 100 / (1024 * 1024))
-                : Math.Max(256, availMem * 40 / 100 / (1024 * 1024));
-            long chunkBlockCacheMb = Math.Max(64, availMem * 5 / 100 / (1024 * 1024));
-            Console.WriteLine($"[Storage] Using RocksDB backend path={rocksPath}, bucket block cache={bucketBlockCacheMb}MB, chunk block cache={chunkBlockCacheMb}MB");
+            long nativeBudgetMb = Math.Max(512, availMem * 25 / 100 / (1024 * 1024));
+            long bucketBlockCacheMb = nativeBudgetMb * 80 / 100; // 80% of native budget
+            long chunkBlockCacheMb = nativeBudgetMb * 20 / 100;  // 20% of native budget
+            Console.WriteLine($"[Storage] Using RocksDB backend path={rocksPath}, native budget={nativeBudgetMb}MB, bucket block cache={bucketBlockCacheMb}MB, chunk block cache={chunkBlockCacheMb}MB");
             return new RocksDbStorageService(rocksPath, pgbuilder.ConnectionString,
                 bucketBlockCacheMb: bucketBlockCacheMb, chunkBlockCacheMb: chunkBlockCacheMb);
         }
