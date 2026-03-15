@@ -42,8 +42,8 @@ builder.Services.AddLogging( logging =>
 
 
 builder.Services.AddGrpc(options => {
-    options.MaxReceiveMessageSize = 1000 * 1024 * 1024;
-    options.MaxSendMessageSize = 1000 * 1024 * 1024;
+    options.MaxReceiveMessageSize = 32 * 1024 * 1024;
+    options.MaxSendMessageSize = 32 * 1024 * 1024;
 });
 
 builder.Services.AddOpenTelemetry()
@@ -80,7 +80,7 @@ builder.WebHost.ConfigureKestrel(options =>
     options.ListenAnyIP(5001, o => o.Protocols = HttpProtocols.Http1);
     //options.ListenLocalhost(5000, o => o.Protocols = HttpProtocols.Http2);
     //options.ListenLocalhost(5001, o => o.Protocols = HttpProtocols.Http1AndHttp2);
-    options.Limits.MaxRequestBodySize = 1024 * 1024 * 1024;
+    options.Limits.MaxRequestBodySize = null;
 
     options.Limits.KeepAliveTimeout = TimeSpan.FromMinutes(10);
     options.Limits.Http2.KeepAlivePingDelay = TimeSpan.FromSeconds(30);
