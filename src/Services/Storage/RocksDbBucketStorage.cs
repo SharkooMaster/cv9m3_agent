@@ -93,7 +93,8 @@ public sealed class RocksDbBucketStorage : IDisposable
             .SetCreateIfMissing(true)
             .IncreaseParallelism(bgThreads)
             .SetMaxBackgroundCompactions(bgThreads)
-            .SetMaxBackgroundFlushes(Math.Max(2, bgThreads / 2));
+            .SetMaxBackgroundFlushes(Math.Max(2, bgThreads / 2))
+            .SetAdviseRandomOnOpen(false);
 
         var columnFamilies = new ColumnFamilies { { "default", cfOpts } };
         _rocksDb = RocksDb.Open(dbOpts, _bucketDbPath, columnFamilies);
@@ -391,7 +392,8 @@ public sealed class RocksDbBucketStorage : IDisposable
         var results = new List<(float[] vector, string storageGuid, ulong bucketId, ulong bucketIndex, string bucketName)>();
         var readOpts = new ReadOptions()
             .SetPrefixSameAsStart(true)
-            .SetFillCache(true);
+            .SetFillCache(true)
+            .SetReadaheadSize((ulong)(256 * 1024));
 
         foreach (var bucketName in bucketNames)
         {
@@ -457,7 +459,8 @@ public sealed class RocksDbBucketStorage : IDisposable
         var vectors = new List<(float[], string, ulong, ulong, float)>();
         var readOpts = new ReadOptions()
             .SetPrefixSameAsStart(true)
-            .SetFillCache(true);
+            .SetFillCache(true)
+            .SetReadaheadSize((ulong)(256 * 1024));
 
         using var iterator = _rocksDb.NewIterator(readOptions: readOpts);
         iterator.Seek(prefix);
@@ -623,7 +626,8 @@ public sealed class RocksDbBucketStorage : IDisposable
         var readOpts = new ReadOptions()
             .SetPrefixSameAsStart(true)
             .SetFillCache(true)
-            .SetVerifyChecksums(false);
+            .SetVerifyChecksums(false)
+            .SetReadaheadSize((ulong)(256 * 1024));
 
         int vecLen = queryVector.Length;
         int vectorBytesLen = vecLen * sizeof(float);
@@ -686,69 +690,79 @@ public sealed class RocksDbBucketStorage : IDisposable
     public (ulong bucketId, ulong bucketIndex, string? storageGuid, float similarity) SearchBucketsDirect(
         IReadOnlyList<ulong> bucketIds, float[] queryVector, float queryNormSq, float threshold, int maxCandidates = 4096)
     {
+        if (bucketIds.Count == 0)
+            return (0, 0, null, -1f);
+
         int vecLen = queryVector.Length;
         int vectorBytesLen = vecLen * sizeof(float);
         int minValueLen = 4 + vectorBytesLen;
+        int perBucketBudget = Math.Max(64, maxCandidates / Math.Max(1, bucketIds.Count));
 
-        float bestSim = -1f;
-        ulong bestBucketId = 0;
-        byte[]? bestKeyBytes = null;
-        byte[]? bestValBytes = null;
-        int totalScanned = 0;
+        int bucketCount = bucketIds.Count;
+        var perBucket = new (float sim, ulong bucketId, byte[]? keyBytes, byte[]? valBytes)[bucketCount];
 
-        var readOpts = new ReadOptions()
-            .SetPrefixSameAsStart(true)
-            .SetFillCache(true)
-            .SetVerifyChecksums(false);
-
-        for (int b = 0; b < bucketIds.Count && totalScanned < maxCandidates; b++)
+        int maxPar = Math.Min(4, bucketCount);
+        Parallel.For(0, bucketCount, new ParallelOptions { MaxDegreeOfParallelism = maxPar }, b =>
         {
             ulong bucketId = bucketIds[b];
             var prefix = MakeBinaryVectorPrefix(bucketId);
 
+            var readOpts = new ReadOptions()
+                .SetPrefixSameAsStart(true)
+                .SetFillCache(true)
+                .SetVerifyChecksums(false)
+                .SetReadaheadSize((ulong)(256 * 1024));
+
+            float localBest = -1f;
+            byte[]? localBestKey = null;
+            byte[]? localBestVal = null;
+            int scanned = 0;
+
             using var iter = _rocksDb.NewIterator(readOptions: readOpts);
             iter.Seek(prefix);
 
-            while (iter.Valid() && totalScanned < maxCandidates)
+            while (iter.Valid() && scanned < perBucketBudget)
             {
                 var valBytes = iter.Value();
-                if (valBytes == null || valBytes.Length < minValueLen)
-                {
-                    iter.Next();
-                    continue;
-                }
+                if (valBytes == null || valBytes.Length < minValueLen) { iter.Next(); continue; }
 
                 int dim = BitConverter.ToInt32(valBytes, 0);
-                if (dim != vecLen || valBytes.Length < 4 + dim * sizeof(float))
-                {
-                    iter.Next();
-                    continue;
-                }
+                if (dim != vecLen || valBytes.Length < 4 + dim * sizeof(float)) { iter.Next(); continue; }
 
-                var candidateSpan = MemoryMarshal.Cast<byte, float>(
-                    valBytes.AsSpan(4, dim * sizeof(float)));
+                var candidateSpan = MemoryMarshal.Cast<byte, float>(valBytes.AsSpan(4, dim * sizeof(float)));
                 float normSq = ExtractNormSquared(valBytes, dim);
                 float sim = CosineSimilarityInline(queryVector, queryNormSq, candidateSpan, normSq);
-                totalScanned++;
+                scanned++;
 
-                if (sim >= threshold && sim > bestSim)
+                if (sim >= threshold && sim > localBest)
                 {
-                    bestSim = sim;
-                    bestBucketId = bucketId;
-                    bestKeyBytes = iter.Key();
-                    bestValBytes = valBytes;
+                    localBest = sim;
+                    localBestKey = iter.Key();
+                    localBestVal = valBytes;
                 }
-
                 iter.Next();
+            }
+
+            perBucket[b] = (localBest, bucketId, localBestKey, localBestVal);
+        });
+
+        float bestSim = -1f;
+        int bestIdx = -1;
+        for (int b = 0; b < bucketCount; b++)
+        {
+            if (perBucket[b].sim > bestSim)
+            {
+                bestSim = perBucket[b].sim;
+                bestIdx = b;
             }
         }
 
-        if (bestKeyBytes == null || bestValBytes == null)
+        if (bestIdx < 0 || perBucket[bestIdx].keyBytes == null || perBucket[bestIdx].valBytes == null)
             return (0, 0, null, -1f);
 
-        ulong bestIndex = BinaryPrimitives.ReadUInt64BigEndian(bestKeyBytes.AsSpan(9));
-        string? bestGuid = ExtractStorageGuid(bestValBytes, vecLen);
-        return (bestBucketId, bestIndex, bestGuid, bestSim);
+        ulong bestIndex = BinaryPrimitives.ReadUInt64BigEndian(perBucket[bestIdx].keyBytes!.AsSpan(9));
+        string? bestGuid = ExtractStorageGuid(perBucket[bestIdx].valBytes!, vecLen);
+        return (perBucket[bestIdx].bucketId, bestIndex, bestGuid, bestSim);
     }
 
     /// <summary>
@@ -878,7 +892,8 @@ public sealed class RocksDbBucketStorage : IDisposable
         var readOpts = new ReadOptions()
             .SetPrefixSameAsStart(true)
             .SetFillCache(true)
-            .SetVerifyChecksums(false);
+            .SetVerifyChecksums(false)
+            .SetReadaheadSize((ulong)(256 * 1024));
 
         var prefix = MakeBinaryVectorPrefix(bucketId);
         var topK = new List<(ulong bucketId, ulong bucketIndex, string? guid, float sim)>();
@@ -948,7 +963,8 @@ public sealed class RocksDbBucketStorage : IDisposable
         var readOpts = new ReadOptions()
             .SetPrefixSameAsStart(true)
             .SetFillCache(true)
-            .SetVerifyChecksums(false);
+            .SetVerifyChecksums(false)
+            .SetReadaheadSize((ulong)(256 * 1024));
 
         var prefix = MakeBinaryVectorPrefix(bucketId);
 

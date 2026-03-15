@@ -538,7 +538,9 @@ void ConfigureServices(IServiceCollection services)
             // Cold bucket searches go through SearchBucketDirect which reads from this cache
             // instead of materializing M_Bucket objects in the managed heap.
             long availMem = GC.GetGCMemoryInfo().TotalAvailableMemoryBytes;
-            long bucketBlockCacheMb = Math.Max(256, availMem * 25 / 100 / (1024 * 1024));
+            long bucketBlockCacheMb = Agent.Services.Cache.BucketCacheManager.L1Enabled
+                ? Math.Max(256, availMem * 25 / 100 / (1024 * 1024))
+                : Math.Max(256, availMem * 40 / 100 / (1024 * 1024));
             long chunkBlockCacheMb = Math.Max(64, availMem * 5 / 100 / (1024 * 1024));
             Console.WriteLine($"[Storage] Using RocksDB backend path={rocksPath}, bucket block cache={bucketBlockCacheMb}MB, chunk block cache={chunkBlockCacheMb}MB");
             return new RocksDbStorageService(rocksPath, pgbuilder.ConnectionString,
