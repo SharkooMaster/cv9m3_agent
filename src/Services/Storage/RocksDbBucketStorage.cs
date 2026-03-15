@@ -41,30 +41,10 @@ public sealed class RocksDbBucketStorage : IDisposable
     // dictionaries (saved ~5GB managed heap at 10M+ buckets).
     private static readonly ConcurrentDictionary<ulong, ulong> _nextIndexInMemory = new();
 
-    // Dedup map: keyed by a 40-byte value-type struct instead of a ~184-byte heap string.
-    // At 10M entries this saves ~1.7GB of managed heap.
-    private static readonly ConcurrentDictionary<DedupKey, ulong> _dedupInMemory = new();
-
-    private readonly record struct DedupKey(ulong BucketId, ulong G0, ulong G1, ulong G2, ulong G3);
-
-    private static DedupKey MakeDedupKey(ulong bucketId, ReadOnlySpan<char> hexGuid)
-    {
-        if (hexGuid.Length != 64) return new DedupKey(bucketId, 0, 0, 0, 0);
-        Span<byte> bytes = stackalloc byte[32];
-        for (int i = 0; i < 32; i++)
-            bytes[i] = (byte)((HexVal(hexGuid[i * 2]) << 4) | HexVal(hexGuid[i * 2 + 1]));
-        return new DedupKey(
-            bucketId,
-            BinaryPrimitives.ReadUInt64LittleEndian(bytes),
-            BinaryPrimitives.ReadUInt64LittleEndian(bytes.Slice(8)),
-            BinaryPrimitives.ReadUInt64LittleEndian(bytes.Slice(16)),
-            BinaryPrimitives.ReadUInt64LittleEndian(bytes.Slice(24)));
-    }
-
-    private static int HexVal(char c) =>
-        c >= '0' && c <= '9' ? c - '0' :
-        c >= 'a' && c <= 'f' ? c - 'a' + 10 :
-        c >= 'A' && c <= 'F' ? c - 'A' + 10 : 0;
+    // Dedup is served directly from RocksDB via the bsg: key prefix.
+    // Previously used an unbounded ConcurrentDictionary that grew to 7+ GB
+    // during ingestion of large files (100M chunks × 144 bytes/entry = OOM).
+    // Direct RocksDB Get() with bloom filters answers "not found" in ~1-5μs.
 
     // New append-friendly schema:
     // bn:{bucketName}              -> ulong bucketId
@@ -206,26 +186,6 @@ public sealed class RocksDbBucketStorage : IDisposable
                             _nextIndexInMemory[bucketId] = BitConverter.ToUInt64(valueBytes, 0);
                     }
                 }
-                else if (key.StartsWith(BucketStorageGuidPrefix, StringComparison.Ordinal))
-                {
-                    var valueBytes = iterator.Value();
-                    if (valueBytes != null && valueBytes.Length == sizeof(ulong))
-                    {
-                        var suffix = key.AsSpan(BucketStorageGuidPrefix.Length);
-                        int colonIdx = suffix.IndexOf(':');
-                        if (colonIdx >= 0 &&
-                            ulong.TryParse(suffix.Slice(0, colonIdx), out var dedupBucketId) &&
-                            suffix.Length > colonIdx + 1)
-                        {
-                            var guidHex = suffix.Slice(colonIdx + 1);
-                            if (guidHex.Length == 64)
-                            {
-                                var dk = MakeDedupKey(dedupBucketId, guidHex);
-                                _dedupInMemory[dk] = BitConverter.ToUInt64(valueBytes, 0);
-                            }
-                        }
-                    }
-                }
                 else if (key.StartsWith(LaneNextPrefix, StringComparison.Ordinal))
                 {
                     var valueBytes = iterator.Value();
@@ -241,7 +201,7 @@ public sealed class RocksDbBucketStorage : IDisposable
             }
         }
 
-        Console.WriteLine($"[RocksDB Buckets] Loaded {bucketNameCount} buckets, {_nextIndexInMemory.Count} counters, {_dedupInMemory.Count} dedup entries, {_laneNextIndex.Count} lane counters into memory");
+        Console.WriteLine($"[RocksDB Buckets] Loaded {bucketNameCount} buckets, {_nextIndexInMemory.Count} counters, {_laneNextIndex.Count} lane counters into memory (dedup served from RocksDB)");
     }
 
     /// <summary>
@@ -406,11 +366,15 @@ public sealed class RocksDbBucketStorage : IDisposable
 
         lock (GetBucketLock(bucketId))
         {
-            // ── Dedup check: use IN-MEMORY map (never stale, unlike RocksDB batcher) ──
-            var dk = MakeDedupKey(bucketId, storageGuid);
-            if (_dedupInMemory.TryGetValue(dk, out var existingIndex))
+            // ── Dedup check: direct RocksDB lookup on bsg: key ──
+            // Written synchronously (not batched) so it's immediately visible
+            // to concurrent callers within the same bucket lock.
+            var dedupKeyStr = $"{BucketStorageGuidPrefix}{bucketId}:{storageGuid}";
+            var dedupKeyBytes = Encoding.UTF8.GetBytes(dedupKeyStr);
+            var existingBytes = _rocksDb.Get(dedupKeyBytes);
+            if (existingBytes != null && existingBytes.Length == sizeof(ulong))
             {
-                return (bucketId, existingIndex);
+                return (bucketId, BitConverter.ToUInt64(existingBytes, 0));
             }
 
             // ── Next index: use IN-MEMORY counter (never stale) ──
@@ -419,17 +383,15 @@ public sealed class RocksDbBucketStorage : IDisposable
             // Increment the in-memory counter IMMEDIATELY (before releasing the lock)
             _nextIndexInMemory[bucketId] = bucketIndex + 1;
 
-            // Track in dedup map IMMEDIATELY
-            _dedupInMemory[dk] = bucketIndex;
+            // Write dedup entry directly to RocksDB (not batched) for immediate visibility
+            _rocksDb.Put(dedupKeyBytes, BitConverter.GetBytes(bucketIndex));
 
-            // Persist to RocksDB via batcher (background, eventual consistency for durability)
+            // Persist vector record and next-index via batcher (background)
             var recordBytes = SerializeVectorRecord(vector, storageGuid, chunkSize);
             var vectorKeyBytes = MakeBinaryVectorKey(bucketId, bucketIndex);
             var nextKeyBytes = Encoding.UTF8.GetBytes($"{BucketNextPrefix}{bucketId}");
-            var dedupSuffix = $"{bucketId}:{storageGuid}";
 
             _writeBatcher.Put(vectorKeyBytes, recordBytes);
-            _writeBatcher.Put(Encoding.UTF8.GetBytes($"{BucketStorageGuidPrefix}{dedupSuffix}"), BitConverter.GetBytes(bucketIndex));
             _writeBatcher.Put(nextKeyBytes, BitConverter.GetBytes(bucketIndex + 1));
 
             return (bucketId, bucketIndex);

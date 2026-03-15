@@ -137,17 +137,14 @@ var lifetime = app.Services.GetRequiredService<IHostApplicationLifetime>();
 lifetime.ApplicationStopping.Register(() =>
 {
     Console.WriteLine("[Agent] ⚠️ ApplicationStopping — stopping background evictors and flushing write batchers...");
-    if (Agent.Services.Cache.BucketCacheManager.L1Enabled)
+    try
     {
-        try
-        {
-            Agent.Services.Cache.BucketCacheManager.Shutdown();
-            Console.WriteLine("[Agent] ✅ BucketCacheManager stopped.");
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"[Agent] ❌ Error stopping BucketCacheManager: {ex.Message}");
-        }
+        Agent.Services.Cache.BucketCacheManager.Shutdown();
+        Console.WriteLine("[Agent] ✅ BucketCacheManager stopped.");
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"[Agent] ❌ Error stopping BucketCacheManager: {ex.Message}");
     }
     try
     {
@@ -212,15 +209,19 @@ lifetime.ApplicationStarted.Register(() =>
                 // Always register bucket storage reference so GetBucketStorage() works
                 Agent.Services.Cache.BucketCacheManager.SetBucketStorage(rocksDbSvc.BucketStorage);
 
+                // Always start the memory guard (monitors /proc/meminfo, triggers
+                // emergency chunk cache eviction + GC when node memory is low).
+                // When L1 is disabled, bucket watermark eviction is a no-op, but
+                // the system memory guard still protects against OOM.
+                Agent.Services.Cache.BucketCacheManager.Initialize(
+                    rocksDbSvc.BucketStorage, bucketCacheMaxBytes, bucketEvictionSec,
+                    totalAvailableMemory: totalAvailableMemory,
+                    highWaterPct: bucketHighWaterPct,
+                    lowWaterPct: bucketLowWaterPct,
+                    hardCeilingPct: bucketHardCeilingPct);
+
                 if (Agent.Services.Cache.BucketCacheManager.L1Enabled)
                 {
-                    Agent.Services.Cache.BucketCacheManager.Initialize(
-                        rocksDbSvc.BucketStorage, bucketCacheMaxBytes, bucketEvictionSec,
-                        totalAvailableMemory: totalAvailableMemory,
-                        highWaterPct: bucketHighWaterPct,
-                        lowWaterPct: bucketLowWaterPct,
-                        hardCeilingPct: bucketHardCeilingPct);
-
                     rocksDbSvc.WarmUpBuckets(bucketCacheMaxBytes);
                 }
 
@@ -308,13 +309,12 @@ var chunkCacheService = new Agent.Services.Cache.ChunkCacheService(
 );
 Agent.Modules.Storage.ChunkCacheHandler.SetInstance(chunkCacheService);
 
-if (Agent.Services.Cache.BucketCacheManager.L1Enabled)
+// Always register chunk cache evictor so the system memory guard can
+// clear chunk cache when node memory is critically low.
+Agent.Services.Cache.BucketCacheManager.RegisterChunkCacheEvictor(() =>
 {
-    Agent.Services.Cache.BucketCacheManager.RegisterChunkCacheEvictor(() =>
-    {
-        chunkCacheService.ForceEvict(0.0);
-    });
-}
+    chunkCacheService.ForceEvict(0.0);
+});
 
 // Log total memory budget (including native RocksDB allocations)
 long totalManagedBudget = bucketCacheMaxBytes + maxCacheSizeBytes;
