@@ -60,6 +60,43 @@ public class SearchVectorService : SearchVector.SearchVectorBase
         int requestedK = Math.Max(1, request.K);
         float queryNormSq = Misc.ComputeNormSquared(queryVector);
 
+        // ── L1 bypass: route all buckets directly through RocksDB ──
+        if (!BucketCacheManager.L1Enabled)
+        {
+            var allBucketIds = new List<ulong>(request.Bitstrings.Count);
+            foreach (var bs in request.Bitstrings)
+                allBucketIds.Add(RocksDbBucketStorage.BitstringToUlong(bs));
+
+            var bucketStorage = BucketCacheManager.GetBucketStorage();
+            if (bucketStorage != null && allBucketIds.Count > 0)
+            {
+                var (directBucketId, directIndex, directGuid, directSim) =
+                    bucketStorage.SearchBucketsDirect(
+                        allBucketIds, queryVector, queryNormSq, threshold, 4096);
+
+                if (directSim >= threshold && directGuid != null)
+                {
+                    ByteString chunkBytes = ByteString.Empty;
+                    var raw = await ChunkCacheHandler.GetChunkAsync(directGuid);
+                    if (raw != null && raw.Length > 0)
+                        chunkBytes = ByteString.CopyFrom(raw);
+
+                    var res = new SearchVector_Result { Save = false };
+                    res.Results.Add(new SearchVectorObject
+                    {
+                        BucketId = directBucketId,
+                        BucketKey = (long)directIndex,
+                        Similarity = directSim,
+                        Chunk = chunkBytes,
+                        Index = request.Index,
+                        StorageGuid = directGuid
+                    });
+                    return res;
+                }
+            }
+            return MakeSaveResult(request.Index);
+        }
+
         // ── Phase 1: Collect candidates from hot (RAM) buckets ──
         const int MaxCandidates = 4096;
         var candidates = new List<(float[] vector, ulong bucketId, ulong bucketIndex, string? storageGuid, float normSq)>(256);

@@ -860,6 +860,132 @@ public sealed class RocksDbBucketStorage : IDisposable
     }
 
     // ══════════════════════════════════════════════════════════════
+    //  DIRECT SEARCH (L1-bypass mode)
+    // ══════════════════════════════════════════════════════════════
+
+    /// <summary>
+    /// Search a single bucket via RocksDB prefix iterator and return ranked results.
+    /// Used by NodeHandler.SearchInBucket when L1 cache is disabled.
+    /// </summary>
+    public List<M_SearchResult> SearchSingleBucketDirect(
+        ulong bucketId, float[] queryVector, float queryNormSq,
+        float threshold, int k, int queryIndex)
+    {
+        int vecLen = queryVector.Length;
+        int vectorBytesLen = vecLen * sizeof(float);
+        int minValueLen = 4 + vectorBytesLen;
+
+        var readOpts = new ReadOptions()
+            .SetPrefixSameAsStart(true)
+            .SetFillCache(true)
+            .SetVerifyChecksums(false);
+
+        var prefix = MakeBinaryVectorPrefix(bucketId);
+        var topK = new List<(ulong bucketId, ulong bucketIndex, string? guid, float sim)>();
+
+        using var iter = _rocksDb.NewIterator(readOptions: readOpts);
+        iter.Seek(prefix);
+
+        while (iter.Valid())
+        {
+            var valBytes = iter.Value();
+            if (valBytes == null || valBytes.Length < minValueLen) { iter.Next(); continue; }
+
+            int dim = BitConverter.ToInt32(valBytes, 0);
+            if (dim != vecLen || valBytes.Length < 4 + dim * sizeof(float)) { iter.Next(); continue; }
+
+            var candidateSpan = MemoryMarshal.Cast<byte, float>(valBytes.AsSpan(4, dim * sizeof(float)));
+            float normSq = ExtractNormSquared(valBytes, dim);
+            float sim = CosineSimilarityInline(queryVector, queryNormSq, candidateSpan, normSq);
+
+            if (sim >= threshold)
+            {
+                var keyBytes = iter.Key();
+                ulong idx = BinaryPrimitives.ReadUInt64BigEndian(keyBytes.AsSpan(9));
+                string? guid = ExtractStorageGuid(valBytes, dim);
+                topK.Add((bucketId, idx, guid, sim));
+            }
+            iter.Next();
+        }
+
+        topK.Sort((a, b) => b.sim.CompareTo(a.sim));
+        int resultCount = Math.Min(k, topK.Count);
+
+        var results = new List<M_SearchResult>(resultCount);
+        for (int i = 0; i < resultCount; i++)
+        {
+            results.Add(new M_SearchResult
+            {
+                id = topK[i].bucketId,
+                index = topK[i].bucketIndex,
+                similarity = topK[i].sim,
+                chunk = null,
+                i = queryIndex
+            });
+        }
+        return results;
+    }
+
+    /// <summary>
+    /// Within-bucket similarity dedup for the store path.
+    /// Scans up to maxRecent vectors in the bucket and returns the best match above threshold.
+    /// Used by NodeHandler.StoreInBucket when L1 cache is disabled.
+    /// </summary>
+    public (ulong bucketId, ulong bucketIndex, string? storageGuid, float similarity)?
+        SearchSingleBucketForStore(
+            ulong bucketId, float[] queryVector, float queryNormSq,
+            float threshold, int maxRecent = 1024)
+    {
+        int vecLen = queryVector.Length;
+        int vectorBytesLen = vecLen * sizeof(float);
+        int minValueLen = 4 + vectorBytesLen;
+
+        float bestSim = -1f;
+        byte[]? bestKeyBytes = null;
+        byte[]? bestValBytes = null;
+        int scanned = 0;
+
+        var readOpts = new ReadOptions()
+            .SetPrefixSameAsStart(true)
+            .SetFillCache(true)
+            .SetVerifyChecksums(false);
+
+        var prefix = MakeBinaryVectorPrefix(bucketId);
+
+        using var iter = _rocksDb.NewIterator(readOptions: readOpts);
+        iter.Seek(prefix);
+
+        while (iter.Valid() && scanned < maxRecent)
+        {
+            var valBytes = iter.Value();
+            if (valBytes == null || valBytes.Length < minValueLen) { iter.Next(); continue; }
+
+            int dim = BitConverter.ToInt32(valBytes, 0);
+            if (dim != vecLen || valBytes.Length < 4 + dim * sizeof(float)) { iter.Next(); continue; }
+
+            var candidateSpan = MemoryMarshal.Cast<byte, float>(valBytes.AsSpan(4, dim * sizeof(float)));
+            float normSq = ExtractNormSquared(valBytes, dim);
+            float sim = CosineSimilarityInline(queryVector, queryNormSq, candidateSpan, normSq);
+            scanned++;
+
+            if (sim >= threshold && sim > bestSim)
+            {
+                bestSim = sim;
+                bestKeyBytes = iter.Key();
+                bestValBytes = valBytes;
+            }
+            iter.Next();
+        }
+
+        if (bestKeyBytes == null || bestValBytes == null)
+            return null;
+
+        ulong bestIndex = BinaryPrimitives.ReadUInt64BigEndian(bestKeyBytes.AsSpan(9));
+        string? bestGuid = ExtractStorageGuid(bestValBytes, vecLen);
+        return (bucketId, bestIndex, bestGuid, bestSim);
+    }
+
+    // ══════════════════════════════════════════════════════════════
     //  LANE BUCKET STORAGE (Level 2 sub-chunk index)
     // ══════════════════════════════════════════════════════════════
 

@@ -387,12 +387,9 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
 
     public async Task<byte[]?> GetChunkByReferenceAsync(ulong bucketId, ulong bucketIndex)
     {
-        // ── NO RECURSIVE cross-agent GetChunkByReference calls. ──
-        // Fix: only use local in-memory buckets + RocksDB. If we get a storageGuid,
-        // GetChunkAsync can safely fetch bytes from another agent via GetChunkByKey (different RPC).
-
-        // 1. Try in-memory bucket first (always up-to-date, survives write-batcher lag)
-        if (Globals._NODE.Buckets.TryGetValue(bucketId, out var bucket))
+        // 1. Try in-memory bucket first (only when L1 is active — survives write-batcher lag)
+        if (Agent.Services.Cache.BucketCacheManager.L1Enabled
+            && Globals._NODE.Buckets.TryGetValue(bucketId, out var bucket))
         {
             var snapshot = bucket.GetDataSnapshot();
             for (int j = 0; j < snapshot.Length; j++)
@@ -407,7 +404,7 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
             }
         }
 
-        // 2. Fallback: RocksDB bucket metadata → storageGuid (handles data loaded from disk)
+        // 2. RocksDB bucket metadata → storageGuid (O(1) point lookup)
         var storageGuid = _bucketStorage.GetStorageGuidByReference(bucketId, bucketIndex);
         if (string.IsNullOrWhiteSpace(storageGuid))
             return null;

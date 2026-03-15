@@ -144,15 +144,17 @@ var lifetime = app.Services.GetRequiredService<IHostApplicationLifetime>();
 lifetime.ApplicationStopping.Register(() =>
 {
     Console.WriteLine("[Agent] ⚠️ ApplicationStopping — stopping background evictors and flushing write batchers...");
-    try
+    if (Agent.Services.Cache.BucketCacheManager.L1Enabled)
     {
-        // Stop the background evictor threads first (they may be modifying data)
-        Agent.Services.Cache.BucketCacheManager.Shutdown();
-        Console.WriteLine("[Agent] ✅ BucketCacheManager stopped.");
-    }
-    catch (Exception ex)
-    {
-        Console.WriteLine($"[Agent] ❌ Error stopping BucketCacheManager: {ex.Message}");
+        try
+        {
+            Agent.Services.Cache.BucketCacheManager.Shutdown();
+            Console.WriteLine("[Agent] ✅ BucketCacheManager stopped.");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[Agent] ❌ Error stopping BucketCacheManager: {ex.Message}");
+        }
     }
     try
     {
@@ -200,6 +202,12 @@ lifetime.ApplicationStarted.Register(() =>
         var bucketHardCeilingPct = double.Parse(Environment.GetEnvironmentVariable("BUCKET_CACHE_HARD_CEILING_PCT") ?? "0.90",
             System.Globalization.CultureInfo.InvariantCulture);
 
+        // ── L1 CACHE TOGGLE ──
+        Agent.Services.Cache.BucketCacheManager.L1Enabled =
+            (Environment.GetEnvironmentVariable("L1_CACHE_ENABLED") ?? "false")
+            .Equals("true", StringComparison.OrdinalIgnoreCase);
+        Console.WriteLine($"[Agent] L1 bucket cache: {(Agent.Services.Cache.BucketCacheManager.L1Enabled ? "ENABLED" : "DISABLED (RocksDB-direct mode)")}");
+
         // ── WARMUP: Load buckets from RocksDB into RAM (up to L1 budget) ──
         // Hot buckets go to L1 (RAM). Cold buckets stay on L2 (RocksDB disk),
         // loaded on-demand during search/store with ~0.1-0.3ms latency.
@@ -208,16 +216,20 @@ lifetime.ApplicationStarted.Register(() =>
             var storageSvc = app.Services.GetRequiredService<INetworkFileStorageService>();
             if (storageSvc is Agent.Services.Storage.RocksDbStorageService rocksDbSvc)
             {
-                // Initialize BucketCacheManager with RocksDB access, watermark eviction,
-                // and process-level memory safety valve
-                Agent.Services.Cache.BucketCacheManager.Initialize(
-                    rocksDbSvc.BucketStorage, bucketCacheMaxBytes, bucketEvictionSec,
-                    totalAvailableMemory: totalAvailableMemory,
-                    highWaterPct: bucketHighWaterPct,
-                    lowWaterPct: bucketLowWaterPct,
-                    hardCeilingPct: bucketHardCeilingPct);
+                // Always register bucket storage reference so GetBucketStorage() works
+                Agent.Services.Cache.BucketCacheManager.SetBucketStorage(rocksDbSvc.BucketStorage);
 
-                rocksDbSvc.WarmUpBuckets(bucketCacheMaxBytes);
+                if (Agent.Services.Cache.BucketCacheManager.L1Enabled)
+                {
+                    Agent.Services.Cache.BucketCacheManager.Initialize(
+                        rocksDbSvc.BucketStorage, bucketCacheMaxBytes, bucketEvictionSec,
+                        totalAvailableMemory: totalAvailableMemory,
+                        highWaterPct: bucketHighWaterPct,
+                        lowWaterPct: bucketLowWaterPct,
+                        hardCeilingPct: bucketHardCeilingPct);
+
+                    rocksDbSvc.WarmUpBuckets(bucketCacheMaxBytes);
+                }
 
                 // Initialize live stats counters (O(1) from persisted, or one-time scan)
                 rocksDbSvc.InitializeStats();
@@ -303,12 +315,13 @@ var chunkCacheService = new Agent.Services.Cache.ChunkCacheService(
 );
 Agent.Modules.Storage.ChunkCacheHandler.SetInstance(chunkCacheService);
 
-// Register the chunk cache evictor with BucketCacheManager's system memory guard.
-// When /proc/meminfo shows free RAM < 10%, BucketCacheManager will call this to nuke the chunk cache.
-Agent.Services.Cache.BucketCacheManager.RegisterChunkCacheEvictor(() =>
+if (Agent.Services.Cache.BucketCacheManager.L1Enabled)
 {
-    chunkCacheService.ForceEvict(0.0); // Clear everything
-});
+    Agent.Services.Cache.BucketCacheManager.RegisterChunkCacheEvictor(() =>
+    {
+        chunkCacheService.ForceEvict(0.0);
+    });
+}
 
 // Log total memory budget
 long totalCacheBudget = bucketCacheMaxBytes + maxCacheSizeBytes;

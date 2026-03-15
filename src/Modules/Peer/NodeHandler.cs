@@ -217,10 +217,32 @@ public static class NodeService
     {
         using var rootSpan = Observability.StartStage("Node.SearchAll");
 
-        // No DHT range check — gateway already routed via rendezvous hash.
-        // Agent accepts all requests.
-
         ulong bucketKey = RocksDbBucketStorage.BitstringToUlong(_bitstring);
+
+        // ── L1 bypass: search directly on RocksDB ──
+        if (!Agent.Services.Cache.BucketCacheManager.L1Enabled)
+        {
+            var bucketStorage = Agent.Services.Cache.BucketCacheManager.GetBucketStorage();
+            if (bucketStorage != null)
+            {
+                float queryNormSq = Agent.Utils.Misc.Misc.ComputeNormSquared(_vector);
+                var searchSw = System.Diagnostics.Stopwatch.StartNew();
+                var results = bucketStorage.SearchSingleBucketDirect(
+                    bucketKey, _vector, queryNormSq, _minimum_similarity, _k, _req.Index);
+                searchSw.Stop();
+                Observability.RecordStage("ComputeSimilarity", searchSw.Elapsed.TotalMilliseconds,
+                    ("result_count", results.Count));
+
+                if (results.Count > 0)
+                    return (results, false, false);
+            }
+
+            if (canSave)
+                return (new List<M_SearchResult>(), false, true);
+            return (new List<M_SearchResult>(), false, false);
+        }
+
+        // ── L1 path: check RAM then fall back to LoadAndCache ──
         var bucket = node.Buckets.TryGetValue(bucketKey, out var hotBucket)
             ? hotBucket
             : Agent.Services.Cache.BucketCacheManager.LoadAndCache(_bitstring);
@@ -236,7 +258,6 @@ public static class NodeService
             return (localResults, false, false);
         }
 
-        // Bucket doesn't exist on this agent — tell gateway to store
         if (canSave)
             return (new List<M_SearchResult>(), false, true);
 
@@ -245,9 +266,46 @@ public static class NodeService
 
     public static async Task<M_Bucket.InsertResult> StoreInBucket(M_Node node, string bucket_string, M_Data _data, string HeadRouteID)
     {
-        // Use BucketCacheManager.GetOrLoad: if the bucket was evicted from L1,
-        // this loads its existing vectors from L2 (RocksDB) first, so the new
-        // vector is added alongside existing data — not to an empty bucket.
+        // ── L1 bypass: dedup + store directly via RocksDB ──
+        if (!Agent.Services.Cache.BucketCacheManager.L1Enabled)
+        {
+            var bucketStorage = Agent.Services.Cache.BucketCacheManager.GetBucketStorage();
+            ulong bucketKey = RocksDbBucketStorage.BitstringToUlong(bucket_string);
+
+            if (_data.chunk != null && _data.chunk.Length > 0 && _data.vector != null && _data.vector.Length > 0 && bucketStorage != null)
+            {
+                float queryNormSq = _data.normSquared > 0f
+                    ? _data.normSquared
+                    : Agent.Utils.Misc.Misc.ComputeNormSquared(_data.vector);
+                float threshold = Globals.StoreSimilarityThreshold;
+
+                var match = bucketStorage.SearchSingleBucketForStore(
+                    bucketKey, _data.vector, queryNormSq, threshold);
+
+                if (match.HasValue)
+                {
+                    var m = match.Value;
+                    _data.storageGuid = m.storageGuid;
+                    _data.id = m.bucketId;
+                    _data.index = m.bucketIndex;
+                    return new M_Bucket.InsertResult
+                    {
+                        BucketId = m.bucketId,
+                        BucketIndex = m.bucketIndex,
+                        WasDeduplicated = true,
+                        Similarity = m.similarity,
+                        MatchedStorageGuid = m.storageGuid
+                    };
+                }
+            }
+
+            var (storedBucketId, storedBucketIndex) = await NetworkFileStorageHandler.StoreVector(bucket_string, _data);
+            _data.id = storedBucketId;
+            _data.index = storedBucketIndex;
+            return new M_Bucket.InsertResult { BucketId = storedBucketId, BucketIndex = storedBucketIndex };
+        }
+
+        // ── L1 path: load bucket into RAM, dedup via M_Bucket.InsertData ──
         var bucket = Agent.Services.Cache.BucketCacheManager.GetOrLoad(bucket_string);
         var result = await bucket.InsertData(_data, 0);
 

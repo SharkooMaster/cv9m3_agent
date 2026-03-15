@@ -24,6 +24,13 @@ namespace Agent.Services.Cache;
 /// </summary>
 public static class BucketCacheManager
 {
+    /// <summary>
+    /// When false (default), the L1 managed-heap bucket cache is bypassed entirely.
+    /// All search/store operations route directly through RocksDB.
+    /// Set to true via L1_CACHE_ENABLED=true env var to re-enable the RAM cache.
+    /// </summary>
+    public static bool L1Enabled { get; set; } = false;
+
     private static RocksDbBucketStorage? _bucketStorage;
 
     /// <summary>Max bytes for L1 bucket cache (100% budget).</summary>
@@ -178,6 +185,12 @@ public static class BucketCacheManager
     // ═══════════════════════════════════════════════════════════════════
     //  PUBLIC API
     // ═══════════════════════════════════════════════════════════════════
+
+    /// <summary>
+    /// Set the RocksDB bucket storage reference. Called at startup regardless of L1 state
+    /// so that GetBucketStorage() always returns a valid reference.
+    /// </summary>
+    public static void SetBucketStorage(RocksDbBucketStorage storage) => _bucketStorage = storage;
 
     /// <summary>
     /// Expose the underlying RocksDB bucket storage for lane search operations.
