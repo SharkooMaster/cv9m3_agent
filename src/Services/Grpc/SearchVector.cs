@@ -70,27 +70,31 @@ public class SearchVectorService : SearchVector.SearchVectorBase
             var bucketStorage = BucketCacheManager.GetBucketStorage();
             if (bucketStorage != null && allBucketIds.Count > 0)
             {
-                var (directBucketId, directIndex, directGuid, directSim) =
-                    bucketStorage.SearchBucketsDirect(
-                        allBucketIds, queryVector, queryNormSq, threshold, 4096);
+                var topKHits = bucketStorage.SearchBucketsDirectTopK(
+                    allBucketIds, queryVector, queryNormSq, threshold, requestedK, 4096);
 
-                if (directSim >= threshold && directGuid != null)
+                if (topKHits.Count > 0)
                 {
-                    ByteString chunkBytes = ByteString.Empty;
-                    var raw = await ChunkCacheHandler.GetChunkAsync(directGuid);
-                    if (raw != null && raw.Length > 0)
-                        chunkBytes = ByteString.CopyFrom(raw);
-
                     var res = new SearchVector_Result { Save = false };
-                    res.Results.Add(new SearchVectorObject
+                    foreach (var (hitBucketId, hitIndex, hitGuid, hitSim) in topKHits)
                     {
-                        BucketId = directBucketId,
-                        BucketKey = (long)directIndex,
-                        Similarity = directSim,
-                        Chunk = chunkBytes,
-                        Index = request.Index,
-                        StorageGuid = directGuid
-                    });
+                        ByteString chunkBytes = ByteString.Empty;
+                        if (!string.IsNullOrWhiteSpace(hitGuid))
+                        {
+                            var raw = await ChunkCacheHandler.GetChunkAsync(hitGuid);
+                            if (raw != null && raw.Length > 0)
+                                chunkBytes = ByteString.CopyFrom(raw);
+                        }
+                        res.Results.Add(new SearchVectorObject
+                        {
+                            BucketId = hitBucketId,
+                            BucketKey = (long)hitIndex,
+                            Similarity = hitSim,
+                            Chunk = chunkBytes,
+                            Index = request.Index,
+                            StorageGuid = hitGuid ?? ""
+                        });
+                    }
                     return res;
                 }
             }

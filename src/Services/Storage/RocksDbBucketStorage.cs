@@ -769,6 +769,105 @@ public sealed class RocksDbBucketStorage : IDisposable
     }
 
     /// <summary>
+    /// Search multiple buckets directly from RocksDB and return the top-K matches
+    /// above threshold, sorted descending by similarity. Falls back to the single-best
+    /// path when topK == 1.
+    /// </summary>
+    public List<(ulong bucketId, ulong bucketIndex, string? storageGuid, float similarity)> SearchBucketsDirectTopK(
+        IReadOnlyList<ulong> bucketIds, float[] queryVector, float queryNormSq, float threshold, int topK, int maxCandidates = 4096)
+    {
+        if (topK <= 1)
+        {
+            var single = SearchBucketsDirect(bucketIds, queryVector, queryNormSq, threshold, maxCandidates);
+            if (single.similarity >= threshold && single.storageGuid != null)
+                return new List<(ulong, ulong, string?, float)> { single };
+            return new List<(ulong, ulong, string?, float)>();
+        }
+
+        if (bucketIds.Count == 0)
+            return new List<(ulong, ulong, string?, float)>();
+
+        int vecLen = queryVector.Length;
+        int vectorBytesLen = vecLen * sizeof(float);
+        int minValueLen = 4 + vectorBytesLen;
+        int perBucketBudget = Math.Max(64, maxCandidates / Math.Max(1, bucketIds.Count));
+
+        int bucketCount = bucketIds.Count;
+        var perBucketHits = new List<(float sim, ulong bucketId, byte[] keyBytes, byte[] valBytes)>[bucketCount];
+        for (int i = 0; i < bucketCount; i++)
+            perBucketHits[i] = new List<(float, ulong, byte[], byte[])>();
+
+        int maxPar = Math.Min(4, bucketCount);
+        Parallel.For(0, bucketCount, new ParallelOptions { MaxDegreeOfParallelism = maxPar }, b =>
+        {
+            ulong bucketId = bucketIds[b];
+            var prefix = MakeBinaryVectorPrefix(bucketId);
+
+            var readOpts = new ReadOptions()
+                .SetPrefixSameAsStart(true)
+                .SetFillCache(true)
+                .SetVerifyChecksums(false)
+                .SetReadaheadSize((ulong)(256 * 1024));
+
+            var localHits = new List<(float sim, ulong bucketId, byte[] keyBytes, byte[] valBytes)>();
+            float localMinSim = -1f;
+            int scanned = 0;
+
+            using var iter = _rocksDb.NewIterator(readOptions: readOpts);
+            iter.Seek(prefix);
+
+            while (iter.Valid() && scanned < perBucketBudget)
+            {
+                var valBytes = iter.Value();
+                if (valBytes == null || valBytes.Length < minValueLen) { iter.Next(); continue; }
+
+                int dim = BitConverter.ToInt32(valBytes, 0);
+                if (dim != vecLen || valBytes.Length < 4 + dim * sizeof(float)) { iter.Next(); continue; }
+
+                var candidateSpan = MemoryMarshal.Cast<byte, float>(valBytes.AsSpan(4, dim * sizeof(float)));
+                float normSq = ExtractNormSquared(valBytes, dim);
+                float sim = CosineSimilarityInline(queryVector, queryNormSq, candidateSpan, normSq);
+                scanned++;
+
+                if (sim >= threshold)
+                {
+                    if (localHits.Count < topK || sim > localMinSim)
+                    {
+                        localHits.Add((sim, bucketId, (byte[])iter.Key().Clone(), (byte[])valBytes.Clone()));
+                        if (localHits.Count > topK * 2)
+                        {
+                            localHits.Sort((a, b) => b.sim.CompareTo(a.sim));
+                            localHits.RemoveRange(topK, localHits.Count - topK);
+                            localMinSim = localHits[^1].sim;
+                        }
+                    }
+                }
+                iter.Next();
+            }
+
+            perBucketHits[b] = localHits;
+        });
+
+        var merged = new List<(float sim, ulong bucketId, byte[] keyBytes, byte[] valBytes)>();
+        for (int b = 0; b < bucketCount; b++)
+            merged.AddRange(perBucketHits[b]);
+
+        merged.Sort((a, b) => b.sim.CompareTo(a.sim));
+
+        var seen = new HashSet<string>();
+        var results = new List<(ulong bucketId, ulong bucketIndex, string? storageGuid, float similarity)>();
+        foreach (var hit in merged)
+        {
+            if (results.Count >= topK) break;
+            ulong idx = BinaryPrimitives.ReadUInt64BigEndian(hit.keyBytes.AsSpan(9));
+            string? guid = ExtractStorageGuid(hit.valBytes, vecLen);
+            if (guid != null && !seen.Add(guid)) continue;
+            results.Add((hit.bucketId, idx, guid, hit.sim));
+        }
+        return results;
+    }
+
+    /// <summary>
     /// Extract normSquared from the tail of a serialized vector record.
     /// Format: [4B dim][dim*4B vector][7-bit-enc strLen][strLen bytes guid][4B chunkSize][4B normSq]
     /// </summary>
