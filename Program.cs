@@ -334,6 +334,10 @@ if (app.Environment.IsDevelopment())
 app.UseRouting();
 app.MapPrometheusScrapingEndpoint("/metrics");
 
+// Tiny pod-self-reporting endpoint pulled by the control-center every ~30 s.
+// Allocation-bounded; never touches the RocksDB hot path.
+Agent.Utils.RuntimeStatsEndpoint.Map(app, "agent");
+
 app.MapGrpcService<GreeterService>();
 app.MapGrpcService<FindPeerResponsibleService>();
 app.MapGrpcService<GetNodeInfoService>();
