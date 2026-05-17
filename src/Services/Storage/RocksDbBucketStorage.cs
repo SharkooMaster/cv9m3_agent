@@ -16,7 +16,6 @@ public sealed class RocksDbBucketStorage : IDisposable
     private readonly RocksDb _rocksDb;
     private readonly RocksDbWriteBatcher _writeBatcher;
     private readonly string _bucketDbPath;
-    private static readonly object _bucketIdLock = new object();
 
     // Striped locks: 1024 lock objects instead of one per bucket.
     // Two buckets may share a stripe (brief contention, not correctness issue).
@@ -30,16 +29,21 @@ public sealed class RocksDbBucketStorage : IDisposable
     private static object GetBucketLock(ulong bucketId) =>
         _bucketStripes[bucketId % (ulong)_bucketStripes.Length];
 
-    // ── IN-MEMORY counters & dedup: fixes write-batcher read-after-write race ──
-    // The write batcher flushes to RocksDB every 50ms. Two rapid StoreVector calls
-    // for the same bucket would both read the same stale `next` counter from RocksDB
-    // → duplicate bucketIndex → wrong base chunk during decompression → CORRUPTION.
-    // Fix: track counters and dedup entries in memory (protected by per-bucket lock).
+    // ── BOUNDED counter cache (replaces unbounded ConcurrentDictionary) ──
+    // The previous implementation held one ulong→ulong entry per known bucket. At our
+    // chunk size (1 KB) and corpus sizes (10s of GB → 10s of millions of buckets) this
+    // grew to 5–8 GB managed heap and caused agent OOMs around the 14 Gi cgroup limit.
     //
-    // _nextIndexInMemory doubles as the "known bucket" set: if a bucketId has an entry
-    // here, the bucket exists. Eliminates the old _bucketNameToId / _bucketIdToName
-    // dictionaries (saved ~5GB managed heap at 10M+ buckets).
-    private static readonly ConcurrentDictionary<ulong, ulong> _nextIndexInMemory = new();
+    // The cache now keeps a hard-bounded LRU (default ~1M entries / a few hundred MB)
+    // with sync-write-on-eviction to RocksDB's `bnext:{id}` key. Cold buckets fall back
+    // to disk on the next access; the bloom-filtered point lookup is ~1–5 µs warm and
+    // ~100 µs on a cache miss. Critically: the memory footprint no longer scales with
+    // the number of distinct buckets ever ingested — only with the active working set.
+    //
+    // Concurrency invariant unchanged: per-bucket stripe locks serialise StoreVector
+    // for the same bucketId. The shard locks inside the cache serialise concurrent
+    // operations across different buckets that hash into the same shard.
+    private readonly BoundedCounterCache<ulong> _bucketCounters;
 
     // Dedup is served directly from RocksDB via the bsg: key prefix.
     // Previously used an unbounded ConcurrentDictionary that grew to 7+ GB
@@ -64,6 +68,11 @@ public sealed class RocksDbBucketStorage : IDisposable
     private const string LaneVectorPrefix = "lv:";
     private const string LaneNextPrefix = "lnext:";
 
+    // Persistent storage stats (loaded at startup, snapshotted periodically).
+    private const string MetaTotalBucketsKey = "meta:total_buckets";
+    private const string MetaTotalVectorsKey = "meta:total_vectors";
+    private const int MetaSnapshotIntervalMs = 30_000;
+
     // Binary key format for bucket vectors (replaces string "bv:{id}:{idx}")
     // [0x01][8-byte BE bucketId][8-byte BE index] = 17 bytes total, 9-byte prefix
     private const byte BinaryVectorTag = 0x01;
@@ -71,8 +80,17 @@ public sealed class RocksDbBucketStorage : IDisposable
     private const int BinaryPrefixLen = 9;
     private static readonly byte[] MigrationMarkerKey = Encoding.UTF8.GetBytes("__bv_binary_v1__");
 
-    // In-memory lane counters (same pattern as _nextIndexInMemory)
+    // Lane counters: bounded by lane hash space (≤ 65k entries, ~5 MB managed). Loaded
+    // lazily on first touch from `lnext:{hash}` so we keep the no-cold-start property.
     private static readonly ConcurrentDictionary<ushort, ulong> _laneNextIndex = new();
+    private static readonly object _laneInitLock = new();
+    private bool _laneCountersLoadedFromDisk;
+
+    // In-memory stats counters; persisted under the `meta:` prefix.
+    private long _totalBuckets;
+    private long _totalVectors;
+    private long _totalLaneEntries;
+    private readonly Timer _statsSnapshotTimer;
 
     public RocksDbBucketStorage(string basePath, long blockCacheSizeMb = 128)
     {
@@ -120,13 +138,66 @@ public sealed class RocksDbBucketStorage : IDisposable
         // High-throughput: Larger batches for better performance
         _writeBatcher = new RocksDbWriteBatcher(_rocksDb, batchSize: 10_000, flushIntervalMs: 5_000);
 
-        // Load existing bucket IDs on startup
-        LoadBucketIds();
+        // ── Bounded counter cache for `bnext:{bucketId}` ──
+        // Sized to comfortably exceed any plausible active working set while keeping
+        // managed memory ~constant. Tunable via env var; default 1M entries × ~150 B ≈
+        // 150–200 MB managed regardless of how many total buckets the agent has ingested.
+        int counterCacheCapacity = ParseEnvInt("BUCKET_COUNTER_CACHE_CAPACITY", 1_000_000, 8_192);
+        int counterCacheShards = ParseEnvInt("BUCKET_COUNTER_CACHE_SHARDS", 64, 1);
+        _bucketCounters = new BoundedCounterCache<ulong>(
+            totalCapacity: counterCacheCapacity,
+            shardCount: counterCacheShards,
+            diskRead: bucketId =>
+            {
+                var bytes = _rocksDb.Get(Encoding.UTF8.GetBytes($"{BucketNextPrefix}{bucketId}"));
+                if (bytes == null || bytes.Length != sizeof(ulong)) return null;
+                return BitConverter.ToUInt64(bytes, 0);
+            },
+            diskWriteSync: (bucketId, value) =>
+            {
+                _rocksDb.Put(
+                    Encoding.UTF8.GetBytes($"{BucketNextPrefix}{bucketId}"),
+                    BitConverter.GetBytes(value));
+            },
+            backgroundFlushIntervalMs: 5_000);
+
+        // ── Stats counters (persistent under meta: prefix) ──
+        _totalBuckets = ReadMetaCounter(MetaTotalBucketsKey);
+        _totalVectors = ReadMetaCounter(MetaTotalVectorsKey);
+        _statsSnapshotTimer = new Timer(_ => SnapshotStats(), null, MetaSnapshotIntervalMs, MetaSnapshotIntervalMs);
+        Console.WriteLine($"[RocksDB Buckets] Stats loaded: totalBuckets={_totalBuckets:N0}, totalVectors={_totalVectors:N0} (snapshot every {MetaSnapshotIntervalMs / 1000}s)");
 
         // One-time migration: convert string bv: keys to binary format for prefix bloom
         MigrateToBinaryKeys();
 
         Console.WriteLine($"[RocksDB Buckets] Initialized at {_bucketDbPath} with prefix bloom + {blockCacheSizeMb}MB block cache + LZ4");
+    }
+
+    private static int ParseEnvInt(string name, int defaultValue, int min)
+    {
+        var raw = Environment.GetEnvironmentVariable(name);
+        if (int.TryParse(raw, out var v) && v >= min) return v;
+        return defaultValue;
+    }
+
+    private long ReadMetaCounter(string key)
+    {
+        var bytes = _rocksDb.Get(Encoding.UTF8.GetBytes(key));
+        if (bytes == null || bytes.Length != sizeof(long)) return 0;
+        return BitConverter.ToInt64(bytes, 0);
+    }
+
+    private void SnapshotStats()
+    {
+        try
+        {
+            _rocksDb.Put(Encoding.UTF8.GetBytes(MetaTotalBucketsKey), BitConverter.GetBytes(Interlocked.Read(ref _totalBuckets)));
+            _rocksDb.Put(Encoding.UTF8.GetBytes(MetaTotalVectorsKey), BitConverter.GetBytes(Interlocked.Read(ref _totalVectors)));
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[RocksDB Buckets] Stats snapshot failed: {ex.GetType().Name}: {ex.Message}");
+        }
     }
 
     /// <summary>
@@ -140,96 +211,81 @@ public sealed class RocksDbBucketStorage : IDisposable
 
     public void Dispose()
     {
-        _writeBatcher?.Flush(); // Flush pending writes before shutdown
+        try { _statsSnapshotTimer?.Dispose(); } catch { }
+        try { SnapshotStats(); } catch { }
+        try { _bucketCounters?.Dispose(); } catch { }   // sync-flushes dirty counters
+        _writeBatcher?.Flush();                         // flush pending vector records
         _writeBatcher?.Dispose();
         _rocksDb?.Dispose();
     }
 
-    private void LoadBucketIds()
+    /// <summary>
+    /// Lazily prime the lane-counter dictionary from `lnext:{hash}` keys on first lane
+    /// write. Lane hash space is bounded (≤65k entries, ~5 MB), so loading the whole map
+    /// up front is fine — but only when lanes are actually used. Bucket counters are NOT
+    /// pre-loaded; they live in BoundedCounterCache and are pulled in on demand.
+    /// </summary>
+    private void EnsureLaneCountersLoaded()
     {
-        // Total-order seek is required because a prefix extractor is set on this CF.
-        // Without it, SeekToFirst would only iterate within the first prefix.
-        var readOpts = new ReadOptions().SetTotalOrderSeek(true);
-        using var iterator = _rocksDb.NewIterator(readOptions: readOpts);
+        if (_laneCountersLoadedFromDisk) return;
 
-        // Seek past binary vector keys (0x01...) directly to metadata keys (0x02+)
-        iterator.Seek(new byte[] { BinaryVectorTag + 1 });
-
-        long bucketNameCount = 0;
-
-        lock (_bucketIdLock)
+        lock (_laneInitLock)
         {
+            if (_laneCountersLoadedFromDisk) return;
+
+            var readOpts = new ReadOptions().SetTotalOrderSeek(true);
+            using var iterator = _rocksDb.NewIterator(readOptions: readOpts);
+            iterator.Seek(Encoding.UTF8.GetBytes(LaneNextPrefix));
+
+            int loaded = 0;
+            long entrySum = 0;
             while (iterator.Valid())
             {
                 var keyBytes = iterator.Key();
-                if (keyBytes == null || keyBytes.Length == 0) { iterator.Next(); continue; }
+                if (keyBytes == null || keyBytes.Length == 0) break;
 
                 var key = Encoding.UTF8.GetString(keyBytes);
+                if (!key.StartsWith(LaneNextPrefix, StringComparison.Ordinal)) break;
 
-                if (key.StartsWith(BucketNameToIdPrefix, StringComparison.Ordinal))
+                var valueBytes = iterator.Value();
+                if (valueBytes != null && valueBytes.Length == sizeof(ulong))
                 {
-                    var bucketName = key.AsSpan(BucketNameToIdPrefix.Length);
-                    var bucketId = BitstringToUlong(bucketName);
-                    if (bucketId > 0)
+                    var hashStr = key.AsSpan(LaneNextPrefix.Length);
+                    if (ushort.TryParse(hashStr, out var laneHash))
                     {
-                        _nextIndexInMemory.TryAdd(bucketId, 0UL);
-                        bucketNameCount++;
+                        var v = BitConverter.ToUInt64(valueBytes, 0);
+                        _laneNextIndex[laneHash] = v;
+                        entrySum += (long)v;
+                        loaded++;
                     }
                 }
-                else if (key.StartsWith(BucketNextPrefix, StringComparison.Ordinal))
-                {
-                    var valueBytes = iterator.Value();
-                    if (valueBytes != null && valueBytes.Length == sizeof(ulong))
-                    {
-                        var idStr = key.AsSpan(BucketNextPrefix.Length);
-                        if (ulong.TryParse(idStr, out var bucketId))
-                            _nextIndexInMemory[bucketId] = BitConverter.ToUInt64(valueBytes, 0);
-                    }
-                }
-                else if (key.StartsWith(LaneNextPrefix, StringComparison.Ordinal))
-                {
-                    var valueBytes = iterator.Value();
-                    if (valueBytes != null && valueBytes.Length == sizeof(ulong))
-                    {
-                        var hashStr = key.AsSpan(LaneNextPrefix.Length);
-                        if (ushort.TryParse(hashStr, out var laneHash))
-                            _laneNextIndex[laneHash] = BitConverter.ToUInt64(valueBytes, 0);
-                    }
-                }
-
                 iterator.Next();
             }
-        }
 
-        Console.WriteLine($"[RocksDB Buckets] Loaded {bucketNameCount} buckets, {_nextIndexInMemory.Count} counters, {_laneNextIndex.Count} lane counters into memory (dedup served from RocksDB)");
+            Interlocked.Exchange(ref _totalLaneEntries, entrySum);
+            _laneCountersLoadedFromDisk = true;
+            Console.WriteLine($"[RocksDB Buckets] Lazy-loaded {loaded} lane counters (totalEntries={entrySum:N0})");
+        }
     }
 
     /// <summary>
-    /// Get or create bucket ID for a bucket name (64-char bitstring).
-    /// The ID is deterministic: bitstring → ulong (1:1 bijection).
-    /// This makes bucket IDs GLOBALLY unique — the same bitstring on any agent
-    /// produces the same ID, enabling decompression to route via RendezvousRouter.
+    /// Bucket IDs are a 1:1 deterministic function of the bucket name (64-char bitstring),
+    /// so we don't need an "exists?" check or a bn:/bi: registration step before storing.
+    /// First-time-ever registration of a bucket happens inside StoreVector via the
+    /// counter cache's onFirstFetch hook, so a never-touched bucket costs nothing.
     /// </summary>
-    private ulong GetOrCreateBucketId(string bucketName)
+    private static ulong DeriveBucketId(string bucketName) => BitstringToUlong(bucketName);
+
+    /// <summary>
+    /// Register a brand-new bucket: write the `bn:`/`bi:` mappings via the batcher.
+    /// Called inside the counter cache's first-fetch hook, so it runs at most once per
+    /// bucketId per agent instance.
+    /// </summary>
+    private void RegisterBucketMetadata(string bucketName, ulong bucketId)
     {
-        var id = BitstringToUlong(bucketName);
-
-        if (_nextIndexInMemory.ContainsKey(id))
-            return id;
-
-        lock (_bucketIdLock)
-        {
-            if (_nextIndexInMemory.ContainsKey(id))
-                return id;
-
-            _nextIndexInMemory.TryAdd(id, 0UL);
-
-            _writeBatcher.Put(Encoding.UTF8.GetBytes($"{BucketNameToIdPrefix}{bucketName}"), BitConverter.GetBytes(id));
-            _writeBatcher.Put(Encoding.UTF8.GetBytes($"{BucketIdToNamePrefix}{id}"), Encoding.UTF8.GetBytes(bucketName));
-            _writeBatcher.Put(Encoding.UTF8.GetBytes($"{BucketNextPrefix}{id}"), BitConverter.GetBytes((ulong)0));
-
-            return id;
-        }
+        _writeBatcher.Put(Encoding.UTF8.GetBytes($"{BucketNameToIdPrefix}{bucketName}"), BitConverter.GetBytes(bucketId));
+        _writeBatcher.Put(Encoding.UTF8.GetBytes($"{BucketIdToNamePrefix}{bucketId}"), Encoding.UTF8.GetBytes(bucketName));
+        Interlocked.Increment(ref _totalBuckets);
     }
 
     /// <summary>
@@ -362,7 +418,7 @@ public sealed class RocksDbBucketStorage : IDisposable
     /// </summary>
     public (ulong bucketId, ulong bucketIndex) StoreVector(string bucketName, float[] vector, string storageGuid, int chunkSize)
     {
-        var bucketId = GetOrCreateBucketId(bucketName);
+        var bucketId = DeriveBucketId(bucketName);
 
         lock (GetBucketLock(bucketId))
         {
@@ -377,22 +433,28 @@ public sealed class RocksDbBucketStorage : IDisposable
                 return (bucketId, BitConverter.ToUInt64(existingBytes, 0));
             }
 
-            // ── Next index: use IN-MEMORY counter (never stale) ──
-            ulong bucketIndex = _nextIndexInMemory.GetOrAdd(bucketId, 0UL);
-
-            // Increment the in-memory counter IMMEDIATELY (before releasing the lock)
-            _nextIndexInMemory[bucketId] = bucketIndex + 1;
+            // Allocate the next index from the bounded counter cache. If the bucket has
+            // never been seen on this agent (and isn't on disk), the cache returns 0 and
+            // invokes RegisterBucketMetadata exactly once for the bn:/bi: writes.
+            // The counter is the cache's authoritative value: the cache flushes it sync
+            // to RocksDB on eviction or at the periodic snapshot interval, so subsequent
+            // readers (cache miss → disk fallback) see the latest value.
+            ulong bucketIndex = _bucketCounters.FetchAndIncrement(
+                bucketId,
+                onFirstFetch: () => RegisterBucketMetadata(bucketName, bucketId));
 
             // Write dedup entry directly to RocksDB (not batched) for immediate visibility
             _rocksDb.Put(dedupKeyBytes, BitConverter.GetBytes(bucketIndex));
 
-            // Persist vector record and next-index via batcher (background)
+            // Persist vector record via batcher (background). We deliberately do NOT
+            // batch a `bnext:` write here — the cache is the sole writer of that key,
+            // which prevents stale-overwrite races between the batcher and the cache's
+            // sync flush on eviction.
             var recordBytes = SerializeVectorRecord(vector, storageGuid, chunkSize);
             var vectorKeyBytes = MakeBinaryVectorKey(bucketId, bucketIndex);
-            var nextKeyBytes = Encoding.UTF8.GetBytes($"{BucketNextPrefix}{bucketId}");
-
             _writeBatcher.Put(vectorKeyBytes, recordBytes);
-            _writeBatcher.Put(nextKeyBytes, BitConverter.GetBytes(bucketIndex + 1));
+
+            Interlocked.Increment(ref _totalVectors);
 
             return (bucketId, bucketIndex);
         }
@@ -412,9 +474,10 @@ public sealed class RocksDbBucketStorage : IDisposable
         foreach (var bucketName in bucketNames)
         {
             var bucketId = BitstringToUlong(bucketName);
-            if (bucketId == 0 || !_nextIndexInMemory.ContainsKey(bucketId))
-                continue;
+            if (bucketId == 0) continue;
 
+            // No in-memory existence check: a bucket with no records returns zero rows
+            // from the prefix iterator below (bloom-filtered, ~1–5 µs cold).
             var prefix = MakeBinaryVectorPrefix(bucketId);
             using var iterator = _rocksDb.NewIterator(readOptions: readOpts);
             iterator.Seek(prefix);
@@ -464,8 +527,7 @@ public sealed class RocksDbBucketStorage : IDisposable
     public List<(float[] vector, string storageGuid, ulong bucketId, ulong bucketIndex, float normSquared)>? LoadSingleBucketToMemory(string bucketName)
     {
         var bucketId = BitstringToUlong(bucketName);
-        if (bucketId == 0 || !_nextIndexInMemory.ContainsKey(bucketId))
-            return null;
+        if (bucketId == 0) return null;
 
         var prefix = MakeBinaryVectorPrefix(bucketId);
         var vectors = new List<(float[], string, ulong, ulong, float)>();
@@ -526,16 +588,16 @@ public sealed class RocksDbBucketStorage : IDisposable
             var recordBytes = iterator.Value();
             if (recordBytes != null && recordBytes.Length > 0 && TryDeserializeVectorRecord(recordBytes, out var rec))
             {
-                if (_nextIndexInMemory.ContainsKey(bucketId))
+                // The presence of a vector record IS the existence proof — no need for
+                // a separate in-memory lookup (the previous check was a vestigial guard
+                // from when the in-memory dict doubled as a "known buckets" set).
+                var bucketName = UlongToBitstring(bucketId);
+                if (!result.TryGetValue(bucketName, out var list))
                 {
-                    var bucketName = UlongToBitstring(bucketId);
-                    if (!result.TryGetValue(bucketName, out var list))
-                    {
-                        list = new List<(float[], string, ulong, ulong, float)>();
-                        result[bucketName] = list;
-                    }
-                    list.Add((rec.Vector, rec.StorageGuid, bucketId, bucketIndex, rec.NormSquared));
+                    list = new List<(float[], string, ulong, ulong, float)>();
+                    result[bucketName] = list;
                 }
+                list.Add((rec.Vector, rec.StorageGuid, bucketId, bucketIndex, rec.NormSquared));
             }
 
             iterator.Next();
@@ -545,17 +607,15 @@ public sealed class RocksDbBucketStorage : IDisposable
     }
 
     /// <summary>
-    /// Get fast O(1) bucket and vector counts from in-memory maps.
+    /// Get fast O(1) bucket and vector counts from persistent in-memory counters.
+    /// Counters are loaded from RocksDB at startup (via meta: keys), incremented in
+    /// memory by StoreVector, and snapshotted back to RocksDB every 30 seconds and on
+    /// graceful shutdown — so they survive restart without depending on iterating the
+    /// (potentially huge) bucket-name space.
     /// </summary>
     public (long totalBuckets, long totalVectors) GetBucketAndVectorStats()
     {
-        long totalBuckets = _nextIndexInMemory.Count;
-
-        long totalVectors = 0;
-        foreach (var kv in _nextIndexInMemory)
-            totalVectors += (long)kv.Value;
-
-        return (totalBuckets, totalVectors);
+        return (Interlocked.Read(ref _totalBuckets), Interlocked.Read(ref _totalVectors));
     }
 
     private static byte[] SerializeVectorRecord(float[] vector, string storageGuid, int chunkSize)
@@ -1114,6 +1174,10 @@ public sealed class RocksDbBucketStorage : IDisposable
     /// </summary>
     public void StoreLaneEntries(ushort[] laneHashes, ulong mainBucketId, ulong mainBucketIndex, string storageGuid)
     {
+        // Lane counters are bounded (≤65k entries) but must be primed from disk on first
+        // use so a restart doesn't reset them to 0 and overwrite existing lane records.
+        EnsureLaneCountersLoaded();
+
         byte[] guidRaw;
         if (!string.IsNullOrEmpty(storageGuid) && storageGuid.Length == 64)
         {
@@ -1129,6 +1193,7 @@ public sealed class RocksDbBucketStorage : IDisposable
             ushort hash = laneHashes[lane];
             ulong idx = _laneNextIndex.GetOrAdd(hash, 0UL);
             _laneNextIndex[hash] = idx + 1;
+            Interlocked.Increment(ref _totalLaneEntries);
 
             // Value: [8 bucketId][8 bucketIndex][1 lanePos][32 storageGuid_raw] = 49 bytes
             var value = new byte[49];
@@ -1198,9 +1263,7 @@ public sealed class RocksDbBucketStorage : IDisposable
     /// </summary>
     public (long totalLaneBuckets, long totalLaneEntries) GetLaneStats()
     {
-        long totalEntries = 0;
-        foreach (var kv in _laneNextIndex)
-            totalEntries += (long)kv.Value;
-        return (_laneNextIndex.Count, totalEntries);
+        EnsureLaneCountersLoaded();
+        return (_laneNextIndex.Count, Interlocked.Read(ref _totalLaneEntries));
     }
 }
