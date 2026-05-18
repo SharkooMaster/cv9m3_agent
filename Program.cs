@@ -235,15 +235,21 @@ lifetime.ApplicationStarted.Register(() =>
                     catch (Exception ex2) { Console.WriteLine($"[Agent] Stats persist failed: {ex2.Message}"); }
                 }, null, TimeSpan.FromSeconds(60), TimeSpan.FromSeconds(60));
 
-                // Compact LOH every 5 minutes to prevent memory fragmentation on long runs.
-                // Without this, the LOH accumulates holes from large temporary arrays (float[], byte[])
-                // that can't be reused, causing RSS to grow while actual live data stays flat.
+                // LOH compaction: agent's BatchGet/BatchSearch hot path churns
+                // hundreds of float[] vectors and byte[] chunks > 85 KB per request,
+                // all of which land on the LOH and never compact unless explicitly
+                // requested. Was every 5 min with `Optimized` mode — but `Optimized`
+                // lets the GC skip the request if it doesn't think a Gen2 is warranted,
+                // so peak frag drifted to 50 %+ between actually-honoured compactions
+                // (visible in the controlcenter fleet panel). 60 s cadence with `Forced`
+                // mode keeps peak frag under ~20 % at a cost of ~50–150 ms STW pause
+                // per minute, which is well below the relaxed liveness probe budget.
                 var lohCompactTimer = new System.Threading.Timer(_ =>
                 {
                     System.Runtime.GCSettings.LargeObjectHeapCompactionMode =
                         System.Runtime.GCLargeObjectHeapCompactionMode.CompactOnce;
-                    GC.Collect(2, GCCollectionMode.Optimized, blocking: false);
-                }, null, TimeSpan.FromMinutes(5), TimeSpan.FromMinutes(5));
+                    GC.Collect(2, GCCollectionMode.Forced, blocking: false);
+                }, null, TimeSpan.FromMinutes(1), TimeSpan.FromMinutes(1));
             }
         }
         catch (Exception ex)
