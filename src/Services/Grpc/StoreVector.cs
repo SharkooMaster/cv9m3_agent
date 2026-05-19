@@ -13,6 +13,8 @@ using Newtonsoft.Json;
 
 public class StoreVectorService : StoreVector.StoreVectorBase
 {
+    private static string Take(string s, int n) => s.Length <= n ? s : s.Substring(0, n);
+
     private static bool IsInvalidVector(IList<float> v, out string reason)
     {
         reason = string.Empty;
@@ -94,8 +96,15 @@ public class StoreVectorService : StoreVector.StoreVectorBase
                 {
                     results[i] = await StoreSingle(request.Items[i]);
                 }
-                catch
+                catch (Exception ex)
                 {
+                    // A per-item failure ends up as Id=0/Index=0 on the wire.
+                    // Cross treats those as zero-refs, which silently encodes
+                    // garbage into the CCF if we don't surface the cause here.
+                    // Log loudly so operators can correlate with cross's
+                    // zero-ref count in the dashboard.
+                    Console.WriteLine(
+                        $"[StoreVector] BatchStore item #{i} FAILED ({ex.GetType().Name}): {ex.Message}");
                     results[i] = new StoreVector_Res { Id = 0, Index = 0 };
                 }
             });
@@ -143,9 +152,50 @@ public class StoreVectorService : StoreVector.StoreVectorBase
 
         if (insertResult.WasDeduplicated && !string.IsNullOrWhiteSpace(insertResult.MatchedStorageGuid))
         {
+            // Response invariant: when WasDeduplicated=true, sha256(BaseChunk) MUST
+            // equal StorageGuid. Cross uses BaseChunk as the diff target for the
+            // chunk it owns; storage_guid is what cross will fetch back at
+            // decompress time. If we hand cross stale bytes paired with a fresh
+            // storage_guid the resulting CCF cannot be decoded.
+            //
+            // The previous cache-only lookup silently returned BaseChunk=empty
+            // when the matched chunk had been evicted from the bounded MRU
+            // cache between search and store. Cross then retained its
+            // search-phase Chunk (which hashes to a *different* GUID),
+            // producing the 12% mismatch rate on
+            // IntegrityCheck:StoreRoundTrip:DedupHit and silently corrupting
+            // the encoded diff.
+            //
+            // Fall back to the disk-aware path. If even storage doesn't have
+            // the matched chunk we fail the RPC so cross retries — that's the
+            // honest signal (the chunk should be on disk because we stored it
+            // before; if it isn't, something's wrong with that bucket).
             var baseBytes = ChunkCacheHandler.GetFromCacheOnly(insertResult.MatchedStorageGuid);
+            if (baseBytes == null || baseBytes.Length == 0)
+            {
+                // Cache miss. Two possible causes:
+                //   (a) MRU eviction since the base chunk was stored long ago.
+                //   (b) Within-batch dedup against another chunk stored earlier in
+                //       the SAME batch whose RocksDB write hasn't flushed yet.
+                // Force a flush so case (b) becomes reachable from disk, then
+                // do the async cache-or-disk lookup. The flush is idempotent
+                // and cheap if nothing is pending.
+                try { NetworkFileStorageHandler.FlushPendingWrites(); }
+                catch { /* surface real errors via the read below */ }
+                baseBytes = await ChunkCacheHandler.GetChunkAsync(insertResult.MatchedStorageGuid);
+            }
+
             if (baseBytes != null && baseBytes.Length > 0)
+            {
                 res.BaseChunk = ByteString.CopyFrom(baseBytes);
+            }
+            else
+            {
+                Console.WriteLine(
+                    $"[StoreVector] ERR: WasDeduplicated=true but base {Take(insertResult.MatchedStorageGuid, 16)} not in cache or storage; failing this row so cross retries.");
+                throw new RpcException(new Status(StatusCode.DataLoss,
+                    $"matched base {Take(insertResult.MatchedStorageGuid, 16)} unretrievable"));
+            }
         }
 
         // ── Lane index: compute and store 64 mini-LSH entries for sub-chunk search ──
