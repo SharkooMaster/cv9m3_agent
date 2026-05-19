@@ -409,9 +409,25 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
 
     public async Task<byte[]?> GetChunkByReferenceAsync(ulong bucketId, ulong bucketIndex)
     {
-        // 1. Try in-memory bucket first (only when L1 is active — survives write-batcher lag)
-        if (Agent.Services.Cache.BucketCacheManager.L1Enabled
-            && Globals._NODE.Buckets.TryGetValue(bucketId, out var bucket))
+        // 1. Try in-memory bucket FIRST, regardless of L1Enabled.
+        //
+        // Rationale: SearchVector reads from Globals._NODE.Buckets (in-memory)
+        // and hands cross a (BucketId, BucketKey, StorageGuid) triple. Cross
+        // encodes the diff against that exact StorageGuid. If decompress (this
+        // method) skips the in-memory snapshot and goes straight to RocksDB,
+        // a vector record that was added in-memory but hasn't been flushed by
+        // the write batcher yet — or that maps to a different storageGuid in
+        // RocksDB because of a stale `bnext:` counter — will return wrong
+        // bytes. The diff was computed against StorageGuid_X but decompress
+        // resolves the same (B, K) to StorageGuid_Y, and patches go on the
+        // wrong base. The whole-block SHA fails and the operator sees
+        // "block N/M: exp=... got=...".
+        //
+        // The in-memory bucket is always the source of truth for what search
+        // returned, so always consult it first. The L1Enabled flag still
+        // controls *promotion* into the L1 cache; it must not gate reads of
+        // entries that are already there.
+        if (Globals._NODE.Buckets.TryGetValue(bucketId, out var bucket))
         {
             var snapshot = bucket.GetDataSnapshot();
             for (int j = 0; j < snapshot.Length; j++)
