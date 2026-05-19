@@ -3,10 +3,10 @@ using System.Net.Security;
 using Agent.Services;
 using Agent.Services.Agneta;
 using Agent.Utils.Misc;
-// using Agent.Services.Etcd; // REMOVED: No longer using etcd, using Kubernetes service discovery instead
+using Agent.Services.Etcd;
 // using Agent.Services.Grpc;
 using Agent.Interfaces.Agneta;
-// using dotnet_etcd; // REMOVED: No longer using etcd
+using dotnet_etcd;
 using Grpc.Core;
 using Grpc.Net.Client;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
@@ -493,6 +493,36 @@ void ConfigureServices(IServiceCollection services)
     services.AddSingleton<ClmsClientService>(new ClmsClientService());
     services.AddSingleton<AgnetaClientService>(new AgnetaClientService("wss://agneta-loadbalancer.default.svc.cluster.local:443/log/ws"));
     services.AddSingleton<PushoverClientService>(new PushoverClientService());
+
+    // ── Etcd client for membership self-registration ──
+    // ETCD_ENDPOINT comes from Helm. Example:
+    //   "http://crossv9-etcd:2379"
+    // If unset we skip registering the client → AgentLifeCycleService takes
+    // its null-DI path and logs a one-line "etcd disabled" message.
+    var etcdEndpoint = Environment.GetEnvironmentVariable("ETCD_ENDPOINT");
+    if (!string.IsNullOrWhiteSpace(etcdEndpoint))
+    {
+        services.AddSingleton<dotnet_etcd.EtcdClient>(_ =>
+        {
+            // Use insecure credentials for plain HTTP (cluster-internal).
+            // The dotnet-etcd library requires explicit Credentials when the
+            // address doesn't carry a TLS hint; without this we hit the
+            // "Unable to determine the TLS configuration of the channel"
+            // error we saw in logs/agent_logs_setup_etcd_client_1.
+            return new dotnet_etcd.EtcdClient(
+                connectionString: etcdEndpoint,
+                configureChannelOptions: opts =>
+                {
+                    opts.Credentials = Grpc.Core.ChannelCredentials.Insecure;
+                });
+        });
+        services.AddSingleton<Agent.Services.Etcd.IEtcdClientService, Agent.Services.Etcd.EtcdClientService>();
+        Console.WriteLine($"[Agent] etcd client configured: {etcdEndpoint}");
+    }
+    else
+    {
+        Console.WriteLine("[Agent] ETCD_ENDPOINT not set; running without etcd membership registration");
+    }
 
     var pgbuilder = new NpgsqlConnectionStringBuilder
     {

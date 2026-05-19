@@ -1,7 +1,7 @@
 
 using Agent.Services.Agneta;
 using Agent.Interfaces.Agneta;
-// using Agent.Services.Etcd; // REMOVED: No longer using etcd, using Kubernetes service discovery instead
+using Agent.Services.Etcd;
 using Agent.Utils.Misc;
 using Agent.Utils.Globals;
 using Newtonsoft.Json;
@@ -17,12 +17,19 @@ namespace Agent.Services;
 public class AgentLifeCycleService : IHostedService
 {
     private static readonly Random _random = new Random();
-    //private readonly IEtcdClientService _etcdClientService;
+    private readonly IEtcdClientService? _etcdClientService;
+    private CancellationTokenSource? _etcdCts;
+    private long _etcdLeaseId = 0;
+    private string? _etcdAgentId;
+    private Task? _etcdHeartbeatTask;
 
-    public AgentLifeCycleService()
+    public AgentLifeCycleService(IServiceProvider provider)
     {
-        //Console.WriteLine("INFO::AgentLifecycleService: Initiating AgentLifeCycleService");
-        //_etcdClientService = etcdClientService;
+        // Resolve IEtcdClientService optionally — when ETCD_ENDPOINT is unset
+        // the service is never registered in DI, GetService returns null, and
+        // the agent runs in legacy mode (no etcd self-registration; cross
+        // falls back to DNS+GetNodeInfo routing).
+        _etcdClientService = provider.GetService(typeof(IEtcdClientService)) as IEtcdClientService;
     }
 
     public static async Task<bool> IsAgentReachable(string ip, int port = 5000)
@@ -73,6 +80,94 @@ public class AgentLifeCycleService : IHostedService
 
         Globals._NODE.ip = Environment.GetEnvironmentVariable("MY_POD_IP");
         Globals._NODE.id = await NodeUtils.generateNodeID();
+
+        // ── Etcd self-registration for RendezvousRouter consumption ──
+        // Cross's RendezvousRouter watches `/agents/` in etcd to build a
+        // *consistent* membership view across all cross pods. Without this,
+        // each cross pod independently does DNS + GetNodeInfo polling, which
+        // can drift by up to 15s and cause two cross pods to route the same
+        // (BucketId, BucketKey) to different agents → silent corruption at
+        // decompress time.
+        //
+        // The key MUST be MY_POD_NAME (stable across StatefulSet pod
+        // reschedules) and MUST match the routing identity that
+        // GetNodeInfo returns, so cross sees the same name whether it
+        // consumes via etcd or via the legacy DNS+GetNodeInfo fallback.
+        //
+        // The value carries the IP so cross can connect without an extra
+        // GetNodeInfo round trip. The 10s lease auto-cleans the entry if
+        // this pod dies; the heartbeat loop keeps it alive while we're
+        // running.
+        if (_etcdClientService != null)
+        {
+            try
+            {
+                string podName =
+                    Environment.GetEnvironmentVariable("MY_POD_NAME")
+                    ?? Environment.GetEnvironmentVariable("MY_NODE_NAME")
+                    ?? _id;
+                string podIp =
+                    Environment.GetEnvironmentVariable("MY_POD_IP")
+                    ?? "127.0.0.1";
+
+                _etcdAgentId = podName;
+                var entry = new
+                {
+                    name = podName,
+                    ip = podIp,
+                    port = 5000
+                };
+                string json = System.Text.Json.JsonSerializer.Serialize(entry);
+
+                _etcdLeaseId = await _etcdClientService.RegisterAgentLeaseAsync(podName, json);
+                Console.WriteLine(
+                    $"[AgentLifecycleService] Registered in etcd /agents/{podName} → {json} (leaseId={_etcdLeaseId})");
+
+                _etcdCts = new CancellationTokenSource();
+                _etcdHeartbeatTask = Task.Run(async () =>
+                {
+                    while (!_etcdCts.IsCancellationRequested)
+                    {
+                        try
+                        {
+                            // LeaseKeepAlive blocks until the token cancels or
+                            // the keep-alive stream breaks. On stream break we
+                            // re-register a fresh lease so a transient etcd
+                            // hiccup doesn't permanently de-list us.
+                            await _etcdClientService.UpdateHeartBeatAsync(_etcdLeaseId, _etcdCts.Token);
+
+                            if (_etcdCts.IsCancellationRequested) return;
+
+                            Console.WriteLine("[AgentLifecycleService] etcd keep-alive stream ended; re-registering");
+                            _etcdLeaseId = await _etcdClientService.RegisterAgentLeaseAsync(podName, json);
+                        }
+                        catch (OperationCanceledException) { return; }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine($"[AgentLifecycleService] etcd heartbeat error: {ex.Message}; retrying in 3s");
+                            try { await Task.Delay(TimeSpan.FromSeconds(3), _etcdCts.Token); }
+                            catch (OperationCanceledException) { return; }
+                            try
+                            {
+                                _etcdLeaseId = await _etcdClientService.RegisterAgentLeaseAsync(podName, json);
+                            }
+                            catch (Exception rex)
+                            {
+                                Console.WriteLine($"[AgentLifecycleService] etcd re-register failed: {rex.Message}");
+                            }
+                        }
+                    }
+                });
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[AgentLifecycleService] etcd registration failed (continuing without it): {ex.Message}");
+            }
+        }
+        else
+        {
+            Console.WriteLine("[AgentLifecycleService] etcd client not configured (ETCD_ENDPOINT unset); skipping membership self-registration");
+        }
 
         // LOCAL MODE: Skip bootstrap discovery if in local mode
         bool isLocalMode = Agent.Utils.LocalModeDetector.IsLocalMode();
@@ -196,8 +291,28 @@ public class AgentLifeCycleService : IHostedService
         }
     }
 
-    public Task StopAsync(CancellationToken cancellationToken)
+    public async Task StopAsync(CancellationToken cancellationToken)
     {
-        return Task.CompletedTask;
+        // Best-effort etcd de-registration: revoke the lease so cross's
+        // RendezvousRouter sees us disappear immediately instead of waiting
+        // for the 10s TTL.
+        try
+        {
+            _etcdCts?.Cancel();
+            if (_etcdClientService != null && _etcdLeaseId != 0 && !string.IsNullOrEmpty(_etcdAgentId))
+            {
+                await _etcdClientService.DeregisterAgentLeaseAsync(_etcdAgentId, _etcdLeaseId);
+                Console.WriteLine($"[AgentLifecycleService] Deregistered /agents/{_etcdAgentId} from etcd");
+            }
+            if (_etcdHeartbeatTask != null)
+            {
+                try { await Task.WhenAny(_etcdHeartbeatTask, Task.Delay(TimeSpan.FromSeconds(3))); }
+                catch { /* shutdown best-effort */ }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[AgentLifecycleService] etcd deregister failed: {ex.Message}");
+        }
     }
 }
