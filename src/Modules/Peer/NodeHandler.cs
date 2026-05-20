@@ -285,17 +285,31 @@ public static class NodeService
                 if (match.HasValue)
                 {
                     var m = match.Value;
-                    _data.storageGuid = m.storageGuid;
-                    _data.id = m.bucketId;
-                    _data.index = m.bucketIndex;
-                    return new M_Bucket.InsertResult
+
+                    // ── GHOST RECORD HEALING ──
+                    // If the agent crashed or a write batch failed in the past, the metadata
+                    // might exist in RocksDB while the chunk data was lost. If we dedup against
+                    // a ghost record, we prevent the chunk from being re-written, and downstream
+                    // EncodeVerify/Decompress will fail. Verify the chunk actually exists.
+                    var chunkBytes = await NetworkFileStorageHandler.GetChunkByReferenceAsync(m.bucketId, m.bucketIndex);
+                    if (chunkBytes != null && chunkBytes.Length > 0)
                     {
-                        BucketId = m.bucketId,
-                        BucketIndex = m.bucketIndex,
-                        WasDeduplicated = true,
-                        Similarity = m.similarity,
-                        MatchedStorageGuid = m.storageGuid
-                    };
+                        _data.storageGuid = m.storageGuid;
+                        _data.id = m.bucketId;
+                        _data.index = m.bucketIndex;
+                        return new M_Bucket.InsertResult
+                        {
+                            BucketId = m.bucketId,
+                            BucketIndex = m.bucketIndex,
+                            WasDeduplicated = true,
+                            Similarity = m.similarity,
+                            MatchedStorageGuid = m.storageGuid
+                        };
+                    }
+                    else
+                    {
+                        Console.WriteLine($"[StoreInBucket] Ghost record detected for {m.bucketId}:{m.bucketIndex}. Forcing fresh store to heal.");
+                    }
                 }
             }
 

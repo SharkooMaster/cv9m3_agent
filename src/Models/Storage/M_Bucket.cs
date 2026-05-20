@@ -1,4 +1,5 @@
 
+using System.Collections.Generic;
 using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using System.Text;
@@ -157,17 +158,27 @@ public class M_Bucket
             // ── Exact dedup: byte-identical chunk already in this bucket ──
             if (_seenChunks.TryGetValue(chunkKey, out var existing))
             {
-                _data.storageGuid = chunkKey;
-                _data.id = existing.Item1;
-                _data.index = existing.Item2;
-                return new InsertResult
+                // ── GHOST RECORD HEALING ──
+                var chunkBytes = await NetworkFileStorageHandler.GetChunkByReferenceAsync(existing.Item1, existing.Item2);
+                if (chunkBytes != null && chunkBytes.Length > 0)
                 {
-                    BucketId = existing.Item1,
-                    BucketIndex = existing.Item2,
-                    WasDeduplicated = true,
-                    Similarity = 1.0f,
-                    MatchedStorageGuid = chunkKey
-                };
+                    _data.storageGuid = chunkKey;
+                    _data.id = existing.Item1;
+                    _data.index = existing.Item2;
+                    return new InsertResult
+                    {
+                        BucketId = existing.Item1,
+                        BucketIndex = existing.Item2,
+                        WasDeduplicated = true,
+                        Similarity = 1.0f,
+                        MatchedStorageGuid = chunkKey
+                    };
+                }
+                else
+                {
+                    Console.WriteLine($"[StoreInBucket] Ghost record detected for {existing.Item1}:{existing.Item2} in exact dedup. Forcing fresh store to heal.");
+                    _seenChunks.TryRemove(chunkKey, out _);
+                }
             }
 
             // ── Similarity dedup: catches within-file matches stored between search and store ──
@@ -244,17 +255,30 @@ public class M_Bucket
 
                 if (bestMatch != null)
                 {
-                    _data.storageGuid = bestMatch.storageGuid;
-                    _data.id = bestMatch.id;
-                    _data.index = bestMatch.index;
-                    return new InsertResult
+                    // ── GHOST RECORD HEALING ──
+                    var chunkBytes = await NetworkFileStorageHandler.GetChunkByReferenceAsync(bestMatch.id, bestMatch.index);
+                    if (chunkBytes != null && chunkBytes.Length > 0)
                     {
-                        BucketId = bestMatch.id,
-                        BucketIndex = bestMatch.index,
-                        WasDeduplicated = true,
-                        Similarity = bestSim,
-                        MatchedStorageGuid = bestMatch.storageGuid
-                    };
+                        _data.storageGuid = bestMatch.storageGuid;
+                        _data.id = bestMatch.id;
+                        _data.index = bestMatch.index;
+                        return new InsertResult
+                        {
+                            BucketId = bestMatch.id,
+                            BucketIndex = bestMatch.index,
+                            WasDeduplicated = true,
+                            Similarity = bestSim,
+                            MatchedStorageGuid = bestMatch.storageGuid
+                        };
+                    }
+                    else
+                    {
+                        Console.WriteLine($"[StoreInBucket] Ghost record detected for {bestMatch.id}:{bestMatch.index} in L1 cache. Forcing fresh store to heal.");
+                        lock (_dataLock)
+                        {
+                            this._data.Remove(bestMatch);
+                        }
+                    }
                 }
             }
 
