@@ -66,67 +66,94 @@ public sealed class RocksDbWriteBatcher : IDisposable
     ///
     /// Flow:
     ///   1. Caller checks if a flush is already in progress (_currentEpoch != null).
-    ///   2. If yes: wait on that epoch's TCS. When it completes, our writes are flushed.
+    ///   2. If yes: wait on that epoch's TCS. When it completes, our writes MAY have
+    ///      been flushed by that epoch's drain — but only if we Put before that
+    ///      drain's last iteration. After waking we MUST re-check the queue.
     ///   3. If no: become the flusher — create a new epoch TCS, drain the queue, write.
     ///   4. On completion, signal all waiters and clear the epoch.
+    ///
+    /// Correctness invariant: when this method returns successfully, every byte that
+    /// was passed to Put() before the call began is in RocksDB's WAL.
+    ///
+    /// Subtle race the loop fixes: there is a small window between the flusher's
+    /// outer-while loop exiting (queue observed empty) and the flusher acquiring
+    /// _epochLock to clear _currentEpoch. A Put() that lands in that window leaves
+    /// an item in the queue that the current epoch's drain will never see; a Flush()
+    /// caller that races in just after the Put and observes _currentEpoch != null
+    /// would wait on the wrong epoch and return with their write still queued. The
+    /// loop catches this: after waking, if the queue still has items, we go around
+    /// and try to become (or wait for) a fresh flusher whose drain will cover us.
     /// </summary>
     public void Flush()
     {
-        if (_disposed || _writeQueue.IsEmpty)
+        if (_disposed)
             return;
 
-        Task waitTask;
-        bool iAmFlusher = false;
+        while (true)
+        {
+            Task waitTask;
+            bool iAmFlusher = false;
 
-        lock (_epochLock)
-        {
-            if (_currentEpoch != null)
-            {
-                waitTask = _currentEpoch.Task;
-            }
-            else
-            {
-                _currentEpoch = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-                waitTask = _currentEpoch.Task;
-                iAmFlusher = true;
-            }
-        }
-
-        if (!iAmFlusher)
-        {
-            waitTask.GetAwaiter().GetResult();
-            if (waitTask.IsFaulted)
-                throw new IOException("RocksDB coalesced flush failed — data may NOT be persisted",
-                    waitTask.Exception?.InnerException);
-            return;
-        }
-
-        // I am the flusher for this epoch
-        Exception? flushError = null;
-        try
-        {
-            DrainQueue(propagateErrors: true);
-        }
-        catch (Exception ex)
-        {
-            flushError = ex;
-        }
-        finally
-        {
             lock (_epochLock)
             {
-                var epoch = _currentEpoch!;
-                _currentEpoch = null;
-
-                if (flushError != null)
-                    epoch.TrySetException(flushError);
+                if (_currentEpoch != null)
+                {
+                    waitTask = _currentEpoch.Task;
+                }
                 else
-                    epoch.TrySetResult(true);
+                {
+                    if (_writeQueue.IsEmpty)
+                        return;
+                    _currentEpoch = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                    waitTask = _currentEpoch.Task;
+                    iAmFlusher = true;
+                }
             }
-        }
 
-        if (flushError != null)
-            throw flushError;
+            if (!iAmFlusher)
+            {
+                try { waitTask.GetAwaiter().GetResult(); }
+                catch
+                {
+                    throw new IOException("RocksDB coalesced flush failed — data may NOT be persisted",
+                        waitTask.Exception?.InnerException);
+                }
+                // The epoch we waited on may have ended BEFORE our Put landed in
+                // the queue. If anything is still queued, our write is at risk —
+                // loop and either claim a fresh epoch or piggyback on the next one.
+                if (_writeQueue.IsEmpty)
+                    return;
+                continue;
+            }
+
+            // I am the flusher for this epoch
+            Exception? flushError = null;
+            try
+            {
+                DrainQueue(propagateErrors: true);
+            }
+            catch (Exception ex)
+            {
+                flushError = ex;
+            }
+            finally
+            {
+                lock (_epochLock)
+                {
+                    var epoch = _currentEpoch!;
+                    _currentEpoch = null;
+
+                    if (flushError != null)
+                        epoch.TrySetException(flushError);
+                    else
+                        epoch.TrySetResult(true);
+                }
+            }
+
+            if (flushError != null)
+                throw flushError;
+            return;
+        }
     }
 
     /// <summary>
@@ -194,29 +221,52 @@ public sealed class RocksDbWriteBatcher : IDisposable
     }
 
     /// <summary>
-    /// Background timer flush: non-blocking. If a coalesced flush is already in progress,
-    /// skip — those writes will be included in the current epoch's drain.
+    /// Background timer flush: best-effort. Claims the same epoch slot that callers
+    /// of <see cref="Flush"/> use so concurrent waiters block on us — without that,
+    /// a Flush() caller could observe _currentEpoch == null and the queue empty
+    /// while our drain hadn't yet committed its WriteBatch to the WAL, returning
+    /// "durable" for a write that wasn't yet on disk.
+    ///
+    /// If a foreground epoch is already running we skip — those writes will be
+    /// included in that drain.
     /// </summary>
     private void BackgroundFlush()
     {
         if (_disposed || _writeQueue.IsEmpty)
             return;
 
-        // Don't compete with a coalesced flush
+        TaskCompletionSource<bool>? epoch = null;
         lock (_epochLock)
         {
             if (_currentEpoch != null)
                 return;
+            epoch = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            _currentEpoch = epoch;
         }
 
+        Exception? flushError = null;
         try
         {
             DrainQueue(propagateErrors: false);
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[RocksDB WriteBatcher] Background flush error: {ex.Message}");
+            flushError = ex;
         }
+        finally
+        {
+            lock (_epochLock)
+            {
+                _currentEpoch = null;
+                if (flushError != null)
+                    epoch.TrySetException(flushError);
+                else
+                    epoch.TrySetResult(true);
+            }
+        }
+
+        if (flushError != null)
+            Console.WriteLine($"[RocksDB WriteBatcher] Background flush error: {flushError.Message}");
     }
 
     public void Dispose()
