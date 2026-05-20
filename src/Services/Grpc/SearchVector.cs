@@ -291,14 +291,7 @@ public class SearchVectorService : SearchVector.SearchVectorBase
     private static SearchVector_Result MakeSaveResult(int index)
     {
         var r = new SearchVector_Result { Save = true };
-        r.Results.Add(new SearchVectorObject
-        {
-            BucketId = 0,
-            BucketKey = 0,
-            Similarity = 0,
-            Chunk = ByteString.Empty,
-            Index = index
-        });
+        // Do not add a dummy result. Save = true is the only signal needed.
         return r;
     }
 

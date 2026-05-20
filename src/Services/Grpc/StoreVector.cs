@@ -98,14 +98,14 @@ public class StoreVectorService : StoreVector.StoreVectorBase
                 }
                 catch (Exception ex)
                 {
-                    // A per-item failure ends up as Id=0/Index=0 on the wire.
+                    // A per-item failure ends up as Id=ulong.MaxValue/Index=ulong.MaxValue on the wire.
                     // Cross treats those as zero-refs, which silently encodes
                     // garbage into the CCF if we don't surface the cause here.
                     // Log loudly so operators can correlate with cross's
                     // zero-ref count in the dashboard.
                     Console.WriteLine(
                         $"[StoreVector] BatchStore item #{i} FAILED ({ex.GetType().Name}): {ex.Message}");
-                    results[i] = new StoreVector_Res { Id = 0, Index = 0 };
+                    results[i] = new StoreVector_Res { Success = false };
                 }
             });
 
@@ -147,7 +147,8 @@ public class StoreVectorService : StoreVector.StoreVectorBase
             Index = insertResult.BucketIndex,
             StorageGuid = mdata.storageGuid ?? "",
             WasDeduplicated = insertResult.WasDeduplicated,
-            Similarity = insertResult.Similarity
+            Similarity = insertResult.Similarity,
+            Success = true
         };
 
         if (insertResult.WasDeduplicated && !string.IsNullOrWhiteSpace(insertResult.MatchedStorageGuid))
