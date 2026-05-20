@@ -435,13 +435,13 @@ public sealed class RocksDbBucketStorage : IDisposable
                 // ── GHOST RECORD HEALING ──
                 // If the batcher failed previously, the dedup key might exist but the vector record
                 // might be missing. If it's missing, rewrite it to the batcher.
-                var vectorKeyBytes = MakeBinaryVectorKey(bucketId, existingIndex);
-                var vecRecord = _rocksDb.Get(vectorKeyBytes);
+                var healVectorKeyBytes = MakeBinaryVectorKey(bucketId, existingIndex);
+                var vecRecord = _rocksDb.Get(healVectorKeyBytes);
                 if (vecRecord == null || vecRecord.Length == 0)
                 {
                     Console.WriteLine($"[RocksDbBucketStorage] Healing missing vector record for {bucketId}:{existingIndex}");
-                    var recordBytes = SerializeVectorRecord(vector, storageGuid, chunkSize);
-                    _writeBatcher.Put(vectorKeyBytes, recordBytes);
+                    var healRecordBytes = SerializeVectorRecord(vector, storageGuid, chunkSize);
+                    _writeBatcher.Put(healVectorKeyBytes, healRecordBytes);
                 }
                 
                 return (bucketId, existingIndex);
