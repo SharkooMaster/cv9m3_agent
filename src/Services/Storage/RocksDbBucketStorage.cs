@@ -430,7 +430,21 @@ public sealed class RocksDbBucketStorage : IDisposable
             var existingBytes = _rocksDb.Get(dedupKeyBytes);
             if (existingBytes != null && existingBytes.Length == sizeof(ulong))
             {
-                return (bucketId, BitConverter.ToUInt64(existingBytes, 0));
+                ulong existingIndex = BitConverter.ToUInt64(existingBytes, 0);
+                
+                // ── GHOST RECORD HEALING ──
+                // If the batcher failed previously, the dedup key might exist but the vector record
+                // might be missing. If it's missing, rewrite it to the batcher.
+                var vectorKeyBytes = MakeBinaryVectorKey(bucketId, existingIndex);
+                var vecRecord = _rocksDb.Get(vectorKeyBytes);
+                if (vecRecord == null || vecRecord.Length == 0)
+                {
+                    Console.WriteLine($"[RocksDbBucketStorage] Healing missing vector record for {bucketId}:{existingIndex}");
+                    var recordBytes = SerializeVectorRecord(vector, storageGuid, chunkSize);
+                    _writeBatcher.Put(vectorKeyBytes, recordBytes);
+                }
+                
+                return (bucketId, existingIndex);
             }
 
             // Allocate the next index from the bounded counter cache. If the bucket has
