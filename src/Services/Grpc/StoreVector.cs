@@ -98,14 +98,13 @@ public class StoreVectorService : StoreVector.StoreVectorBase
                 }
                 catch (Exception ex)
                 {
-                    // A per-item failure ends up as Id=ulong.MaxValue/Index=ulong.MaxValue on the wire.
-                    // Cross treats those as zero-refs, which silently encodes
-                    // garbage into the CCF if we don't surface the cause here.
-                    // Log loudly so operators can correlate with cross's
-                    // zero-ref count in the dashboard.
+                    // Per-item failure. Default Failed=false means success on the wire,
+                    // so we must explicitly flip Failed=true on the failure path.
+                    // Cross treats Failed=true rows as not-stored (skipped from the
+                    // encode contract). Log loudly so operators can correlate.
                     Console.WriteLine(
                         $"[StoreVector] BatchStore item #{i} FAILED ({ex.GetType().Name}): {ex.Message}");
-                    results[i] = new StoreVector_Res { Success = false };
+                    results[i] = new StoreVector_Res { Failed = true };
                 }
             });
 
@@ -148,7 +147,7 @@ public class StoreVectorService : StoreVector.StoreVectorBase
             StorageGuid = mdata.storageGuid ?? "",
             WasDeduplicated = insertResult.WasDeduplicated,
             Similarity = insertResult.Similarity,
-            Success = true
+            // Failed defaults to false on the wire → success/dedup. Only the catch path flips it true.
         };
 
         if (insertResult.WasDeduplicated && !string.IsNullOrWhiteSpace(insertResult.MatchedStorageGuid))
