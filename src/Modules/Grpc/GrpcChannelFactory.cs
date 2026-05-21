@@ -38,7 +38,10 @@ public static class GrpcChannelFactory
         var handler = new SocketsHttpHandler
         {
             EnableMultipleHttp2Connections = true,
-            PooledConnectionIdleTimeout = Timeout.InfiniteTimeSpan,
+            // Finite recycling — stale HTTP/2 connections to restarted peer pods
+            // produce PROTOCOL_ERROR on every reuse with k8s Service routing.
+            PooledConnectionIdleTimeout = TimeSpan.FromMinutes(2),
+            PooledConnectionLifetime = TimeSpan.FromMinutes(5),
             KeepAlivePingDelay = TimeSpan.FromSeconds(30),
             KeepAlivePingTimeout = TimeSpan.FromSeconds(10),
         };
