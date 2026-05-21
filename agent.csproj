@@ -12,15 +12,18 @@
     <PackageReference Include="AWSSDK.S3" Version="3.7.309.4" />
     <PackageReference Include="dotnet-etcd" Version="7.1.1" />
     <PackageReference Include="Google.Cloud.Storage.V1" Version="4.13.0" />
-    <PackageReference Include="Google.Protobuf" Version="3.28.0" />
-    <PackageReference Include="Grpc.AspNetCore" Version="2.65.0" />
+    <!-- Pinned to the same version as cross/gateway. Drift here caused random
+         HTTP/2 PROTOCOL_ERROR (0x1) frames between cross↔agent because the
+         two ends shipped different Grpc.Net frame writers / keep-alive code. -->
+    <PackageReference Include="Google.Protobuf" Version="3.29.3" />
+    <PackageReference Include="Grpc.AspNetCore" Version="2.67.0" />
     <PackageReference Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" Version="1.9.0" />
     <PackageReference Include="OpenTelemetry.Exporter.Prometheus.AspNetCore" Version="1.9.0-beta.1" />
     <PackageReference Include="OpenTelemetry.Extensions.Hosting" Version="1.9.0" />
     <PackageReference Include="OpenTelemetry.Instrumentation.AspNetCore" Version="1.9.0" />
     <PackageReference Include="OpenTelemetry.Instrumentation.Http" Version="1.9.0" />
     <PackageReference Include="OpenTelemetry.Instrumentation.Runtime" Version="1.9.0" />
-    <PackageReference Include="Grpc.Tools" Version="2.66.0">
+    <PackageReference Include="Grpc.Tools" Version="2.69.0">
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
