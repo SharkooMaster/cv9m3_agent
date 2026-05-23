@@ -166,6 +166,81 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
     /// </summary>
     public RocksDbBucketStorage BucketStorage => _bucketStorage;
 
+    /// <summary>
+    /// Combined RocksDB engine stats for both the chunk DB and the bucket DB.
+    /// All values are read via <c>RocksDb.GetProperty</c> which is a non-blocking
+    /// O(1) lookup against in-memory counters maintained by RocksDB itself,
+    /// so this is safe to call from the /stats/runtime HTTP handler at scrape
+    /// cadence (~30 s).
+    ///
+    /// Why this is the most useful single piece of telemetry on the agent:
+    ///   - <c>compaction_pending</c> / <c>is_write_stopped</c> / <c>pending_compaction_bytes</c>
+    ///     are the canonical signals of an LSM tree under write pressure.
+    ///     When ingestion suddenly slows after ~50 GB this is the first place
+    ///     to look — the engine is throttling writes to keep L0 healthy.
+    ///   - <c>num_files_per_level</c> shows where data is sitting; an
+    ///     L0 fan-out of >20 means compaction is falling behind.
+    ///   - <c>memtable_bytes</c> + <c>block_cache_used_bytes</c> tell you how
+    ///     much of the agent's RSS is RocksDB native overhead (separate from
+    ///     the managed-heap fragmentation metric).
+    /// </summary>
+    public RocksEngineStats GetEngineStats()
+    {
+        return new RocksEngineStats
+        {
+            Chunk  = ReadOne(_rocksDb),
+            Bucket = _bucketStorage.GetEngineStats(),
+        };
+
+        static RocksDbEnginePerDbStats ReadOne(RocksDb db)
+        {
+            return new RocksDbEnginePerDbStats
+            {
+                TotalSstBytes              = ReadLong(db, "rocksdb.total-sst-files-size"),
+                LiveSstBytes               = ReadLong(db, "rocksdb.live-sst-files-size"),
+                PendingCompactionBytes     = ReadLong(db, "rocksdb.estimate-pending-compaction-bytes"),
+                CompactionPending          = ReadLong(db, "rocksdb.compaction-pending") != 0,
+                WriteStopped               = ReadLong(db, "rocksdb.is-write-stopped") != 0,
+                MemtableBytes              = ReadLong(db, "rocksdb.cur-size-all-mem-tables"),
+                ImmutableMemtableCount     = (int)ReadLong(db, "rocksdb.num-immutable-mem-table"),
+                BlockCacheUsedBytes        = ReadLong(db, "rocksdb.block-cache-usage"),
+                BlockCachePinnedBytes      = ReadLong(db, "rocksdb.block-cache-pinned-usage"),
+                TableReaderMemBytes        = ReadLong(db, "rocksdb.estimate-table-readers-mem"),
+                EstimateNumKeys            = ReadLong(db, "rocksdb.estimate-num-keys"),
+                NumFilesPerLevel           = ReadLevels(db),
+                ActualDelayedWriteRate     = ReadLong(db, "rocksdb.actual-delayed-write-rate"),
+            };
+        }
+
+        static long ReadLong(RocksDb db, string key)
+        {
+            try
+            {
+                var s = db.GetProperty(key);
+                return long.TryParse(s, out var v) ? v : 0;
+            }
+            catch { return 0; }
+        }
+
+        static int[] ReadLevels(RocksDb db)
+        {
+            // RocksDB exposes per-level file counts as `rocksdb.num-files-at-level<N>`.
+            // We probe levels 0..6 (the default LSM depth); any level that returns
+            // an empty string or fails to parse becomes 0 in the output array.
+            var levels = new int[7];
+            for (int i = 0; i < levels.Length; i++)
+            {
+                try
+                {
+                    var s = db.GetProperty($"rocksdb.num-files-at-level{i}");
+                    if (int.TryParse(s, out var v)) levels[i] = v;
+                }
+                catch { /* level reports unavailable — leave 0 */ }
+            }
+            return levels;
+        }
+    }
+
     // ── Live storage stats — O(1) reads, no scanning ──
     // Counters track unique chunks and bytes. Initialized from a one-time startup scan
     // (or persisted values), then maintained incrementally on each Store.

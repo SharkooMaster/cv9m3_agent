@@ -632,6 +632,55 @@ public sealed class RocksDbBucketStorage : IDisposable
         return (Interlocked.Read(ref _totalBuckets), Interlocked.Read(ref _totalVectors));
     }
 
+    /// <summary>
+    /// RocksDB engine stats for the bucket DB. See <see cref="RocksDbStorageService.GetEngineStats"/>
+    /// for the rationale for each field.
+    /// </summary>
+    public RocksDbEnginePerDbStats GetEngineStats()
+    {
+        return new RocksDbEnginePerDbStats
+        {
+            TotalSstBytes              = ReadLong(_rocksDb, "rocksdb.total-sst-files-size"),
+            LiveSstBytes               = ReadLong(_rocksDb, "rocksdb.live-sst-files-size"),
+            PendingCompactionBytes     = ReadLong(_rocksDb, "rocksdb.estimate-pending-compaction-bytes"),
+            CompactionPending          = ReadLong(_rocksDb, "rocksdb.compaction-pending") != 0,
+            WriteStopped               = ReadLong(_rocksDb, "rocksdb.is-write-stopped") != 0,
+            MemtableBytes              = ReadLong(_rocksDb, "rocksdb.cur-size-all-mem-tables"),
+            ImmutableMemtableCount     = (int)ReadLong(_rocksDb, "rocksdb.num-immutable-mem-table"),
+            BlockCacheUsedBytes        = ReadLong(_rocksDb, "rocksdb.block-cache-usage"),
+            BlockCachePinnedBytes      = ReadLong(_rocksDb, "rocksdb.block-cache-pinned-usage"),
+            TableReaderMemBytes        = ReadLong(_rocksDb, "rocksdb.estimate-table-readers-mem"),
+            EstimateNumKeys            = ReadLong(_rocksDb, "rocksdb.estimate-num-keys"),
+            NumFilesPerLevel           = ReadLevels(_rocksDb),
+            ActualDelayedWriteRate     = ReadLong(_rocksDb, "rocksdb.actual-delayed-write-rate"),
+        };
+
+        static long ReadLong(RocksDb db, string key)
+        {
+            try
+            {
+                var s = db.GetProperty(key);
+                return long.TryParse(s, out var v) ? v : 0;
+            }
+            catch { return 0; }
+        }
+
+        static int[] ReadLevels(RocksDb db)
+        {
+            var levels = new int[7];
+            for (int i = 0; i < levels.Length; i++)
+            {
+                try
+                {
+                    var s = db.GetProperty($"rocksdb.num-files-at-level{i}");
+                    if (int.TryParse(s, out var v)) levels[i] = v;
+                }
+                catch { /* unavailable — leave 0 */ }
+            }
+            return levels;
+        }
+    }
+
     private static byte[] SerializeVectorRecord(float[] vector, string storageGuid, int chunkSize)
     {
         using var ms = new MemoryStream();
