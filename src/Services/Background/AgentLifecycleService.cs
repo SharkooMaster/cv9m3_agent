@@ -111,11 +111,33 @@ public class AgentLifeCycleService : IHostedService
                     ?? "127.0.0.1";
 
                 _etcdAgentId = podName;
+                // ── /agents/<podName> v2 schema ──
+                // version=1: legacy {name, ip, port} consumed by the old
+                //   RendezvousRouter on cross. Still emitted here so a
+                //   newer agent registering against a cluster with older
+                //   cross/gateway pods doesn't break their parsing.
+                // version=2: adds vnodes (per-pod vnode count for the
+                //   consistent-hash ring) and status (ready/warming/
+                //   draining — used by the rebalance coordinator to know
+                //   which agents can accept writes).
+                //
+                // The watcher on cross/gateway falls back to defaults when
+                // any of the new fields are missing, so this is safe to
+                // ship ahead of the consumer-side migration.
+                int vnodesPerAgent = 256;
+                var vnodesEnv = Environment.GetEnvironmentVariable("VNODES_PER_AGENT");
+                if (!string.IsNullOrWhiteSpace(vnodesEnv) && int.TryParse(vnodesEnv, out var vEnv) && vEnv > 0)
+                {
+                    vnodesPerAgent = vEnv;
+                }
                 var entry = new
                 {
                     name = podName,
                     ip = podIp,
-                    port = 5000
+                    port = 5000,
+                    vnodes = vnodesPerAgent,
+                    version = 2,
+                    status = "ready"
                 };
                 string json = System.Text.Json.JsonSerializer.Serialize(entry);
 

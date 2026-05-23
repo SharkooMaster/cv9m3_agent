@@ -115,6 +115,19 @@ public static class RuntimeStatsEndpoint
                 rocks_total_buckets       = totalBuckets,
                 rocks_total_vectors       = totalVectors,
 
+                // ── Replication health (Phase 7) ──
+                // Agent doesn't run a local consistent-hash ring (the
+                // ring lives on cross/gateway and is fed by etcd), so
+                // we surface the env-driven knobs that the agent's own
+                // self-registration uses, plus a count of peers seen
+                // recently in etcd if anti-entropy is wired in.
+                replication_factor  = ParseEnvInt("AGENT_REPLICATION_FACTOR", 3),
+                vnodes_per_agent    = ParseEnvInt("VNODES_PER_AGENT", 256),
+                anti_entropy_enabled = string.Equals(System.Environment.GetEnvironmentVariable("ANTI_ENTROPY_ENABLED"),
+                    "true", System.StringComparison.OrdinalIgnoreCase),
+                anti_entropy_auto_repair = string.Equals(System.Environment.GetEnvironmentVariable("ANTI_ENTROPY_AUTO_REPAIR"),
+                    "true", System.StringComparison.OrdinalIgnoreCase),
+
                 // ── RocksDB engine stats. Two DBs (chunk + bucket) so we report
                 //    both. Each is a flat object keyed by the property name
                 //    matching RocksDbEnginePerDbStats. ────────────────────────
@@ -153,5 +166,11 @@ public static class RuntimeStatsEndpoint
             return count;
         }
         catch { return 0; }
+    }
+
+    private static int ParseEnvInt(string name, int fallback)
+    {
+        var raw = System.Environment.GetEnvironmentVariable(name);
+        return int.TryParse(raw, out var v) && v > 0 ? v : fallback;
     }
 }

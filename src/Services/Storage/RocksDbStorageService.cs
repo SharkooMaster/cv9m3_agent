@@ -851,6 +851,50 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
         return Task.CompletedTask;
     }
 
+    /// <summary>
+    /// Stream every (storage_guid, chunk_bytes) tuple in the local
+    /// RocksDB chunk-store. Used by the rebalance protocol to ship
+    /// chunks to a freshly-joined peer that's adopting some of this
+    /// agent's vnodes.
+    ///
+    /// We don't filter by hash range on the source side here — the dst
+    /// filters using the ring on receive (it knows which keys it owns
+    /// under the new ring). Keeps the source stateless and avoids
+    /// needing to mirror the ring's hash function inside the agent.
+    /// Total bytes shipped is bounded by the receiver's filter, plus
+    /// the bandwidth limiter the rebalance coordinator applies.
+    ///
+    /// The yielded tuples are streamed lazily — callers should iterate
+    /// the IEnumerable inside their gRPC streaming response loop so
+    /// the iterator only walks RocksDB at the rate the network can
+    /// drain.
+    /// </summary>
+    public IEnumerable<(string storageGuid, byte[] chunkBytes)> EnumerateAllChunks()
+    {
+        using var iterator = _rocksDb.NewIterator();
+        iterator.SeekToFirst();
+        while (iterator.Valid())
+        {
+            var keySpan = iterator.Key();
+            var valSpan = iterator.Value();
+            // The RocksDB chunk-store is keyed by 64-char SHA256 hex.
+            // Internal stat keys ("__chunks__", "__bytes__") are
+            // shorter / start with "__" — skip them so we never ship
+            // counters as if they were chunks.
+            if (keySpan != null && keySpan.Length == 64 && valSpan != null && valSpan.Length > 0)
+            {
+                var keyStr = Encoding.UTF8.GetString(keySpan);
+                if (!keyStr.StartsWith("__", StringComparison.Ordinal))
+                {
+                    var bytes = new byte[valSpan.Length];
+                    Buffer.BlockCopy(valSpan, 0, bytes, 0, valSpan.Length);
+                    yield return (keyStr, bytes);
+                }
+            }
+            iterator.Next();
+        }
+    }
+
     private Task<byte[]?> FetchChunkFromRemoteAsync(string chunkKey)
     {
         // With rendezvous hashing, Cross routes to the correct agent directly.

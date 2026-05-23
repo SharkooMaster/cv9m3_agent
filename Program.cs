@@ -94,6 +94,13 @@ builder.Services.AddSwaggerGen();
 builder.Services.AddHostedService<AgentLifeCycleService>();
 builder.Services.AddHostedService<AgentRuntimeService>();
 
+// Periodic Merkle anti-entropy. Disabled by default (opt-in via
+// ANTI_ENTROPY_ENABLED=true). When on, every agent compares its
+// chunk-store summary with each peer's every 5 minutes and surfaces
+// divergence; with ANTI_ENTROPY_AUTO_REPAIR=true it pulls the
+// missing chunks. See AntiEntropyService for the full algorithm.
+builder.Services.AddHostedService<Agent.Services.Background.AntiEntropyService>();
+
 var app = builder.Build();
 
 // ── AUTO-DETECT AVAILABLE MEMORY (top-level, shared by startup handler and chunk cache init) ──
@@ -358,12 +365,40 @@ app.MapGrpcService<StoreVectorService>();
 app.MapGrpcService<ChunkReferenceServiceImpl>();
 app.MapGrpcService<Agent.Services.Grpc.StorageStatsService>();
 app.MapGrpcService<SearchLanesService>();
+app.MapGrpcService<Agent.Services.Grpc.VnodeStreamingGrpcService>();
 
 app.MapGet("/", () =>{ return "Hello world"; });
 app.MapGet("/health", () => "true"); // Liveness: always alive once Kestrel is up
 app.MapGet("/ready", () => Globals.IsReady
     ? Results.Ok("ready")
     : Results.StatusCode(503)); // Readiness: only after WarmUpBuckets completes
+
+// ── Destructive admin endpoint (Phase 8 dev tooling) ─────────────────
+// Triggered by cross's POST /admin/cluster/wipe. Kills the process so the
+// StatefulSet/Deployment restarts the pod fresh; combined with
+// `--set dev.fastReset=true` (emptyDir for /data/chunks) the restart
+// effectively drops the agent's RocksDB.
+//
+// Gated on ADMIN_DESTRUCTIVE_ENABLED=true so a misrouted request in
+// production can never wipe live data.
+app.MapPost("/admin/wipe", () =>
+{
+    var gate = System.Environment.GetEnvironmentVariable("ADMIN_DESTRUCTIVE_ENABLED");
+    if (!string.Equals(gate, "true", System.StringComparison.OrdinalIgnoreCase))
+    {
+        return Results.StatusCode(403);
+    }
+    Console.WriteLine("[ADMIN] /admin/wipe invoked — exiting process. K8s will restart this pod.");
+    // Defer the exit slightly so the HTTP response gets flushed before
+    // the kestrel listener tears down. Without this the caller sees
+    // "connection reset" instead of 200 OK.
+    _ = Task.Run(async () =>
+    {
+        await Task.Delay(250);
+        System.Environment.Exit(0);
+    });
+    return Results.Ok(new { wiped = true });
+});
 
 app.MapGet("/finger_table", () =>
 {

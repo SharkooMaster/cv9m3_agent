@@ -1,0 +1,161 @@
+syntax = "proto3";
+
+import "google/protobuf/empty.proto";
+
+// Vnode-data streaming service for the rebalance protocol.
+//
+// When the consistent-hash ring's vnode → agent assignment changes
+// (an agent joined or left), some vnodes that used to live on agent
+// A are now owned by agent B. The data those vnodes hold has to
+// physically move from A to B without breaking reads in flight.
+//
+// The protocol has two halves:
+//   1. The dst agent (B) calls the rebalance coordinator (gateway),
+//      or is told by the coordinator, to "begin adoption" of a
+//      vnode range. BeginVnodeAdoption launches a background task
+//      on B that opens a streaming RPC against A.
+//   2. The src agent (A) honours StreamVnodeData by iterating its
+//      local RocksDB chunk-store within the given hash range and
+//      sending batches of (storage_guid, chunk_bytes, bitstring,
+//      vector) tuples to the dst.
+//
+// During the stream both A and B serve the same vnode (writes go to
+// both per the new ring; reads succeed against either). When the
+// stream completes, the topology version is bumped again to mark
+// "rebalance done"; A drops its local copy on the next compaction.
+service VnodeStreamingService
+{
+    // Server-streaming pull. The dst agent calls this on a src agent
+    // to receive every chunk in the requested hash range.
+    rpc StreamVnodeData (StreamVnodeData_Req) returns (stream StreamVnodeData_Batch);
+
+    // Coordinator → dst agent: "you've taken ownership of this hash
+    // range, please pull it from this peer." The dst kicks off a
+    // background StreamVnodeData call to the named peer and acks
+    // when the stream completes.
+    rpc BeginVnodeAdoption (BeginVnodeAdoption_Req) returns (BeginVnodeAdoption_Res);
+
+    // Lightweight progress probe. The coordinator polls this on the
+    // dst agent to know when the rebalance is complete (or stuck).
+    rpc GetAdoptionStatus (GetAdoptionStatus_Req) returns (GetAdoptionStatus_Res);
+
+    // Anti-entropy summary used by the periodic repair task on each
+    // agent. Returns a fixed-size 256-bucket hash digest of the chunks
+    // in a given hash range — peers compare digests, drill into the
+    // mismatched buckets, and trigger a targeted stream pull to repair
+    // gaps that survived normal write/read paths.
+    rpc GetVnodeMerkle (GetVnodeMerkle_Req) returns (GetVnodeMerkle_Res);
+}
+
+message StreamVnodeData_Req
+{
+    // Inclusive 32-bit hash range over the consistent-hash ring.
+    // Hashing is the same MurmurHash3 the ring uses (i.e.
+    // hash(routing_key) where routing_key = bucketId.ToString("x16")).
+    uint32 hash_range_low = 1;
+    uint32 hash_range_high = 2;
+
+    // Optional sentinel — set this to the dst agent's pod name so
+    // the src can log who it's serving to (helps debugging) and
+    // skip the request if dst == self (a topology bug).
+    string requesting_pod = 3;
+}
+
+message StreamVnodeData_Batch
+{
+    repeated VnodeChunkEntry entries = 1;
+
+    // Cumulative count of entries the src has streamed so far in
+    // this stream. Useful for progress reporting on the dst side.
+    uint64 cumulative_streamed = 2;
+
+    // True on the final batch — dst marks the adoption as complete
+    // after receiving a batch with this flag set.
+    bool is_final = 3;
+}
+
+message VnodeChunkEntry
+{
+    // SHA256 hex of the chunk bytes — the chunk's content-addressable
+    // identity. dst persists under this key; collisions are by-design
+    // (same content → same key → idempotent re-store).
+    string storage_guid = 1;
+
+    // Chunk bytes (chunk_size; see Globals.chunkSize on the agent).
+    bytes chunk = 2;
+
+    // The bucket bitstring this chunk was indexed under on the src.
+    // dst replays the agent's normal Store path with this bitstring
+    // so its local bucket index is rebuilt with the same affinity.
+    string bitstring = 3;
+
+    // Embedding vector that lives alongside the chunk in the
+    // bucket-store. Optional — dst can re-derive it from the chunk
+    // bytes if missing, but shipping it inline avoids per-chunk
+    // re-vectorization on the receiver.
+    repeated float vector = 4;
+}
+
+message BeginVnodeAdoption_Req
+{
+    // Pod name of the source agent the dst should pull from.
+    string source_pod = 1;
+    // Direct IP — saves dst a round-trip to etcd to resolve the pod
+    // name, and lets the coordinator pin a specific replica.
+    string source_ip = 2;
+
+    uint32 hash_range_low = 3;
+    uint32 hash_range_high = 4;
+
+    // Topology version the coordinator is operating under. dst
+    // refuses the adoption if its own RingState topology version is
+    // already past this — prevents stale rebalance dispatches from
+    // re-streaming data that's already settled.
+    uint64 topology_version = 5;
+}
+
+message BeginVnodeAdoption_Res
+{
+    bool accepted = 1;
+    string adoption_id = 2;   // opaque handle for GetAdoptionStatus
+    string reject_reason = 3; // populated when accepted=false
+}
+
+message GetAdoptionStatus_Req
+{
+    string adoption_id = 1;
+}
+
+message GetAdoptionStatus_Res
+{
+    enum Status
+    {
+        UNKNOWN = 0;
+        RUNNING = 1;
+        COMPLETED = 2;
+        FAILED = 3;
+    }
+    Status status = 1;
+    uint64 chunks_streamed = 2;
+    string error_message = 3;
+}
+
+message GetVnodeMerkle_Req
+{
+    uint32 hash_range_low = 1;
+    uint32 hash_range_high = 2;
+}
+
+message GetVnodeMerkle_Res
+{
+    // 256 × 32-byte SHA256 hashes packed contiguously: bucket i covers
+    // storage_guids whose first hex character is the i-th low-order
+    // byte. Total is 8 KiB regardless of how many chunks are in range,
+    // which makes anti-entropy comparison cheap (a few KB of network
+    // per pair of agents per pass).
+    bytes summary = 1;
+    // Total number of chunks the agent saw in this range. Helps the
+    // requester triangulate "missing on me" vs. "extra on me" without
+    // needing to count buckets manually.
+    uint64 chunk_count = 2;
+}

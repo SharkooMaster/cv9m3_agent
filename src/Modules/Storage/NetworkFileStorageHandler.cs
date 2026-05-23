@@ -71,6 +71,21 @@ public static class NetworkFileStorageHandler
     }
 
     /// <summary>
+    /// Iterate every (storage_guid, chunk_bytes) tuple in the chunk-store.
+    /// Used by the rebalance protocol's StreamVnodeData server side.
+    /// Throws <see cref="NotSupportedException"/> on storage backends that
+    /// don't support cheap full-scan iteration (e.g. a future S3 backend).
+    /// </summary>
+    public static IEnumerable<(string storageGuid, byte[] chunkBytes)> EnumerateAllChunks()
+    {
+        if (_instance is RocksDbStorageService rocksDbService)
+        {
+            return rocksDbService.EnumerateAllChunks();
+        }
+        throw new NotSupportedException("EnumerateAllChunks is only supported for RocksDbStorageService");
+    }
+
+    /// <summary>
     /// Flush all pending writes to durable storage.
     /// MUST be called before responding to Store/BatchStore RPCs.
     /// After this returns, all chunk bytes + bucket metadata are on SSD.
