@@ -400,6 +400,150 @@ app.MapPost("/admin/wipe", () =>
     return Results.Ok(new { wiped = true });
 });
 
+// ── Drain endpoint (HPA-safe scale-down) ─────────────────────────────
+// POST /admin/retire is invoked by the pod's preStop lifecycle hook.
+// It blocks until either (a) the gateway's rebalance coordinator
+// reports that every vnode this pod owned has been adopted by a
+// surviving peer, or (b) the configured timeout elapses. After this
+// returns 200, k8s sends SIGTERM and the pod exits cleanly with
+// no risk of dropping replicas below R-1.
+//
+// Why this is required:
+//   StatefulSets scale by changing .spec.replicas. Without a drain,
+//   k8s SIGTERMs the highest-ordinal pod and ~30s later sends SIGKILL.
+//   Any vnode whose primary was that pod now has only R-1 = 2 copies;
+//   if scale-down removes two pods in quick succession (HPA can do
+//   that), some vnodes go to R=1 and a single agent crash = data loss.
+//
+// Flow:
+//   1. AgentLifeCycleService.MarkRetiringAsync() flips etcd status
+//      to "draining". Gateway watcher bumps topology version.
+//   2. RebalanceCoordinator on the gateway sees the diff and
+//      dispatches BeginVnodeAdoption RPCs to surviving agents,
+//      pulling our chunk store into them.
+//   3. We poll the gateway's /admin/retirement-status until the
+//      draining-pod's pending adoption count reaches 0.
+//   4. We return 200; preStop completes; k8s SIGTERMs us; we revoke
+//      the etcd lease in StopAsync; the ring rebuilds without us.
+//
+// Idempotent: if the endpoint is called twice (e.g. preStop retry),
+// the second call observes IsRetiring=true and just continues
+// polling. There's no destructive gating here — the worst case is
+// that a draining pod stays in the ring as a read replica until its
+// peers have adopted everything, which is exactly what we want.
+app.MapPost("/admin/retire", async (HttpContext ctx) =>
+{
+    var lifecycle = Agent.Services.AgentLifeCycleService.Instance;
+    if (lifecycle == null)
+    {
+        return Results.Json(new { ok = false, reason = "lifecycle service not started" }, statusCode: 503);
+    }
+
+    // Honour a per-call override but default to env-controlled timeout.
+    int timeoutSec = 600;
+    if (int.TryParse(ctx.Request.Query["timeoutSec"], out var qts) && qts > 0) timeoutSec = qts;
+    else if (int.TryParse(System.Environment.GetEnvironmentVariable("RETIREMENT_TIMEOUT_SECONDS"), out var ets) && ets > 0) timeoutSec = ets;
+
+    string? gatewayUrl = ctx.Request.Query["gatewayUrl"].ToString();
+    if (string.IsNullOrWhiteSpace(gatewayUrl))
+    {
+        gatewayUrl = System.Environment.GetEnvironmentVariable("GATEWAY_HTTP_URL");
+    }
+    // Sane default for the helm-deployed environment when env isn't injected.
+    if (string.IsNullOrWhiteSpace(gatewayUrl)) gatewayUrl = "http://gateway:5001";
+
+    string? podName = lifecycle.AgentId
+        ?? System.Environment.GetEnvironmentVariable("MY_POD_NAME");
+
+    Console.WriteLine($"[ADMIN] /admin/retire invoked — podName={podName} timeoutSec={timeoutSec} gatewayUrl={gatewayUrl}");
+
+    bool flipped = await lifecycle.MarkRetiringAsync();
+    if (!flipped)
+    {
+        // Etcd unwired; without a coordinator we can't drain safely.
+        // Returning 200 lets preStop complete; the caller (k8s SIGTERM)
+        // will then proceed and we accept the legacy "no drain" behaviour.
+        Console.WriteLine("[ADMIN] /admin/retire: drain unavailable (etcd unwired); allowing immediate termination");
+        return Results.Json(new { ok = true, drained = false, reason = "etcd unwired" });
+    }
+
+    if (string.IsNullOrEmpty(podName))
+    {
+        Console.WriteLine("[ADMIN] /admin/retire: no podName; cannot poll gateway. Sleeping the timeout as a coarse fallback.");
+        await Task.Delay(TimeSpan.FromSeconds(Math.Min(timeoutSec, 60)));
+        return Results.Json(new { ok = true, drained = false, reason = "no podName for poll" });
+    }
+
+    using var http = new System.Net.Http.HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+    var deadline = DateTime.UtcNow.AddSeconds(timeoutSec);
+    int pendingLast = -1;
+    int polls = 0;
+    bool complete = false;
+    string? lastError = null;
+
+    while (DateTime.UtcNow < deadline)
+    {
+        polls++;
+        try
+        {
+            var statusUrl = $"{gatewayUrl.TrimEnd('/')}/admin/retirement-status?pod={Uri.EscapeDataString(podName)}";
+            var resp = await http.GetAsync(statusUrl);
+            if (!resp.IsSuccessStatusCode)
+            {
+                lastError = $"HTTP {(int)resp.StatusCode} from gateway";
+                // 404 = gateway hasn't seen our drain yet. Keep polling.
+            }
+            else
+            {
+                var body = await resp.Content.ReadAsStringAsync();
+                using var doc = System.Text.Json.JsonDocument.Parse(body);
+                var root = doc.RootElement;
+                int pending = root.TryGetProperty("pending", out var p) ? p.GetInt32() : -1;
+                bool isComplete = root.TryGetProperty("complete", out var c) && c.GetBoolean();
+
+                if (pending != pendingLast)
+                {
+                    Console.WriteLine($"[ADMIN] /admin/retire poll {polls}: pending={pending} complete={isComplete}");
+                    pendingLast = pending;
+                }
+
+                if (isComplete)
+                {
+                    complete = true;
+                    break;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            lastError = $"{ex.GetType().Name}: {ex.Message}";
+        }
+
+        await Task.Delay(TimeSpan.FromSeconds(2));
+    }
+
+    if (complete)
+    {
+        Console.WriteLine($"[ADMIN] /admin/retire: drain complete after {polls} polls. Returning 200 — k8s will SIGTERM next.");
+        return Results.Json(new { ok = true, drained = true, polls });
+    }
+
+    // Timed out. We deliberately return 200 (not an error) so preStop
+    // doesn't loop in k8s; the operator can see the partial-drain
+    // outcome in `kubectl logs` via the line above. Returning 504 here
+    // would just delay SIGTERM by terminationGracePeriodSeconds with
+    // no upside.
+    Console.WriteLine($"[ADMIN] /admin/retire: TIMED OUT after {timeoutSec}s ({polls} polls, lastError={lastError ?? "none"}). Allowing termination anyway — surviving replicas will absorb the rest via anti-entropy.");
+    return Results.Json(new
+    {
+        ok = true,
+        drained = false,
+        timed_out = true,
+        polls,
+        last_error = lastError
+    });
+});
+
 app.MapGet("/finger_table", () =>
 {
     // Build rows using LINQ for readability

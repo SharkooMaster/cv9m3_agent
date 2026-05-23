@@ -21,8 +21,12 @@ WORKDIR /app
 #    unversioned symlink no longer ships in the base image.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         librocksdb-dev \
+        curl \
     && rm -rf /var/lib/apt/lists/* \
     && ln -sf /lib/x86_64-linux-gnu/libdl.so.2 /lib/x86_64-linux-gnu/libdl.so
+# curl is required by the preStop drain hook (calls POST /admin/retire on
+# localhost). Adding it here costs ~1.5 MB on the runtime image; the
+# alternative (busybox sidecar) costs more memory and complicates pod spec.
 
 COPY --from=build-env /app/out .
 

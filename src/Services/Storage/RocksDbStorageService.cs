@@ -9,7 +9,6 @@ using Agent.Modules.Storage;
 using Agent.Utils.Globals;
 using Google.Protobuf;
 using Grpc.Core;
-using Npgsql;
 using RocksDbSharp;
 
 namespace Agent.Services.Storage;
@@ -26,8 +25,16 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
     private static DateTime _agentListCacheTime = DateTime.MinValue;
     private static readonly object _agentListLock = new object();
 
-    public RocksDbStorageService(string rocksDbPath, string postgresConnectionString, long bucketBlockCacheMb = 128, long chunkBlockCacheMb = 64)
+    /// <param name="legacyPostgresConnectionString">
+    /// Accepted for source-compat with the older constructor signature
+    /// in <c>Program.cs</c>. RocksDbStorageService keeps bucket metadata
+    /// and chunk bytes in the embedded RocksDB store; this argument is
+    /// intentionally ignored. Other backends (LocalFile/S3/GCS) still
+    /// use the connection string for their bucket_keys / vectors tables.
+    /// </param>
+    public RocksDbStorageService(string rocksDbPath, string legacyPostgresConnectionString, long bucketBlockCacheMb = 128, long chunkBlockCacheMb = 64)
     {
+        _ = legacyPostgresConnectionString; // intentionally unused — see param doc
         if (string.IsNullOrWhiteSpace(rocksDbPath))
             throw new ArgumentException("RocksDB path cannot be empty.", nameof(rocksDbPath));
 
@@ -553,48 +560,6 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
     private static void ClearMissingBucket(string bucketId)
         => _missingBucketCache.TryRemove(bucketId, out _);
 
-    private static string BuildConnectionString(string raw)
-    {
-        var b = new NpgsqlConnectionStringBuilder(raw);
-        // With async/await and proper pooling, connections are returned immediately after each operation.
-        // With GATEWAY_STREAM_CONCURRENCY=32 and 5 agents, 25 per agent = 125 total, well under 600 limit.
-        // This leaves plenty of headroom for bursts and other services.
-        if (b.MaxPoolSize <= 0)
-            b.MaxPoolSize = 25;
-        // Pre-warm the pool so hot-path requests don't pay connection-open cost.
-        b.MinPoolSize = Math.Max(b.MinPoolSize, 5);
-        return b.ConnectionString;
-    }
-
-    /// <summary>
-    /// Opens a Postgres connection with retry logic for "too many clients" errors.
-    /// Uses exponential backoff: 50ms, 100ms, 200ms, 400ms (max 4 retries).
-    /// </summary>
-    private static async Task<NpgsqlConnection> OpenConnectionWithRetryAsync(NpgsqlDataSource dataSource, int maxRetries = 4)
-    {
-        int attempt = 0;
-        while (true)
-        {
-            try
-            {
-                return await dataSource.OpenConnectionAsync();
-            }
-            catch (PostgresException pgEx) when (pgEx.SqlState == "53300" && attempt < maxRetries)
-            {
-                // "too many clients already" - retry with exponential backoff
-                attempt++;
-                var delayMs = Math.Min(50 * (1 << (attempt - 1)), 400); // 50, 100, 200, 400ms
-                await Task.Delay(delayMs);
-                // Continue loop to retry
-            }
-            catch (PostgresException pgEx) when (pgEx.SqlState == "53300")
-            {
-                // Max retries exhausted - throw with context
-                throw new InvalidOperationException($"Failed to open Postgres connection after {maxRetries} retries: too many clients", pgEx);
-            }
-        }
-    }
-
     private static string GenerateChunkKey(byte[] chunkData)
     {
         using var sha256 = SHA256.Create();
@@ -613,59 +578,6 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
         if (key.Contains('/'))
             key = key[(key.LastIndexOf('/') + 1)..];
         return key;
-    }
-
-    /// <summary>
-    /// Two-step upsert inside one transaction using a provided connection.
-    ///   1. UPSERT bucket_keys — atomically allocates the next index.
-    ///   2. INSERT the vector row with the allocated (bucket_id, bucket_index).
-    /// </summary>
-    private static async Task<(int, int)> InsertChunkMetadataInternal(NpgsqlConnection conn, float[] vector, string storagePath, int size, string bucketName)
-    {
-        await using var tx = await conn.BeginTransactionAsync();
-
-        try
-        {
-            var bucketCmd = new NpgsqlCommand(@"
-                INSERT INTO bucket_keys (bucket_name, usage_count, next_index)
-                VALUES (@bucketName, 1, 2)
-                ON CONFLICT (bucket_name) DO UPDATE SET
-                    usage_count = bucket_keys.usage_count + 1,
-                    next_index  = bucket_keys.next_index  + 1
-                RETURNING id, next_index - 1 AS bucket_index;
-            ", conn, tx);
-            bucketCmd.Parameters.AddWithValue("@bucketName", bucketName);
-
-            int bucketId;
-            int bucketIndex;
-            await using (var reader = await bucketCmd.ExecuteReaderAsync())
-            {
-                if (!await reader.ReadAsync())
-                    throw new InvalidOperationException($"InsertChunkMetadata: UPSERT returned no rows for bucket '{bucketName}'");
-                bucketId    = reader.GetInt32(0);
-                bucketIndex = reader.GetInt32(1);
-            }
-
-            var vectorCmd = new NpgsqlCommand(@"
-                INSERT INTO vectors (vector, storage_guid, size, created_at, bucket_id, bucket_index)
-                VALUES (@vector, @storagePath, @size, NOW(), @bucketId, @bucketIndex);
-            ", conn, tx);
-            vectorCmd.Parameters.AddWithValue("@vector", vector);
-            vectorCmd.Parameters.AddWithValue("@storagePath", storagePath);
-            vectorCmd.Parameters.AddWithValue("@size", size);
-            vectorCmd.Parameters.AddWithValue("@bucketId", bucketId);
-            vectorCmd.Parameters.AddWithValue("@bucketIndex", bucketIndex);
-
-            await vectorCmd.ExecuteNonQueryAsync();
-            await tx.CommitAsync();
-
-            return (bucketId, bucketIndex);
-        }
-        catch
-        {
-            await tx.RollbackAsync();
-            throw;
-        }
     }
 
     private async Task<List<(float[] vector, string storageGuid, long id, long index)>> GetVectorsByBucketAsync(string bucketName)

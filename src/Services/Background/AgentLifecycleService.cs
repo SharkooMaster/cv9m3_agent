@@ -21,7 +21,30 @@ public class AgentLifeCycleService : IHostedService
     private CancellationTokenSource? _etcdCts;
     private long _etcdLeaseId = 0;
     private string? _etcdAgentId;
+    private string? _etcdAgentIp;
+    private int _etcdVnodes = 256;
     private Task? _etcdHeartbeatTask;
+
+    /// <summary>
+    /// Current self-published status. Mutated by <see cref="MarkRetiringAsync"/>
+    /// when the pod is told to drain (preStop hook → POST /admin/retire). The
+    /// heartbeat loop reads this every time it (re)registers so the etcd
+    /// entry's <c>status</c> field stays in sync — the gateway's rebalance
+    /// coordinator watches for the <c>draining</c> transition and starts
+    /// orchestrating handoffs.
+    /// </summary>
+    private volatile string _currentStatus = "ready";
+
+    /// <summary>
+    /// Singleton handle so the admin retire endpoint and other hosted
+    /// services can call into the lifecycle service without going through
+    /// DI lookup tricks. Set during <see cref="StartAsync"/> and cleared
+    /// in <see cref="StopAsync"/>.
+    /// </summary>
+    public static AgentLifeCycleService? Instance { get; private set; }
+
+    public bool IsRetiring => _currentStatus == "draining";
+    public string? AgentId => _etcdAgentId;
 
     public AgentLifeCycleService(IServiceProvider provider)
     {
@@ -71,6 +94,7 @@ public class AgentLifeCycleService : IHostedService
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
+        Instance = this;
         string _id = Misc.GenerateId();
         string _data = Misc.GetServiceInfo("agent", _id);
 
@@ -111,6 +135,7 @@ public class AgentLifeCycleService : IHostedService
                     ?? "127.0.0.1";
 
                 _etcdAgentId = podName;
+                _etcdAgentIp = podIp;
                 // ── /agents/<podName> v2 schema ──
                 // version=1: legacy {name, ip, port} consumed by the old
                 //   RendezvousRouter on cross. Still emitted here so a
@@ -130,20 +155,11 @@ public class AgentLifeCycleService : IHostedService
                 {
                     vnodesPerAgent = vEnv;
                 }
-                var entry = new
-                {
-                    name = podName,
-                    ip = podIp,
-                    port = 5000,
-                    vnodes = vnodesPerAgent,
-                    version = 2,
-                    status = "ready"
-                };
-                string json = System.Text.Json.JsonSerializer.Serialize(entry);
+                _etcdVnodes = vnodesPerAgent;
 
-                _etcdLeaseId = await _etcdClientService.RegisterAgentLeaseAsync(podName, json);
+                _etcdLeaseId = await _etcdClientService.RegisterAgentLeaseAsync(podName, BuildEtcdEntryJson());
                 Console.WriteLine(
-                    $"[AgentLifecycleService] Registered in etcd /agents/{podName} → {json} (leaseId={_etcdLeaseId})");
+                    $"[AgentLifecycleService] Registered in etcd /agents/{podName} → {BuildEtcdEntryJson()} (leaseId={_etcdLeaseId})");
 
                 _etcdCts = new CancellationTokenSource();
                 _etcdHeartbeatTask = Task.Run(async () =>
@@ -155,13 +171,16 @@ public class AgentLifeCycleService : IHostedService
                             // LeaseKeepAlive blocks until the token cancels or
                             // the keep-alive stream breaks. On stream break we
                             // re-register a fresh lease so a transient etcd
-                            // hiccup doesn't permanently de-list us.
+                            // hiccup doesn't permanently de-list us. The JSON
+                            // is rebuilt each time so a status flip (e.g.
+                            // ready → draining via /admin/retire) is reflected
+                            // automatically on the next heartbeat-bounce.
                             await _etcdClientService.UpdateHeartBeatAsync(_etcdLeaseId, _etcdCts.Token);
 
                             if (_etcdCts.IsCancellationRequested) return;
 
-                            Console.WriteLine("[AgentLifecycleService] etcd keep-alive stream ended; re-registering");
-                            _etcdLeaseId = await _etcdClientService.RegisterAgentLeaseAsync(podName, json);
+                            Console.WriteLine($"[AgentLifecycleService] etcd keep-alive stream ended; re-registering with status={_currentStatus}");
+                            _etcdLeaseId = await _etcdClientService.RegisterAgentLeaseAsync(podName, BuildEtcdEntryJson());
                         }
                         catch (OperationCanceledException) { return; }
                         catch (Exception ex)
@@ -171,7 +190,7 @@ public class AgentLifeCycleService : IHostedService
                             catch (OperationCanceledException) { return; }
                             try
                             {
-                                _etcdLeaseId = await _etcdClientService.RegisterAgentLeaseAsync(podName, json);
+                                _etcdLeaseId = await _etcdClientService.RegisterAgentLeaseAsync(podName, BuildEtcdEntryJson());
                             }
                             catch (Exception rex)
                             {
@@ -331,10 +350,103 @@ public class AgentLifeCycleService : IHostedService
                 try { await Task.WhenAny(_etcdHeartbeatTask, Task.Delay(TimeSpan.FromSeconds(3))); }
                 catch { /* shutdown best-effort */ }
             }
+            Instance = null;
         }
         catch (Exception ex)
         {
             Console.WriteLine($"[AgentLifecycleService] etcd deregister failed: {ex.Message}");
         }
+    }
+
+    /// <summary>
+    /// Build the etcd value emitted under <c>/agents/&lt;podName&gt;</c>.
+    /// Captured fields are stable for the lifetime of the pod; only
+    /// <see cref="_currentStatus"/> mutates (ready → draining when the
+    /// retire endpoint fires).
+    /// </summary>
+    private string BuildEtcdEntryJson()
+    {
+        var entry = new
+        {
+            name = _etcdAgentId,
+            ip = _etcdAgentIp ?? "127.0.0.1",
+            port = 5000,
+            vnodes = _etcdVnodes,
+            version = 2,
+            status = _currentStatus
+        };
+        return System.Text.Json.JsonSerializer.Serialize(entry);
+    }
+
+    /// <summary>
+    /// Transition this pod into the "draining" state.
+    ///
+    /// Mechanics:
+    ///   1. Flip <see cref="_currentStatus"/> to "draining".
+    ///   2. Revoke the current etcd lease. This causes the keep-alive
+    ///      stream to end; the heartbeat loop falls into its catch path
+    ///      and re-registers immediately, picking up the new status from
+    ///      <see cref="BuildEtcdEntryJson"/>.
+    ///   3. The gateway's <c>EtcdMembershipWatcher</c> sees the value
+    ///      change and bumps <c>RingState.TopologyVersion</c>; the
+    ///      rebalance coordinator then orchestrates handoffs of this
+    ///      pod's vnodes to surviving peers.
+    ///
+    /// Returns <c>true</c> if the status flip was applied (etcd was
+    /// configured), <c>false</c> if etcd is unwired (legacy/local mode).
+    ///
+    /// Idempotent — calling twice is safe; the second call observes
+    /// <see cref="IsRetiring"/> already true and short-circuits.
+    /// </summary>
+    public async Task<bool> MarkRetiringAsync()
+    {
+        if (_etcdClientService == null || string.IsNullOrEmpty(_etcdAgentId))
+        {
+            Console.WriteLine("[AgentLifecycleService] MarkRetiringAsync: etcd unwired or no agent id; cannot drain");
+            return false;
+        }
+
+        if (_currentStatus == "draining")
+        {
+            Console.WriteLine("[AgentLifecycleService] MarkRetiringAsync: already draining (no-op)");
+            return true;
+        }
+
+        _currentStatus = "draining";
+        Console.WriteLine($"[AgentLifecycleService] MarkRetiringAsync: status flipped to 'draining' for /agents/{_etcdAgentId}");
+
+        // Revoke + delete the current key so the heartbeat loop's
+        // catch path re-registers. We deliberately use the existing
+        // Deregister API (which both revokes the lease AND deletes the
+        // key); the brief gap before re-register is harmless because
+        // the gateway watcher debounces ring rebuilds and we'll come
+        // back as 'draining' within a few hundred ms.
+        if (_etcdLeaseId != 0)
+        {
+            try
+            {
+                await _etcdClientService.DeregisterAgentLeaseAsync(_etcdAgentId, _etcdLeaseId);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[AgentLifecycleService] MarkRetiringAsync: lease revoke failed: {ex.Message}");
+            }
+        }
+
+        // Force-register immediately rather than wait for the heartbeat
+        // loop to retry — the gateway must see the draining status
+        // before we start polling for adoption completion below.
+        try
+        {
+            _etcdLeaseId = await _etcdClientService.RegisterAgentLeaseAsync(_etcdAgentId, BuildEtcdEntryJson());
+            Console.WriteLine($"[AgentLifecycleService] MarkRetiringAsync: re-registered with status=draining (leaseId={_etcdLeaseId})");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[AgentLifecycleService] MarkRetiringAsync: re-register failed: {ex.Message}");
+            return false;
+        }
+
+        return true;
     }
 }
