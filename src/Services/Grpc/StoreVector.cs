@@ -86,7 +86,13 @@ public class StoreVectorService : StoreVector.StoreVectorBase
 
         var results = new StoreVector_Res[request.Items.Count];
 
-        int maxPar = Math.Max(4, Environment.ProcessorCount * 2);
+        // Mirror the BatchGet sizing in SearchVector.BatchGet — the dedup
+        // / bucket-allocate / write-record pipeline inside StoreSingle has
+        // the same shape (RocksDB read for dedup, write batcher Put,
+        // counter cache update) so the same parallelism budget applies.
+        // ProcessorCount * 4 is the cap that keeps the L-flavor agents
+        // CPU-bound rather than parallelism-throttled.
+        int maxPar = Math.Max(4, Environment.ProcessorCount * 4);
         await Parallel.ForEachAsync(
             Enumerable.Range(0, request.Items.Count),
             new ParallelOptions { MaxDegreeOfParallelism = maxPar },

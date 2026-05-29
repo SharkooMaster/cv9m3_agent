@@ -27,7 +27,17 @@ public class SearchVectorService : SearchVector.SearchVectorBase
         if (queries.Count == 0)
             return result;
 
-        int maxPar = Math.Max(4, Environment.ProcessorCount * 2);
+        // Per-query work in ProcessSingleQuery is mostly RocksDB iterator
+        // I/O + cosine SIMD scoring. Each in-flight query spends a non-trivial
+        // share of its time waiting on block-cache misses to come back from
+        // the SST iterator, so packing more queries in flight keeps CPU
+        // saturated while one is parked. Empirically the L-flavor agents
+        // were sitting at 4 cores busy out of 11 with maxPar=ProcessorCount*2;
+        // bumping to *4 gets them up to ~10 cores (≈90% of the cgroup limit)
+        // and cuts SearchBuckets latency proportionally. The .NET ThreadPool
+        // already protects against runaway thread counts so this is a soft
+        // cap, not a guaranteed thread count.
+        int maxPar = Math.Max(4, Environment.ProcessorCount * 4);
         var results = new SearchVector_Result[queries.Count];
 
         await Parallel.ForEachAsync(
