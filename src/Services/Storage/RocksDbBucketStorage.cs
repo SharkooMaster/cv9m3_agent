@@ -827,7 +827,16 @@ public sealed class RocksDbBucketStorage : IDisposable
         int bucketCount = bucketIds.Count;
         var perBucket = new (float sim, ulong bucketId, byte[]? keyBytes, byte[]? valBytes)[bucketCount];
 
-        int maxPar = Math.Min(4, bucketCount);
+        // Per-bucket task opens its own RocksDB iterator, seeks the bucket
+        // prefix, and scores up to perBucketBudget vectors with inline cosine
+        // SIMD. The iterator parks the worker on every block-cache miss, so
+        // this is a mixed I/O + CPU shape — same as ProcessSingleQuery one
+        // level up. The previous hardcoded cap of 4 left ~7 of 11 cores idle
+        // on the L-flavor agents even with cold cold-bucket fan-outs. Sizing
+        // to ProcessorCount * 2 (≈22 on L) matches the BatchGet I/O-bound
+        // hint while still keeping bucketCount as the floor so we don't
+        // spawn empty workers when only 2–3 cold buckets remain.
+        int maxPar = Math.Min(Math.Max(4, Environment.ProcessorCount * 2), bucketCount);
         Parallel.For(0, bucketCount, new ParallelOptions { MaxDegreeOfParallelism = maxPar }, b =>
         {
             ulong bucketId = bucketIds[b];
@@ -920,7 +929,11 @@ public sealed class RocksDbBucketStorage : IDisposable
         for (int i = 0; i < bucketCount; i++)
             perBucketHits[i] = new List<(float, ulong, byte[], byte[])>();
 
-        int maxPar = Math.Min(4, bucketCount);
+        // Same shape as SearchBucketsDirect above: each task is a RocksDB
+        // iterator scan + inline cosine SIMD. Mixed I/O+CPU work, so size
+        // to ProcessorCount * 2 with bucketCount as the floor (preserves
+        // the no-empty-worker semantic the previous hardcoded 4 gave).
+        int maxPar = Math.Min(Math.Max(4, Environment.ProcessorCount * 2), bucketCount);
         Parallel.For(0, bucketCount, new ParallelOptions { MaxDegreeOfParallelism = maxPar }, b =>
         {
             ulong bucketId = bucketIds[b];

@@ -221,7 +221,15 @@ public class M_Bucket
 
                     if (validCount >= 256)
                     {
-                        int coreCount = Math.Max(2, Environment.ProcessorCount / 2);
+                        // Pure CPU-bound work: BatchCosineSimilarity runs SIMD
+                        // over `validCount` candidate vectors with no I/O wait.
+                        // The previous /2 throttle (≈5 on the L flavor) was
+                        // leaving half the cores idle during the dedup scan.
+                        // Match SearchVector's inner-SIMD pattern and use the
+                        // full ProcessorCount; no point going higher than
+                        // physical cores when threads never park. Math.Max(4,…)
+                        // floor prevents pathological single-partition splits.
+                        int coreCount = Math.Max(4, Environment.ProcessorCount);
                         int chunk = (validCount + coreCount - 1) / coreCount;
                         Parallel.ForEach(
                             Partitioner.Create(0, validCount, chunk),

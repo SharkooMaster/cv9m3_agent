@@ -19,7 +19,14 @@ public class SearchLanesService : SearchLanes.SearchLanesBase
         int maxPerQuery = Globals.LaneSearchMaxPerQuery;
 
         var queryResults = new LaneQueryResult[request.Queries.Count];
-        int maxPar = Math.Max(4, Environment.ProcessorCount * 2);
+        // Per-query work is a single SearchLaneBucket call — a RocksDB
+        // prefix-iterator walk that parks on every block-cache miss. Same
+        // handler shape as SearchVector.BatchGet, so use the same cap of
+        // ProcessorCount * 4 (≈44 on the L flavor). At the previous *2
+        // the lane lookups were leaving most of the CPU idle while the
+        // iterators waited on the page cache. .NET ThreadPool already
+        // throttles runaway threads so this is a soft hint.
+        int maxPar = Math.Max(4, Environment.ProcessorCount * 4);
 
         Parallel.For(0, request.Queries.Count, new ParallelOptions { MaxDegreeOfParallelism = maxPar }, i =>
         {
