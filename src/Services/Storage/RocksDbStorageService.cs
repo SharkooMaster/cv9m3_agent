@@ -106,6 +106,31 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
         _bucketStorage?.FlushWrites();
     }
 
+    /// <summary>
+    /// True when RocksDB has actually stalled writes (L0 stop trigger) or is throttling
+    /// the write rate. Used by the non-blocking store path as a backpressure signal: in
+    /// the common case the agent acks without a synchronous WAL flush, but when the LSM
+    /// can't keep up we drain synchronously so we don't pile onto a stalled engine.
+    /// All reads are O(1) in-memory RocksDB property lookups — safe on the hot path.
+    /// </summary>
+    public bool IsUnderWritePressure()
+    {
+        return IsDbStalled(_rocksDb) || (_bucketStorage?.IsUnderWritePressure() ?? false);
+
+        static bool IsDbStalled(RocksDb db)
+        {
+            try
+            {
+                if (long.TryParse(db.GetProperty("rocksdb.is-write-stopped"), out var stopped) && stopped != 0)
+                    return true;
+                if (long.TryParse(db.GetProperty("rocksdb.actual-delayed-write-rate"), out var rate) && rate > 0)
+                    return true;
+                return false;
+            }
+            catch { return false; }
+        }
+    }
+
     public void Dispose()
     {
         _chunkWriteBatcher?.Flush(); // Flush pending writes before shutdown
@@ -562,12 +587,11 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
 
     private static string GenerateChunkKey(byte[] chunkData)
     {
-        using var sha256 = SHA256.Create();
-        var hashBytes = sha256.ComputeHash(chunkData);
-        var sb = new StringBuilder(hashBytes.Length * 2);
-        foreach (var b in hashBytes)
-            sb.Append(b.ToString("x2"));
-        return sb.ToString();
+        // Static HashData avoids allocating (and disposing) a SHA256 instance on every
+        // store. Lowercase hex is preserved so keys match data already on disk.
+        Span<byte> hash = stackalloc byte[32];
+        SHA256.HashData(chunkData, hash);
+        return Convert.ToHexString(hash).ToLowerInvariant();
     }
 
     private static string NormalizeStorageKey(string storageGuid)

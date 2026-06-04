@@ -13,6 +13,40 @@ using Newtonsoft.Json;
 
 public class StoreVectorService : StoreVector.StoreVectorBase
 {
+    // Non-blocking store switch. When enabled, Store/BatchStore ack as soon as writes are
+    // queued (in the write batcher + MRU cache); durability is provided by the background
+    // 5s flush plus cross-side R/W replication (and/or a replicated PVC such as Ceph RBD).
+    // We still drain synchronously when RocksDB reports write pressure, so a stalled engine
+    // never gets piled on. Defaults to OFF → identical to the previous synchronous-flush
+    // behavior, so durability is never weakened without an explicit opt-in.
+    private static readonly bool StoreAsyncEnabled =
+        (Environment.GetEnvironmentVariable("AGENT_STORE_ASYNC") ?? "").Trim().ToLowerInvariant()
+            is "1" or "true" or "yes" or "on";
+
+    /// <summary>
+    /// Persist queued writes before acking, honoring the async-store switch.
+    /// Sync mode (default): always flush — when this returns the data is on the WAL.
+    /// Async mode: skip the flush on the fast path; only drain synchronously when the
+    /// engine is under write pressure (which both relieves the stall and makes those
+    /// writes durable). On the fast path durability comes from the background flush +
+    /// replication, per the operator's opt-in.
+    /// </summary>
+    private static void PersistBeforeAck()
+    {
+        if (StoreAsyncEnabled && !NetworkFileStorageHandler.IsUnderWritePressure())
+            return;
+
+        try
+        {
+            NetworkFileStorageHandler.FlushPendingWrites();
+        }
+        catch (IOException ex)
+        {
+            throw new RpcException(new Status(StatusCode.Internal,
+                $"RocksDB flush failed — data NOT persisted: {ex.Message}"));
+        }
+    }
+
     private static string Take(string s, int n) => s.Length <= n ? s : s.Substring(0, n);
 
     private static bool IsInvalidVector(IList<float> v, out string reason)
@@ -58,15 +92,7 @@ public class StoreVectorService : StoreVector.StoreVectorBase
     public override async Task<StoreVector_Res> Store(StoreVector_Req request, ServerCallContext context)
     {
         var result = await StoreSingle(request);
-        try
-        {
-            NetworkFileStorageHandler.FlushPendingWrites();
-        }
-        catch (IOException ex)
-        {
-            throw new RpcException(new Status(StatusCode.Internal,
-                $"RocksDB flush failed — data NOT persisted: {ex.Message}"));
-        }
+        PersistBeforeAck();
         return result;
     }
 
@@ -114,15 +140,7 @@ public class StoreVectorService : StoreVector.StoreVectorBase
                 }
             });
 
-        try
-        {
-            NetworkFileStorageHandler.FlushPendingWrites();
-        }
-        catch (IOException ex)
-        {
-            throw new RpcException(new Status(StatusCode.Internal,
-                $"RocksDB flush failed — data NOT persisted: {ex.Message}"));
-        }
+        PersistBeforeAck();
 
         result.Results.AddRange(results);
         return result;
@@ -213,7 +231,9 @@ public class StoreVectorService : StoreVector.StoreVectorBase
                 if (bucketStorage != null)
                 {
                     int subSize = Globals.MosaicSubChunkSize;
-                    var chunkBytes = request.Chunk.ToArray();
+                    // Reuse the copy already made in mdata.chunk instead of materializing
+                    // a second byte[] from the protobuf ByteString for every stored chunk.
+                    var chunkBytes = mdata.chunk;
                     var laneHashes = Misc.ComputeLaneBitstrings(
                         chunkBytes, subSize, 64, Globals.LaneHashBits);
                     bucketStorage.StoreLaneEntries(

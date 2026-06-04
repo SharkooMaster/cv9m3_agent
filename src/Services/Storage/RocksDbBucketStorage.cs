@@ -209,6 +209,23 @@ public sealed class RocksDbBucketStorage : IDisposable
         _writeBatcher?.Flush();
     }
 
+    /// <summary>
+    /// True when the bucket-metadata RocksDB has stalled or is throttling writes.
+    /// O(1) in-memory property reads; used by the non-blocking store backpressure check.
+    /// </summary>
+    public bool IsUnderWritePressure()
+    {
+        try
+        {
+            if (long.TryParse(_rocksDb.GetProperty("rocksdb.is-write-stopped"), out var stopped) && stopped != 0)
+                return true;
+            if (long.TryParse(_rocksDb.GetProperty("rocksdb.actual-delayed-write-rate"), out var rate) && rate > 0)
+                return true;
+            return false;
+        }
+        catch { return false; }
+    }
+
     public void Dispose()
     {
         try { _statsSnapshotTimer?.Dispose(); } catch { }

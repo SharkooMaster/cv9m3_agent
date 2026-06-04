@@ -95,13 +95,23 @@ public static class NetworkFileStorageHandler
         _instance?.FlushPendingWrites();
     }
 
+    /// <summary>
+    /// Backpressure signal for the non-blocking store path. Returns true only when the
+    /// underlying RocksDB engine has actually stalled/throttled writes. Backends that
+    /// don't expose engine pressure (non-RocksDB) report false (never throttle).
+    /// </summary>
+    public static bool IsUnderWritePressure()
+    {
+        return _instance is RocksDbStorageService rocksDbService
+            && rocksDbService.IsUnderWritePressure();
+    }
+
     public static string GenerateChunkKey(byte[] chunkData)
     {
-        using var sha256 = System.Security.Cryptography.SHA256.Create();
-        var hashBytes = sha256.ComputeHash(chunkData);
-        var sb = new System.Text.StringBuilder(hashBytes.Length * 2);
-        foreach (var b in hashBytes)
-            sb.Append(b.ToString("x2"));
-        return sb.ToString();
+        // Static HashData avoids allocating (and disposing) a SHA256 instance on every
+        // call. Lowercase hex is preserved so keys match data already on disk.
+        Span<byte> hash = stackalloc byte[32];
+        System.Security.Cryptography.SHA256.HashData(chunkData, hash);
+        return Convert.ToHexString(hash).ToLowerInvariant();
     }
 }
