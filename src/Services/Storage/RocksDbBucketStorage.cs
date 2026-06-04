@@ -842,37 +842,36 @@ public sealed class RocksDbBucketStorage : IDisposable
         int perBucketBudget = Math.Max(64, maxCandidates / Math.Max(1, bucketIds.Count));
 
         int bucketCount = bucketIds.Count;
-        var perBucket = new (float sim, ulong bucketId, byte[]? keyBytes, byte[]? valBytes)[bucketCount];
 
-        // Per-bucket task opens its own RocksDB iterator, seeks the bucket
-        // prefix, and scores up to perBucketBudget vectors with inline cosine
-        // SIMD. The iterator parks the worker on every block-cache miss, so
-        // this is a mixed I/O + CPU shape — same as ProcessSingleQuery one
-        // level up. The previous hardcoded cap of 4 left ~7 of 11 cores idle
-        // on the L-flavor agents even with cold cold-bucket fan-outs. Sizing
-        // to ProcessorCount * 2 (≈22 on L) matches the BatchGet I/O-bound
-        // hint while still keeping bucketCount as the floor so we don't
-        // spawn empty workers when only 2–3 cold buckets remain.
-        int maxPar = Math.Min(Math.Max(4, Environment.ProcessorCount * 2), bucketCount);
-        Parallel.For(0, bucketCount, new ParallelOptions { MaxDegreeOfParallelism = maxPar }, b =>
+        // Neighbor buckets hold ~1 vector each (avg bucket density ≈ 1.0), so the
+        // old design — one fresh RocksDB iterator per bucket, each with a 256KB
+        // readahead buffer — was almost pure overhead: ~65 iterator constructions
+        // and ~16MB of readahead allocation per query just to read a handful of
+        // ~260-byte vectors. At 1024 chunks/block that is ~66k iterator builds and
+        // tens of GB of churned readahead per MB, and iterator setup cost climbs
+        // with the LSM as the corpus grows (the SearchBuckets blow-up we observed).
+        //
+        // Instead reuse a single iterator across all neighbor prefixes with no
+        // readahead. The outer per-query parallelism in BatchGet already saturates
+        // the cores, so we drop the nested Parallel.For to avoid oversubscription.
+        var readOpts = new ReadOptions()
+            .SetPrefixSameAsStart(true)
+            .SetFillCache(true)
+            .SetVerifyChecksums(false);
+
+        float bestSim = -1f;
+        ulong bestBucketId = 0;
+        byte[]? bestKey = null;
+        byte[]? bestVal = null;
+
+        using var iter = _rocksDb.NewIterator(readOptions: readOpts);
+        for (int b = 0; b < bucketCount; b++)
         {
             ulong bucketId = bucketIds[b];
             var prefix = MakeBinaryVectorPrefix(bucketId);
-
-            var readOpts = new ReadOptions()
-                .SetPrefixSameAsStart(true)
-                .SetFillCache(true)
-                .SetVerifyChecksums(false)
-                .SetReadaheadSize((ulong)(256 * 1024));
-
-            float localBest = -1f;
-            byte[]? localBestKey = null;
-            byte[]? localBestVal = null;
-            int scanned = 0;
-
-            using var iter = _rocksDb.NewIterator(readOptions: readOpts);
             iter.Seek(prefix);
 
+            int scanned = 0;
             while (iter.Valid() && scanned < perBucketBudget)
             {
                 var valBytes = iter.Value();
@@ -886,35 +885,23 @@ public sealed class RocksDbBucketStorage : IDisposable
                 float sim = CosineSimilarityInline(queryVector, queryNormSq, candidateSpan, normSq);
                 scanned++;
 
-                if (sim >= threshold && sim > localBest)
+                if (sim >= threshold && sim > bestSim)
                 {
-                    localBest = sim;
-                    localBestKey = iter.Key();
-                    localBestVal = valBytes;
+                    bestSim = sim;
+                    bestBucketId = bucketId;
+                    bestKey = iter.Key();
+                    bestVal = valBytes;
                 }
                 iter.Next();
             }
-
-            perBucket[b] = (localBest, bucketId, localBestKey, localBestVal);
-        });
-
-        float bestSim = -1f;
-        int bestIdx = -1;
-        for (int b = 0; b < bucketCount; b++)
-        {
-            if (perBucket[b].sim > bestSim)
-            {
-                bestSim = perBucket[b].sim;
-                bestIdx = b;
-            }
         }
 
-        if (bestIdx < 0 || perBucket[bestIdx].keyBytes == null || perBucket[bestIdx].valBytes == null)
+        if (bestKey == null || bestVal == null)
             return (0, 0, null, -1f);
 
-        ulong bestIndex = BinaryPrimitives.ReadUInt64BigEndian(perBucket[bestIdx].keyBytes!.AsSpan(9));
-        string? bestGuid = ExtractStorageGuid(perBucket[bestIdx].valBytes!, vecLen);
-        return (perBucket[bestIdx].bucketId, bestIndex, bestGuid, bestSim);
+        ulong bestIndex = BinaryPrimitives.ReadUInt64BigEndian(bestKey.AsSpan(9));
+        string? bestGuid = ExtractStorageGuid(bestVal, vecLen);
+        return (bestBucketId, bestIndex, bestGuid, bestSim);
     }
 
     /// <summary>
@@ -939,36 +926,29 @@ public sealed class RocksDbBucketStorage : IDisposable
         int vecLen = queryVector.Length;
         int vectorBytesLen = vecLen * sizeof(float);
         int minValueLen = 4 + vectorBytesLen;
-        int perBucketBudget = Math.Max(64, maxCandidates / Math.Max(1, bucketIds.Count));
-
         int bucketCount = bucketIds.Count;
-        var perBucketHits = new List<(float sim, ulong bucketId, byte[] keyBytes, byte[] valBytes)>[bucketCount];
-        for (int i = 0; i < bucketCount; i++)
-            perBucketHits[i] = new List<(float, ulong, byte[], byte[])>();
+        int perBucketBudget = Math.Max(64, maxCandidates / Math.Max(1, bucketCount));
 
-        // Same shape as SearchBucketsDirect above: each task is a RocksDB
-        // iterator scan + inline cosine SIMD. Mixed I/O+CPU work, so size
-        // to ProcessorCount * 2 with bucketCount as the floor (preserves
-        // the no-empty-worker semantic the previous hardcoded 4 gave).
-        int maxPar = Math.Min(Math.Max(4, Environment.ProcessorCount * 2), bucketCount);
-        Parallel.For(0, bucketCount, new ParallelOptions { MaxDegreeOfParallelism = maxPar }, b =>
+        // See SearchBucketsDirect: reuse a single iterator across all neighbor
+        // prefixes with no readahead, and drop the nested Parallel.For (the outer
+        // per-query parallelism in BatchGet already saturates the cores). Buckets
+        // are ~1 vector each, so the merged hit list stays tiny in practice and a
+        // single global sort is cheaper than per-bucket trimming.
+        var readOpts = new ReadOptions()
+            .SetPrefixSameAsStart(true)
+            .SetFillCache(true)
+            .SetVerifyChecksums(false);
+
+        var merged = new List<(float sim, ulong bucketId, byte[] keyBytes, byte[] valBytes)>();
+
+        using var iter = _rocksDb.NewIterator(readOptions: readOpts);
+        for (int b = 0; b < bucketCount; b++)
         {
             ulong bucketId = bucketIds[b];
             var prefix = MakeBinaryVectorPrefix(bucketId);
-
-            var readOpts = new ReadOptions()
-                .SetPrefixSameAsStart(true)
-                .SetFillCache(true)
-                .SetVerifyChecksums(false)
-                .SetReadaheadSize((ulong)(256 * 1024));
-
-            var localHits = new List<(float sim, ulong bucketId, byte[] keyBytes, byte[] valBytes)>();
-            float localMinSim = -1f;
-            int scanned = 0;
-
-            using var iter = _rocksDb.NewIterator(readOptions: readOpts);
             iter.Seek(prefix);
 
+            int scanned = 0;
             while (iter.Valid() && scanned < perBucketBudget)
             {
                 var valBytes = iter.Value();
@@ -983,27 +963,11 @@ public sealed class RocksDbBucketStorage : IDisposable
                 scanned++;
 
                 if (sim >= threshold)
-                {
-                    if (localHits.Count < topK || sim > localMinSim)
-                    {
-                        localHits.Add((sim, bucketId, (byte[])iter.Key().Clone(), (byte[])valBytes.Clone()));
-                        if (localHits.Count > topK * 2)
-                        {
-                            localHits.Sort((a, b) => b.sim.CompareTo(a.sim));
-                            localHits.RemoveRange(topK, localHits.Count - topK);
-                            localMinSim = localHits[^1].sim;
-                        }
-                    }
-                }
+                    merged.Add((sim, bucketId, (byte[])iter.Key().Clone(), (byte[])valBytes.Clone()));
+
                 iter.Next();
             }
-
-            perBucketHits[b] = localHits;
-        });
-
-        var merged = new List<(float sim, ulong bucketId, byte[] keyBytes, byte[] valBytes)>();
-        for (int b = 0; b < bucketCount; b++)
-            merged.AddRange(perBucketHits[b]);
+        }
 
         merged.Sort((a, b) => b.sim.CompareTo(a.sim));
 
