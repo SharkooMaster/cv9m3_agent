@@ -266,8 +266,8 @@ public static class NodeService
 
     public static async Task<M_Bucket.InsertResult> StoreInBucket(M_Node node, string bucket_string, M_Data _data, string HeadRouteID)
     {
-        // ── L1 bypass: dedup + store directly via RocksDB ──
-        if (!Agent.Services.Cache.BucketCacheManager.L1Enabled)
+        // ── Index-first / L1 bypass: dedup + store without the M_Bucket object graph ──
+        if (Agent.Services.Index.BinaryVectorIndex.Enabled || !Agent.Services.Cache.BucketCacheManager.L1Enabled)
         {
             var bucketStorage = Agent.Services.Cache.BucketCacheManager.GetBucketStorage();
             ulong bucketKey = RocksDbBucketStorage.BitstringToUlong(bucket_string);
@@ -279,8 +279,24 @@ public static class NodeService
                     : Agent.Utils.Misc.Misc.ComputeNormSquared(_data.vector);
                 float threshold = Globals.StoreSimilarityThreshold;
 
-                var match = bucketStorage.SearchSingleBucketForStore(
-                    bucketKey, _data.vector, queryNormSq, threshold);
+                // Similarity dedup within the exact bucket. Index path: pure RAM
+                // probe with immediate visibility of same-batch stores (the
+                // RocksDB scan below has a write-batcher flush lag of up to 5s,
+                // during which near-duplicates slip through as fresh stores).
+                (ulong bucketId, ulong bucketIndex, string? storageGuid, float similarity)? match;
+                if (Agent.Services.Index.BinaryVectorIndex.Enabled)
+                {
+                    var hit = Agent.Services.Index.BinaryVectorIndex.SearchExactBucket(
+                        bucketKey, _data.vector, queryNormSq, threshold);
+                    match = hit.HasValue
+                        ? (hit.Value.BucketId, hit.Value.BucketIndex, hit.Value.StorageGuid, hit.Value.Similarity)
+                        : null;
+                }
+                else
+                {
+                    match = bucketStorage.SearchSingleBucketForStore(
+                        bucketKey, _data.vector, queryNormSq, threshold);
+                }
 
                 if (match.HasValue)
                 {

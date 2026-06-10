@@ -485,6 +485,12 @@ public sealed class RocksDbBucketStorage : IDisposable
             var vectorKeyBytes = MakeBinaryVectorKey(bucketId, bucketIndex);
             _writeBatcher.Put(vectorKeyBytes, recordBytes);
 
+            // Mirror every fresh vector into the in-process binary index. This is
+            // the single funnel for ALL bucket-vector writes (client stores, L1
+            // inserts, vnode adoption), so the index can never miss an entry.
+            // Dedup returns above never reach this line — no duplicate appends.
+            Agent.Services.Index.BinaryVectorIndex.Append(bucketId, bucketIndex, vector, storageGuid, chunkSize);
+
             Interlocked.Increment(ref _totalVectors);
 
             return (bucketId, bucketIndex);
@@ -635,6 +641,42 @@ public sealed class RocksDbBucketStorage : IDisposable
         }
 
         return result;
+    }
+
+    /// <summary>
+    /// Stream every stored vector record to a callback in one total-order scan.
+    /// Used by BinaryVectorIndex.RebuildFrom at startup: O(N) sequential I/O,
+    /// no intermediate dictionaries or per-bucket lists (unlike
+    /// LoadAllBucketsToMemory, which materializes the L1 object graph).
+    /// Flushes the write batcher first so no pending record is missed.
+    /// </summary>
+    public long EnumerateAllVectorRecords(Action<ulong, ulong, float[], string, float, int> callback)
+    {
+        _writeBatcher.Flush();
+
+        long n = 0;
+        var readOpts = new ReadOptions().SetTotalOrderSeek(true);
+        using var iterator = _rocksDb.NewIterator(readOptions: readOpts);
+        iterator.Seek(new byte[] { BinaryVectorTag });
+
+        while (iterator.Valid())
+        {
+            var keyBytes = iterator.Key();
+            if (keyBytes == null || keyBytes.Length < BinaryKeyLen || keyBytes[0] != BinaryVectorTag)
+                break;
+
+            if (TryParseBinaryVectorKey(keyBytes, out var bucketId, out var bucketIndex))
+            {
+                var recordBytes = iterator.Value();
+                if (recordBytes != null && recordBytes.Length > 0 && TryDeserializeVectorRecord(recordBytes, out var rec))
+                {
+                    callback(bucketId, bucketIndex, rec.Vector, rec.StorageGuid, rec.NormSquared, rec.ChunkSize);
+                    n++;
+                }
+            }
+            iterator.Next();
+        }
+        return n;
     }
 
     /// <summary>

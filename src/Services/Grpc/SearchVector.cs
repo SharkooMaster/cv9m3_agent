@@ -70,6 +70,46 @@ public class SearchVectorService : SearchVector.SearchVectorBase
         int requestedK = Math.Max(1, request.K);
         float queryNormSq = Misc.ComputeNormSquared(queryVector);
 
+        // ── PRIMARY PATH: in-process binary index (two-stage RAM search) ──
+        // Stage 1 probes the query's exact 64-bit LSH code + its 64 single-bit
+        // flips (identical recall semantics to the legacy neighbor-bucket
+        // probing the Bitstrings list encodes) against flat in-RAM structures;
+        // stage 2 cosine-scores the few candidates. No RocksDB, no per-vector
+        // heap objects, immediate visibility of recent stores.
+        // The exact query code is recomputed from the vector's signs — by
+        // construction it equals BitstringToUlong(cross's bitstring).
+        if (Agent.Services.Index.BinaryVectorIndex.Enabled)
+        {
+            ulong queryCode = Agent.Services.Index.BinaryVectorIndex.CodeFromVector(queryVector);
+            var indexHits = Agent.Services.Index.BinaryVectorIndex.Search(
+                queryCode, queryVector, queryNormSq, threshold, requestedK);
+
+            if (indexHits.Count == 0)
+                return MakeSaveResult(request.Index);
+
+            var indexRes = new SearchVector_Result { Save = false };
+            foreach (var hit in indexHits)
+            {
+                ByteString chunkBytes = ByteString.Empty;
+                if (!string.IsNullOrWhiteSpace(hit.StorageGuid))
+                {
+                    var raw = await ChunkCacheHandler.GetChunkAsync(hit.StorageGuid);
+                    if (raw != null && raw.Length > 0)
+                        chunkBytes = ByteString.CopyFrom(raw);
+                }
+                indexRes.Results.Add(new SearchVectorObject
+                {
+                    BucketId = hit.BucketId,
+                    BucketKey = (long)hit.BucketIndex,
+                    Similarity = hit.Similarity,
+                    Chunk = chunkBytes,
+                    Index = request.Index,
+                    StorageGuid = hit.StorageGuid
+                });
+            }
+            return indexRes;
+        }
+
         // ── L1 bypass: route all buckets directly through RocksDB ──
         if (!BucketCacheManager.L1Enabled)
         {

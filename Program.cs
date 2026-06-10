@@ -205,6 +205,13 @@ lifetime.ApplicationStarted.Register(() =>
             .Equals("true", StringComparison.OrdinalIgnoreCase);
         Console.WriteLine($"[Agent] L1 bucket cache: {(Agent.Services.Cache.BucketCacheManager.L1Enabled ? "ENABLED" : "DISABLED (RocksDB-direct mode)")}");
 
+        // ── BINARY VECTOR INDEX (primary search path) ──
+        // Two-stage RAM search over flat segments; supersedes both the L1
+        // object cache and RocksDB-direct probing for BatchGet. When enabled,
+        // run with L1_CACHE_ENABLED=false — the M_Bucket object cache is
+        // redundant for search and only adds managed-heap weight.
+        Agent.Services.Index.BinaryVectorIndex.Initialize();
+
         // ── WARMUP: Load buckets from RocksDB into RAM (up to L1 budget) ──
         // Hot buckets go to L1 (RAM). Cold buckets stay on L2 (RocksDB disk),
         // loaded on-demand during search/store with ~0.1-0.3ms latency.
@@ -215,6 +222,12 @@ lifetime.ApplicationStarted.Register(() =>
             {
                 // Always register bucket storage reference so GetBucketStorage() works
                 Agent.Services.Cache.BucketCacheManager.SetBucketStorage(rocksDbSvc.BucketStorage);
+
+                // Rebuild the binary index from RocksDB (single total-order scan).
+                // Runs before the gRPC server starts serving, so no store/search
+                // races the rebuild. RocksDB stays the source of truth; the index
+                // is derived state and can never drift across restarts.
+                Agent.Services.Index.BinaryVectorIndex.RebuildFrom(rocksDbSvc.BucketStorage);
 
                 // Always start the memory guard (monitors /proc/meminfo, triggers
                 // emergency chunk cache eviction + GC when node memory is low).

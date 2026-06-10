@@ -6,6 +6,9 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <ServerGarbageCollection>true</ServerGarbageCollection>
     <ConcurrentGarbageCollection>true</ConcurrentGarbageCollection>
+    <!-- BinaryVectorIndex reads sealed mmap segments through raw pointers
+         (zero-copy spans over MemoryMappedViewAccessor). -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 
   <ItemGroup>
