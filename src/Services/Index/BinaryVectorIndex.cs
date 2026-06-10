@@ -745,9 +745,13 @@ public static class BinaryVectorIndex
 
         /// <summary>
         /// Streaming k-way merge of sorted sealed segments into one new segment.
-        /// O(1) RAM beyond the merged codes array (which becomes the new
-        /// segment's RAM-resident code index anyway). Section payloads are
-        /// staged in temp files and concatenated, so nothing is buffered.
+        /// Sections are written DIRECTLY into the final file in layout order by
+        /// replaying the merge selection once per section (5 cheap passes over
+        /// the RAM-resident codes). No temp files → peak disk usage during a
+        /// merge is old + new (2×), not 3× — this matters on small node disks
+        /// where the original temp-file design triggered kubelet disk-pressure
+        /// eviction. O(1) RAM beyond the merged codes array (which becomes the
+        /// new segment's RAM-resident code index anyway).
         /// </summary>
         public static SealedSegment Merge(SealedSegment[] parts, string path)
         {
@@ -764,81 +768,87 @@ public static class BinaryVectorIndex
             var codes = new ulong[total];
             Dictionary<int, string>? oddGuids = null;
 
-            string tIdx = path + ".idx.tmp", tNorm = path + ".norm.tmp", tGuid = path + ".guid.tmp", tVec = path + ".vec.tmp";
-            try
+            // Replays the k-way merge selection, invoking emit(part, entryIdx)
+            // in merged (code-ascending) order. Selection runs entirely on the
+            // RAM codes arrays; fan-in is small so the linear min-scan is fine.
+            void MergePass(Action<SealedSegment, int> emit)
             {
-                using (var fsIdx = new FileStream(tIdx, FileMode.CreateNew, FileAccess.Write, FileShare.None, 1 << 20))
-                using (var fsNorm = new FileStream(tNorm, FileMode.CreateNew, FileAccess.Write, FileShare.None, 1 << 20))
-                using (var fsGuid = new FileStream(tGuid, FileMode.CreateNew, FileAccess.Write, FileShare.None, 1 << 20))
-                using (var fsVec = new FileStream(tVec, FileMode.CreateNew, FileAccess.Write, FileShare.None, 1 << 20))
+                var pos = new int[parts.Length];
+                for (int outIdx = 0; outIdx < total; outIdx++)
                 {
-                    var pos = new int[parts.Length];
-                    Span<byte> u8 = stackalloc byte[8];
-                    Span<byte> f4 = stackalloc byte[4];
-
-                    for (int outIdx = 0; outIdx < total; outIdx++)
+                    int src = -1;
+                    ulong minCode = ulong.MaxValue;
+                    for (int p = 0; p < parts.Length; p++)
                     {
-                        int src = -1;
-                        ulong minCode = ulong.MaxValue;
-                        for (int p = 0; p < parts.Length; p++)
-                        {
-                            if (pos[p] >= parts[p].Count) continue;
-                            ulong c = parts[p].CodeAt(pos[p]);
-                            if (src < 0 || c < minCode) { src = p; minCode = c; }
-                        }
+                        if (pos[p] >= parts[p].Count) continue;
+                        ulong c = parts[p].CodeAt(pos[p]);
+                        if (src < 0 || c < minCode) { src = p; minCode = c; }
+                    }
+                    emit(parts[src], pos[src]++);
+                }
+            }
 
-                        var seg = parts[src];
-                        int i = pos[src]++;
+            long fileLen;
+            using (var fs = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None, 1 << 20))
+            using (var bw = new BinaryWriter(fs))
+            {
+                bw.Write(Magic);
+                bw.Write((long)total);
+                bw.Write(dim);
+                bw.Write(0);
 
-                        codes[outIdx] = minCode;
-                        BinaryPrimitives.WriteUInt64LittleEndian(u8, seg.BucketIndexAt(i));
-                        fsIdx.Write(u8);
-                        BinaryPrimitives.WriteSingleLittleEndian(f4, seg.NormSqAt(i));
-                        fsNorm.Write(f4);
-                        fsGuid.Write(seg.GuidBytesAt(i));
-                        fsVec.Write(seg.VectorBytesAt(i));
+                var u8 = new byte[8];
+                var f4 = new byte[4];
 
+                // Pass 1: codes (also fills the RAM array).
+                {
+                    int outIdx = 0;
+                    MergePass((seg, i) =>
+                    {
+                        ulong c = seg.CodeAt(i);
+                        codes[outIdx++] = c;
+                        BinaryPrimitives.WriteUInt64LittleEndian(u8, c);
+                        bw.Write(u8);
+                    });
+                }
+                // Pass 2: bucket indexes.
+                MergePass((seg, i) =>
+                {
+                    BinaryPrimitives.WriteUInt64LittleEndian(u8, seg.BucketIndexAt(i));
+                    bw.Write(u8);
+                });
+                // Pass 3: norms.
+                MergePass((seg, i) =>
+                {
+                    BinaryPrimitives.WriteSingleLittleEndian(f4, seg.NormSqAt(i));
+                    bw.Write(f4);
+                });
+                // Pass 4: guids (collect odd-guid remaps here).
+                {
+                    int outIdx = 0;
+                    MergePass((seg, i) =>
+                    {
+                        bw.Write(seg.GuidBytesAt(i));
                         var odd = seg.OddGuidAt(i);
                         if (odd != null)
                         {
                             oddGuids ??= new Dictionary<int, string>();
                             oddGuids[outIdx] = odd;
                         }
-                    }
+                        outIdx++;
+                    });
                 }
+                // Pass 5: vectors.
+                MergePass((seg, i) => bw.Write(seg.VectorBytesAt(i)));
 
-                long fileLen;
-                using (var fs = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None, 1 << 20))
-                using (var bw = new BinaryWriter(fs))
-                {
-                    bw.Write(Magic);
-                    bw.Write((long)total);
-                    bw.Write(dim);
-                    bw.Write(0);
-
-                    var u8 = new byte[8];
-                    for (int i = 0; i < total; i++) { BinaryPrimitives.WriteUInt64LittleEndian(u8, codes[i]); bw.Write(u8); }
-                    bw.Flush();
-
-                    foreach (var t in new[] { tIdx, tNorm, tGuid, tVec })
-                    {
-                        using var src = new FileStream(t, FileMode.Open, FileAccess.Read, FileShare.None, 1 << 20);
-                        src.CopyTo(fs);
-                    }
-                    fs.Flush();
-                    fileLen = fs.Length;
-                }
-
-                var mmf = MemoryMappedFile.CreateFromFile(path, FileMode.Open, mapName: null, capacity: 0,
-                    MemoryMappedFileAccess.Read);
-                var view = mmf.CreateViewAccessor(0, fileLen, MemoryMappedFileAccess.Read);
-                return new SealedSegment(mmf, view, codes, total, dim, oddGuids) { FilePath = path };
+                bw.Flush();
+                fileLen = fs.Length;
             }
-            finally
-            {
-                foreach (var t in new[] { tIdx, tNorm, tGuid, tVec })
-                    try { File.Delete(t); } catch { }
-            }
+
+            var mmf = MemoryMappedFile.CreateFromFile(path, FileMode.Open, mapName: null, capacity: 0,
+                MemoryMappedFileAccess.Read);
+            var view = mmf.CreateViewAccessor(0, fileLen, MemoryMappedFileAccess.Read);
+            return new SealedSegment(mmf, view, codes, total, dim, oddGuids) { FilePath = path };
         }
 
         public unsafe void ScoreProbe(ulong code, float[] q, float qNormSq, float threshold,
