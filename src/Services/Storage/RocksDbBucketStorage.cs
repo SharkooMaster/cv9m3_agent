@@ -452,8 +452,12 @@ public sealed class RocksDbBucketStorage : IDisposable
                 // ── GHOST RECORD HEALING ──
                 // If the batcher failed previously, the dedup key might exist but the vector record
                 // might be missing. If it's missing, rewrite it to the batcher.
+                // Read through the batcher's pending buffer first: the common
+                // case for a DB miss here is simply "queued, not yet flushed"
+                // (the dedup key is written sync, the record async) — healing
+                // in that window is spurious write amplification.
                 var healVectorKeyBytes = MakeBinaryVectorKey(bucketId, existingIndex);
-                var vecRecord = _rocksDb.Get(healVectorKeyBytes);
+                var vecRecord = _rocksDb.Get(healVectorKeyBytes) ?? _writeBatcher.TryGetPending(healVectorKeyBytes);
                 if (vecRecord == null || vecRecord.Length == 0)
                 {
                     Console.WriteLine($"[RocksDbBucketStorage] Healing missing vector record for {bucketId}:{existingIndex}");
@@ -546,7 +550,11 @@ public sealed class RocksDbBucketStorage : IDisposable
     public string? GetStorageGuidByReference(ulong bucketId, ulong bucketIndex)
     {
         var key = MakeBinaryVectorKey(bucketId, bucketIndex);
-        var recordBytes = _rocksDb.Get(key);
+        // Read through the write batcher: records are queued for up to the
+        // flush interval after StoreVector returns. Treating that window as
+        // "record does not exist" made store-time dedup verification declare
+        // ghosts for perfectly healthy fresh stores (ghost/heal log storm).
+        var recordBytes = _rocksDb.Get(key) ?? _writeBatcher.TryGetPending(key);
         if (recordBytes == null || recordBytes.Length == 0)
             return null;
 

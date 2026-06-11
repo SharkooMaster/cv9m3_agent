@@ -25,6 +25,32 @@ public sealed class RocksDbWriteBatcher : IDisposable
 {
     private readonly RocksDb _rocksDb;
     private readonly ConcurrentQueue<(byte[] key, byte[] value, int retryCount)> _writeQueue = new();
+
+    // Pending-write read-through. Between Put() and the batch landing in
+    // RocksDB (up to flushIntervalMs), a Get on the DB misses even though the
+    // write is durable-in-flight. Readers that treat that miss as "record
+    // does not exist" mis-diagnose ghosts and force spurious fresh stores
+    // (the ghost/heal log storm). TryGetPending closes the window: it holds
+    // the same array refs as the queue, entries removed after the batch
+    // commits. Memory overhead is bounded by the queue depth.
+    private readonly ConcurrentDictionary<byte[], byte[]> _pending = new(ByteArrayKeyComparer.Instance);
+
+    private sealed class ByteArrayKeyComparer : IEqualityComparer<byte[]>
+    {
+        public static readonly ByteArrayKeyComparer Instance = new();
+        public bool Equals(byte[]? a, byte[]? b)
+            => a == b || (a != null && b != null && a.AsSpan().SequenceEqual(b));
+        public int GetHashCode(byte[] k)
+        {
+            // FNV-1a over the key bytes
+            unchecked
+            {
+                uint h = 2166136261;
+                foreach (var b in k) { h ^= b; h *= 16777619; }
+                return (int)h;
+            }
+        }
+    }
     private readonly Timer _flushTimer;
     private readonly int _batchSize;
     private volatile bool _disposed = false;
@@ -52,8 +78,17 @@ public sealed class RocksDbWriteBatcher : IDisposable
         if (_disposed)
             throw new ObjectDisposedException(nameof(RocksDbWriteBatcher));
 
+        _pending[key] = value;
         _writeQueue.Enqueue((key, value, 0));
     }
+
+    /// <summary>
+    /// Returns the value of a write that is still queued (not yet committed
+    /// to RocksDB), or null. Callers should consult this AFTER a RocksDB Get
+    /// miss to distinguish "not yet flushed" from "does not exist".
+    /// </summary>
+    public byte[]? TryGetPending(byte[] key)
+        => _pending.TryGetValue(key, out var v) ? v : null;
 
     public void Put(string key, byte[] value)
     {
@@ -165,13 +200,13 @@ public sealed class RocksDbWriteBatcher : IDisposable
         while (!_writeQueue.IsEmpty)
         {
             var batch = new WriteBatch();
-            var failedItems = propagateErrors ? null : new List<(byte[] key, byte[] value, int retryCount)>();
+            var batchItems = new List<(byte[] key, byte[] value, int retryCount)>();
             int count = 0;
 
             while (_writeQueue.TryDequeue(out var item) && count < MaxItemsPerBatch)
             {
                 batch.Put(item.key, item.value);
-                failedItems?.Add(item);
+                batchItems.Add(item);
                 count++;
             }
 
@@ -184,6 +219,12 @@ public sealed class RocksDbWriteBatcher : IDisposable
             try
             {
                 _rocksDb.Write(batch);
+
+                // Committed — drop pending entries. Value-compare removal so a
+                // newer Put of the same key (still queued) is not evicted.
+                foreach (var item in batchItems)
+                    ((ICollection<KeyValuePair<byte[], byte[]>>)_pending)
+                        .Remove(new KeyValuePair<byte[], byte[]>(item.key, item.value));
             }
             catch (Exception ex)
             {
@@ -191,26 +232,36 @@ public sealed class RocksDbWriteBatcher : IDisposable
                 batch.Dispose();
 
                 if (propagateErrors)
-                    throw new IOException($"RocksDB write failed for {count} items — data NOT persisted", ex);
-
-                if (failedItems != null)
                 {
-                    int requeued = 0, dropped = 0;
-                    foreach (var item in failedItems)
-                    {
-                        if (item.retryCount < MaxRetries)
-                        {
-                            _writeQueue.Enqueue((item.key, item.value, item.retryCount + 1));
-                            requeued++;
-                        }
-                        else
-                            dropped++;
-                    }
-                    if (dropped > 0)
-                        Console.WriteLine($"[RocksDB WriteBatcher] DROPPED {dropped} items after {MaxRetries} retries (DATA LOSS)");
-                    if (requeued > 0)
-                        Console.WriteLine($"[RocksDB WriteBatcher] Re-queued {requeued} items for retry");
+                    // Items leave the queue without being written — purge their
+                    // pending entries so readers don't see phantom records.
+                    foreach (var item in batchItems)
+                        ((ICollection<KeyValuePair<byte[], byte[]>>)_pending)
+                            .Remove(new KeyValuePair<byte[], byte[]>(item.key, item.value));
+                    throw new IOException($"RocksDB write failed for {count} items — data NOT persisted", ex);
                 }
+
+                int requeued = 0, dropped = 0;
+                foreach (var item in batchItems)
+                {
+                    if (item.retryCount < MaxRetries)
+                    {
+                        _writeQueue.Enqueue((item.key, item.value, item.retryCount + 1));
+                        requeued++;
+                    }
+                    else
+                    {
+                        // Permanently dropped — remove from pending so readers
+                        // don't see a phantom record that will never be durable.
+                        ((ICollection<KeyValuePair<byte[], byte[]>>)_pending)
+                            .Remove(new KeyValuePair<byte[], byte[]>(item.key, item.value));
+                        dropped++;
+                    }
+                }
+                if (dropped > 0)
+                    Console.WriteLine($"[RocksDB WriteBatcher] DROPPED {dropped} items after {MaxRetries} retries (DATA LOSS)");
+                if (requeued > 0)
+                    Console.WriteLine($"[RocksDB WriteBatcher] Re-queued {requeued} items for retry");
                 return;
             }
             finally

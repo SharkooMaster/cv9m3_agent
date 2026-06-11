@@ -307,7 +307,15 @@ public static class NodeService
                     // might exist in RocksDB while the chunk data was lost. If we dedup against
                     // a ghost record, we prevent the chunk from being re-written, and downstream
                     // EncodeVerify/Decompress will fail. Verify the chunk actually exists.
-                    var chunkBytes = await NetworkFileStorageHandler.GetChunkByReferenceAsync(m.bucketId, m.bucketIndex);
+                    //
+                    // Verify via storageGuid when the hit carries one (binary-index hits
+                    // always do): GetChunkAsync checks the MRU chunk cache + batcher
+                    // pending buffer, so a fresh store that hasn't been flushed to
+                    // RocksDB yet is NOT misdiagnosed as a ghost. The by-reference
+                    // path resolves through the bv: record, which lags the batcher.
+                    var chunkBytes = !string.IsNullOrEmpty(m.storageGuid)
+                        ? await NetworkFileStorageHandler.GetChunkAsync(m.storageGuid)
+                        : await NetworkFileStorageHandler.GetChunkByReferenceAsync(m.bucketId, m.bucketIndex);
                     if (chunkBytes != null && chunkBytes.Length > 0)
                     {
                         _data.storageGuid = m.storageGuid;

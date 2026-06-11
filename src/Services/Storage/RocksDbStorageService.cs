@@ -506,10 +506,18 @@ public sealed class RocksDbStorageService : INetworkFileStorageService, IDisposa
             return cached;
 
         // Try local RocksDB (chunk may have been flushed by now)
-        byte[]? bytes = _rocksDb.Get(Encoding.UTF8.GetBytes(key));
+        var keyBytes = Encoding.UTF8.GetBytes(key);
+        byte[]? bytes = _rocksDb.Get(keyBytes);
         if (bytes != null && bytes.Length > 0)
             return bytes;
-        
+
+        // Still in the write batcher queue? (MRU cache can evict under heavy
+        // fill before the batch lands — don't fall through to a remote fetch
+        // for bytes that are sitting in this process.)
+        bytes = _chunkWriteBatcher.TryGetPending(keyBytes);
+        if (bytes != null && bytes.Length > 0)
+            return bytes;
+
         // Local miss - try remote fetch
         return await FetchChunkFromRemoteAsync(key);
     }
